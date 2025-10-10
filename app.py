@@ -37,7 +37,6 @@ Incluye:
 - **Páginas** con navegación **Siguiente/Anterior** (`settings.style = pages`).
 - **Portada** con **logo** (`media::image`) e **introducción**.
 """)
-
 # ------------------------------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------------------------------
@@ -122,77 +121,60 @@ def build_relevant_expr(rules_for_target: List[Dict]):
         or_parts.append(xlsform_or_expr(segs))
     return xlsform_or_expr(or_parts)
 # ------------------------------------------------------------------------------------------
-# CARGA ROBUSTA: Cantón→Distrito→Barrio desde Excel (detecta hoja/columnas automáticamente)
+# Cargar cascadas Cantón→Distrito→Barrio desde Excel
+# Espera columnas equivalentes a:
+#  - 'Nombre Cantón' (o 'Cantón' / 'Canton' / variantes)
+#  - 'Nombre Distrito' (o 'Distrito' / variantes)
+#  - 'Nombre Localidad' (o 'Localidad' / 'Barrio' / variantes)
+# Detecta automáticamente la HOJA adecuada.
 # ------------------------------------------------------------------------------------------
-def _norm_txt(s: str) -> str:
-    if s is None: return ""
-    t = str(s).lower()
-    t = re.sub(r"[áàäâ]", "a", t)
-    t = re.sub(r"[éèëê]", "e", t)
-    t = re.sub(r"[íìïî]", "i", t)
-    t = re.sub(r"[óòöô]", "o", t)
-    t = re.sub(r"[úùüû]", "u", t)
-    t = re.sub(r"ñ", "n", t)
-    t = re.sub(r"[^a-z0-9]+", "", t)
-    return t
-
-def _find_best_col(df: pd.DataFrame, wanted_any_of: list[str]) -> str | None:
-    norm_map = {col: _norm_txt(col) for col in df.columns}
-    for col, n in norm_map.items():
-        for kw in wanted_any_of:
-            if kw in n:
-                return col
-    return None
-
-def _pick_sheet_with_cols(xls: dict[str, pd.DataFrame]) -> tuple[str, pd.DataFrame] | None:
-    canton_keys   = ["canton", "nombrecanton", "cantoncod", "codigocanton"]
-    distrito_keys = ["distrito", "nombredistrito", "distritocod", "codigodistrito"]
-    barrio_keys   = ["localidad", "barrio", "poblado", "poblados", "nombrepoblado", "nombrelocalidad"]
-    for sheet_name, df in xls.items():
-        c = _find_best_col(df, canton_keys)
-        d = _find_best_col(df, distrito_keys)
-        b = _find_best_col(df, barrio_keys)
-        if c and d and b:
-            return sheet_name, df
-    return None
-
-def cargar_cascadas_desde_excel(ruta_o_buffer, override_cols: dict | None = None):
+def cargar_cascadas_desde_excel(ruta_excel: str):
     """
-    Lee 'Base de Datos Poblados por Regiones 2021.xlsx' (ruta o buffer).
-    - Detecta hoja y columnas automáticamente.
-    - override_cols opcional: {'canton': '...', 'distrito': '...', 'barrio': '...'}
-    Rellena:
-      - list_distrito con canton_key
-      - list_barrio  con distrito_key
+    Carga Cantón→Distrito→Barrio desde un Excel detectando hoja/columnas automáticamente.
     """
-    # Lee TODAS las hojas
-    xls_all = pd.read_excel(ruta_o_buffer, dtype=str, sheet_name=None)
+    xls = pd.ExcelFile(ruta_excel)
+    target_df = None
+    sheet_found = None
 
-    if override_cols:
-        sheet_df = next(iter(xls_all.values()))  # usa primera hoja si se mapea manualmente
-        c_col = override_cols.get("canton")
-        d_col = override_cols.get("distrito")
-        b_col = override_cols.get("barrio")
-    else:
-        picked = _pick_sheet_with_cols(xls_all)
-        if not picked:
-            cols_por_hoja = {sn: list(df.columns) for sn, df in xls_all.items()}
-            raise ValueError(f"No se hallaron columnas Cantón/Distrito/Barrio/Localidad. Columnas por hoja: {cols_por_hoja}")
-        _, sheet_df = picked
+    def norm(s: str) -> str:
+        s = s.strip().lower()
+        s = (s.replace("á","a").replace("é","e").replace("í","i")
+                .replace("ó","o").replace("ú","u").replace("ñ","n"))
+        return s
 
-        canton_keys   = ["canton", "nombrecanton", "cantoncod", "codigocanton"]
-        distrito_keys = ["distrito", "nombredistrito", "distritocod", "codigodistrito"]
-        barrio_keys   = ["localidad", "barrio", "poblado", "poblados", "nombrepoblado", "nombrelocalidad"]
-        c_col = _find_best_col(sheet_df, canton_keys)
-        d_col = _find_best_col(sheet_df, distrito_keys)
-        b_col = _find_best_col(sheet_df, barrio_keys)
+    wants_canton   = {"canton", "nombre canton", "cantón", "nombre cantón"}
+    wants_distrito = {"distrito", "nombre distrito", "distritos"}
+    wants_barrio   = {"localidad", "nombre localidad", "barrio", "barrios", "localidades"}
 
-    if not (c_col and d_col and b_col):
-        raise ValueError("No se pudieron determinar las columnas de Cantón, Distrito y Barrio/Localidad.")
+    for sh in xls.sheet_names:
+        df_try = pd.read_excel(ruta_excel, sheet_name=sh, dtype=str)
+        cols_norm = {norm(c): c for c in df_try.columns}
+        has_canton   = any(k in cols_norm for k in wants_canton)
+        has_distrito = any(k in cols_norm for k in wants_distrito)
+        has_barrio   = any(k in cols_norm for k in wants_barrio)
+        if has_canton and has_distrito and has_barrio:
+            target_df = df_try
+            sheet_found = sh
+            break
 
-    sub = sheet_df[[c_col, d_col, b_col]].dropna(how="any").copy()
-    for col in (c_col, d_col, b_col):
-        sub[col] = sub[col].astype(str).str.strip()
+    if target_df is None:
+        raise ValueError("No se encontraron columnas de Cantón, Distrito y Localidad en ninguna hoja del Excel.")
+
+    cols_norm = {norm(c): c for c in target_df.columns}
+    def pick(wants: set) -> str:
+        for w in wants:
+            if w in cols_norm:
+                return cols_norm[w]
+        raise KeyError("Columna requerida no encontrada.")
+
+    c_col = pick(wants_canton)
+    d_col = pick(wants_distrito)
+    b_col = pick(wants_barrio)
+
+    sub = target_df[[c_col, d_col, b_col]].dropna(how="any").copy()
+    sub[c_col] = sub[c_col].astype(str).str.strip()
+    sub[d_col] = sub[d_col].astype(str).str.strip()
+    sub[b_col] = sub[b_col].astype(str).str.strip()
     sub = sub[(sub[c_col] != "") & (sub[d_col] != "") & (sub[b_col] != "")]
 
     if "choices_ext_rows" not in st.session_state:
@@ -203,7 +185,6 @@ def cargar_cascadas_desde_excel(ruta_o_buffer, override_cols: dict | None = None
         if r.get("list_name") not in ("list_distrito", "list_barrio")
     ]
 
-    # Construye list_distrito y list_barrio
     distritos = sub[[c_col, d_col]].drop_duplicates().sort_values([c_col, d_col])
     barrios   = sub[[d_col, b_col]].drop_duplicates().sort_values([d_col, b_col])
 
@@ -222,9 +203,8 @@ def cargar_cascadas_desde_excel(ruta_o_buffer, override_cols: dict | None = None
             "distrito_key": str(row[d_col])
         })
 
-    # Guarda qué columnas se detectaron para mostrarlas en el sidebar
-    st.session_state["_casc_cols_detected"] = {"canton": c_col, "distrito": d_col, "barrio": b_col}
-
+    st.session_state.cascadas_cargadas = True
+    st.info(f"Cascadas cargadas desde la hoja **{sheet_found}**.")
 # ------------------------------------------------------------------------------------------
 # Cabecera: Logo + “Nombre de la Delegación” (encabezado compuesto)
 # ------------------------------------------------------------------------------------------
@@ -284,6 +264,7 @@ if not st.session_state.cascadas_cargadas:
         st.session_state.cascadas_cargadas = True
     except Exception as e:
         st.warning(f"No se pudo precargar Cantón→Distrito→Barrio desde Excel: {e}")
+
 # ------------------------------------------------------------------------------------------
 # Intro (Página 1)
 # ------------------------------------------------------------------------------------------
@@ -294,7 +275,6 @@ INTRO_COMUNIDAD = (
     "Es importante recordar que la información que nos proporcionas es confidencial y solo se usará para "
     "mejorar la seguridad en nuestra área."
 )
-
 # ------------------------------------------------------------------------------------------
 # Precarga EXACTA de preguntas (páginas 2–7)
 # ------------------------------------------------------------------------------------------
@@ -502,68 +482,31 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("📚 **Fuente de cascadas** Cantón→Distrito→Barrio (Excel)")
-    ruta_excel = st.text_input(
-        "Ruta del Excel",
-        value=st.session_state.ruta_excel_cascadas,
-        help="Debe contener Cantón, Distrito y Barrio/Localidad (los nombres pueden variar)."
-    )
+    ruta_excel = st.text_input("Ruta del Excel", value=st.session_state.ruta_excel_cascadas,
+                               help="Debe contener columnas: Nombre Cantón, Nombre Distrito, Nombre Localidad (o equivalentes).")
     up_excel = st.file_uploader("…o subir Excel", type=["xlsx"])
-
-    # Muestra columnas detectadas si ya hubo carga
-    if st.session_state.get("_casc_cols_detected"):
-        cc = st.session_state["_casc_cols_detected"]
-        st.info(f"Columnas detectadas → Cantón: **{cc['canton']}**, Distrito: **{cc['distrito']}**, Barrio/Localidad: **{cc['barrio']}**")
-
-    with st.expander("Si falla la detección automática, mapea manualmente las columnas", expanded=False):
-        manual_map = {}
-        if up_excel is not None:
-            _tmp = pd.read_excel(up_excel, nrows=0)
-            st.write("Columnas en el Excel subido:", list(_tmp.columns))
-            sel_c = st.selectbox("Columna de Cantón", options=list(_tmp.columns))
-            sel_d = st.selectbox("Columna de Distrito", options=list(_tmp.columns))
-            sel_b = st.selectbox("Columna de Barrio/Localidad", options=list(_tmp.columns))
-            manual_map = {"canton": sel_c, "distrito": sel_d, "barrio": sel_b}
-        else:
-            try:
-                _tmp = pd.read_excel(ruta_excel, nrows=0)
-                st.write("Columnas en el Excel:", list(_tmp.columns))
-                sel_c = st.selectbox("Columna de Cantón", options=list(_tmp.columns))
-                sel_d = st.selectbox("Columna de Distrito", options=list(_tmp.columns))
-                sel_b = st.selectbox("Columna de Barrio/Localidad", options=list(_tmp.columns))
-                manual_map = {"canton": sel_c, "distrito": sel_d, "barrio": sel_b}
-            except Exception:
-                st.caption("Carga el archivo primero para poder mapear manualmente.")
 
     col_c1, col_c2 = st.columns(2)
     if col_c1.button("Cargar/recargar cascadas", use_container_width=True):
         try:
             if up_excel is not None:
                 data_bytes = up_excel.read()
-                tmp_path = BytesIO(data_bytes)
-                if manual_map:
-                    cargar_cascadas_desde_excel(tmp_path, override_cols=manual_map)
-                else:
-                    cargar_cascadas_desde_excel(tmp_path)
-                st.session_state.cascadas_cargadas = True
-                st.success("Cascadas cargadas desde Excel subido.")
+                tmp_buf = BytesIO(data_bytes)
+                with open("tmp_cascadas.xlsx", "wb") as f:
+                    f.write(tmp_buf.getvalue())
+                cargar_cascadas_desde_excel("tmp_cascadas.xlsx")
+                st.success("Cascadas cargadas desde el Excel subido.")
             else:
                 st.session_state.ruta_excel_cascadas = ruta_excel
-                if manual_map:
-                    cargar_cascadas_desde_excel(ruta_excel, override_cols=manual_map)
-                else:
-                    cargar_cascadas_desde_excel(ruta_excel)
-                st.session_state.cascadas_cargadas = True
-                st.success("Cascadas cargadas desde ruta.")
+                cargar_cascadas_desde_excel(ruta_excel)
+                st.success("Cascadas cargadas desde la ruta indicada.")
         except Exception as e:
             st.error(f"No se pudieron cargar las cascadas: {e}")
 
     if col_c2.button("Limpiar cascadas", use_container_width=True):
-        st.session_state.choices_ext_rows = [
-            r for r in st.session_state.choices_ext_rows
-            if r.get("list_name") not in ("list_distrito","list_barrio")
-        ]
+        st.session_state.choices_ext_rows = [r for r in st.session_state.choices_ext_rows
+                                             if r.get("list_name") not in ("list_distrito","list_barrio")]
         st.session_state.cascadas_cargadas = False
-        st.session_state.pop("_casc_cols_detected", None)
         st.info("Cascadas eliminadas de la sesión.")
 
     st.markdown("---")
@@ -929,6 +872,7 @@ def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: 
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
 # ------------------------------------------------------------------------------------------
 # Exportar / Vista previa XLSForm
 # ------------------------------------------------------------------------------------------
@@ -1106,6 +1050,7 @@ ALL_BY_PAGE = [
     ("Riesgos Sociales", P6_NAMES),
     ("Información adicional", P7_NAMES),
 ]
+
 # ---------- helpers Word ----------
 def _set_cell_shading(cell, fill_hex: str):
     tc = cell._tc
@@ -1370,7 +1315,6 @@ def export_pdf_editable_form(preguntas: List[Dict], form_title: str, intro: str,
             y -= (field_h + 26)
             i += 1
 
-        # salto si queda poco para siguiente sección
         if y < margin + 120:
             c.showPage(); y = PAGE_H - margin; c.setFillColor(black)
 
