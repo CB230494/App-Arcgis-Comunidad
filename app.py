@@ -1,564 +1,1356 @@
-# ---------------------------------------------
-# 📋 SISTEMA DE CONTROL PARA BARBERÍA - STREAMLIT
-# Pestaña 1: ✂️ Registro de Cortes
-# ---------------------------------------------
+# -*- coding: utf-8 -*-
+# ==========================================================================================
+# App: Encuesta Comunidad → XLSForm para ArcGIS Survey123 (versión extendida)
+# - Constructor completo (agregar/editar/ordenar/borrar)
+# - Condicionales (relevant) + finalizar temprano
+# - Listas en cascada (choice_filter) Cantón→Distrito→Barrio [CARGA DESDE EXCEL]
+# - Exportar/Importar proyecto (JSON)
+# - Exportar a XLSForm (survey/choices/settings)
+# - PÁGINAS reales (style="pages"): Intro + P2..P7
+# - Portada con logo (media::image) y texto de introducción
+# - Exportes Word/PDF con el estilo afinado (observaciones sin límite, colores)
+# - Opciones visibles en Word/PDF para select_one/multiple, salvo preguntas Sí/No
+# ==========================================================================================
+
+import re
+import json
+from io import BytesIO
+from datetime import datetime
+from typing import List, Dict
 
 import streamlit as st
 import pandas as pd
-import io
-from datetime import datetime, date, time
 
-from database import (
-    insertar_corte,
-    obtener_cortes,
-    eliminar_corte,
-    actualizar_corte
+# ------------------------------------------------------------------------------------------
+# Configuración de la app
+# ------------------------------------------------------------------------------------------
+st.set_page_config(page_title="Encuesta Comunidad → XLSForm (Survey123)", layout="wide")
+st.title("🏘️ Encuesta Comunidad → XLSForm para ArcGIS Survey123")
+
+st.markdown("""
+Crea tu cuestionario y **exporta un XLSForm** listo para **ArcGIS Survey123** (Connect/Web Designer).
+
+Incluye:
+- Tipos: **text**, **integer/decimal**, **date**, **time**, **geopoint**, **select_one**, **select_multiple**.
+- **Constructor completo** (agregar, editar, ordenar, borrar) con condicionales.
+- **Listas en cascada** **Cantón→Distrito→Barrio** (choice_filter precargado desde Excel).
+- **Páginas** con navegación **Siguiente/Anterior** (`settings.style = pages`).
+- **Portada** con **logo** (`media::image`) e **introducción**.
+""")
+
+# ------------------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------------------
+TIPOS = [
+    "Texto (corto)",
+    "Párrafo (texto largo)",
+    "Número",
+    "Selección única",
+    "Selección múltiple",
+    "Fecha",
+    "Hora",
+    "GPS (ubicación)"
+]
+
+def _rerun():
+    if hasattr(st, "rerun"): st.rerun()
+    else: st.experimental_rerun()
+
+def slugify_name(texto: str) -> str:
+    if not texto:
+        return "campo"
+    t = texto.lower()
+    t = re.sub(r"[áàäâ]", "a", t)
+    t = re.sub(r"[éèëê]", "e", t)
+    t = re.sub(r"[íìïî]", "i", t)
+    t = re.sub(r"[óòöô]", "o", t)
+    t = re.sub(r"[úùüû]", "u", t)
+    t = re.sub(r"ñ", "n", t)
+    t = re.sub(r"[^a-z0-9]+", "_", t).strip("_")
+    return t or "campo"
+
+def asegurar_nombre_unico(base: str, usados: set) -> str:
+    if base not in usados: return base
+    i = 2
+    while f"{base}_{i}" in usados:
+        i += 1
+    return f"{base}_{i}"
+
+def map_tipo_to_xlsform(tipo_ui: str, name: str):
+    if tipo_ui == "Texto (corto)":
+        return ("text", None, None)
+    if tipo_ui == "Párrafo (texto largo)":
+        return ("text", "multiline", None)
+    if tipo_ui == "Número":
+        return ("integer", None, None)  # usa decimal si lo cambias luego
+    if tipo_ui == "Selección única":
+        return (f"select_one list_{name}", None, f"list_{name}")
+    if tipo_ui == "Selección múltiple":
+        return (f"select_multiple list_{name}", None, f"list_{name}")
+    if tipo_ui == "Fecha":
+        return ("date", None, None)
+    if tipo_ui == "Hora":
+        return ("time", None, None)
+    if tipo_ui == "GPS (ubicación)":
+        return ("geopoint", None, None)
+    return ("text", None, None)
+
+def xlsform_or_expr(conds):
+    if not conds: return None
+    if len(conds) == 1: return conds[0]
+    return "(" + " or ".join(conds) + ")"
+
+def xlsform_not(expr):
+    if not expr: return None
+    return f"not({expr})"
+
+def build_relevant_expr(rules_for_target: List[Dict]):
+    or_parts = []
+    for r in rules_for_target:
+        src = r["src"]
+        op = r.get("op", "=")
+        vals = r.get("values", [])
+        if not vals: continue
+        if op == "=":
+            segs = [f"${{{src}}}='{v}'" for v in vals]
+        elif op == "selected":
+            segs = [f"selected(${{{src}}}, '{v}')" for v in vals]
+        elif op == "!=":
+            segs = [f"${{{src}}}!='{v}'" for v in vals]
+        else:
+            segs = [f"${{{src}}}='{v}'" for v in vals]
+        or_parts.append(xlsform_or_expr(segs))
+    return xlsform_or_expr(or_parts)
+
+# ------------------------------------------------------------------------------------------
+# Cargar cascadas Cantón→Distrito→Barrio desde Excel
+# Espera columnas: 'Cantón' / 'Canton', 'Distrito', 'Localidad' (barrios)
+# Crea:
+#  - list_distrito con columna extra 'canton_key'
+#  - list_barrio  con columna extra 'distrito_key'
+# ------------------------------------------------------------------------------------------
+def cargar_cascadas_desde_excel(ruta_excel: str):
+    df = pd.read_excel(ruta_excel, dtype=str)
+    cols = {c.lower().strip(): c for c in df.columns}
+    def pick(*opcs):
+        for k in opcs:
+            if k in cols: return cols[k]
+        return None
+    c_col = pick("cantón","canton","cantón ","cantón/canton","canton/cantón")
+    d_col = pick("distrito","distritos")
+    b_col = pick("localidad","barrio","barrios","localidades")
+    if not (c_col and d_col and b_col):
+        raise ValueError("No se encontraron columnas de Cantón, Distrito y Localidad en el Excel.")
+
+    sub = df[[c_col, d_col, b_col]].dropna(how="any").copy()
+    sub[c_col] = sub[c_col].str.strip()
+    sub[d_col] = sub[d_col].str.strip()
+    sub[b_col] = sub[b_col].str.strip()
+    sub = sub[(sub[c_col]!="") & (sub[d_col]!="") & (sub[b_col]!="")]
+
+    if "choices_ext_rows" not in st.session_state:
+        st.session_state.choices_ext_rows = []
+    st.session_state.choices_extra_cols.update({"canton_key","distrito_key"})
+    st.session_state.choices_ext_rows = [r for r in st.session_state.choices_ext_rows
+                                         if r.get("list_name") not in ("list_distrito","list_barrio")]
+
+    distritos = sub[[c_col, d_col]].drop_duplicates().sort_values([c_col, d_col])
+    barrios   = sub[[d_col, b_col]].drop_duplicates().sort_values([d_col, b_col])
+
+    for _, row in distritos.iterrows():
+        st.session_state.choices_ext_rows.append({
+            "list_name": "list_distrito",
+            "name": slugify_name(str(row[d_col])),
+            "label": str(row[d_col]),
+            "canton_key": str(row[c_col])
+        })
+    for _, row in barrios.iterrows():
+        st.session_state.choices_ext_rows.append({
+            "list_name": "list_barrio",
+            "name": slugify_name(str(row[b_col])),
+            "label": str(row[b_col]),
+            "distrito_key": str(row[d_col])
+        })
+# ------------------------------------------------------------------------------------------
+# Cabecera: Logo + “Nombre de la Delegación” (encabezado compuesto)
+# ------------------------------------------------------------------------------------------
+DEFAULT_LOGO_PATH = "001.png"
+
+col_logo, col_txt = st.columns([1, 3], vertical_alignment="center")
+with col_logo:
+    up_logo = st.file_uploader("Logo (PNG/JPG)", type=["png","jpg","jpeg"])
+    if up_logo:
+        st.image(up_logo, caption="Logo cargado", use_container_width=True)
+        st.session_state["_logo_bytes"] = up_logo.getvalue()
+        st.session_state["_logo_name"] = up_logo.name
+    else:
+        try:
+            st.image(DEFAULT_LOGO_PATH, caption="Logo (001.png)", use_container_width=True)
+            st.session_state["_logo_bytes"] = None
+            st.session_state["_logo_name"] = "001.png"
+        except Exception:
+            st.warning("Sube un logo para incluirlo en el XLSForm.")
+            st.session_state["_logo_bytes"] = None
+            st.session_state["_logo_name"] = "logo.png"
+
+with col_txt:
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste")
+    logo_media_name = st.text_input(
+        "Nombre de archivo para `media::image`",
+        value=st.session_state.get("_logo_name","001.png"),
+        help="Debe coincidir con el archivo en la carpeta `media/` de Survey123 Connect."
+    )
+    titulo_compuesto = (f"Encuesta comunidad – {delegacion.strip()}"
+                        if delegacion.strip() else "Encuesta comunidad")
+    st.markdown(f"<h5 style='text-align:center;margin:4px 0'>📋 {titulo_compuesto}</h5>", unsafe_allow_html=True)
+
+# ------------------------------------------------------------------------------------------
+# Estado (session_state)
+# ------------------------------------------------------------------------------------------
+if "preguntas" not in st.session_state:
+    st.session_state.preguntas = []
+if "reglas_visibilidad" not in st.session_state:
+    st.session_state.reglas_visibilidad = []
+if "reglas_finalizar" not in st.session_state:
+    st.session_state.reglas_finalizar = []
+if "choices_extra_cols" not in st.session_state:
+    st.session_state.choices_extra_cols = set()
+if "choices_ext_rows" not in st.session_state:
+    st.session_state.choices_ext_rows = []
+if "cascadas_cargadas" not in st.session_state:
+    st.session_state.cascadas_cargadas = False
+if "ruta_excel_cascadas" not in st.session_state:
+    st.session_state.ruta_excel_cascadas = "Base de Datos Poblados por Regiones 2021.xlsx"
+
+# Intento de auto-carga una vez
+if not st.session_state.cascadas_cargadas:
+    try:
+        cargar_cascadas_desde_excel(st.session_state.ruta_excel_cascadas)
+        st.session_state.cascadas_cargadas = True
+    except Exception as e:
+        st.warning(f"No se pudo precargar Cantón→Distrito→Barrio desde Excel: {e}")
+# ------------------------------------------------------------------------------------------
+# Intro (Página 1)
+# ------------------------------------------------------------------------------------------
+INTRO_COMUNIDAD = (
+    "Con el fin de hacer más segura nuestra comunidad, queremos concentrarnos en los problemas de "
+    "seguridad más importantes. Por lo que debemos trabajar juntos, tanto con el gobierno local como "
+    "con otras instituciones y la comunidad, para reducir los delitos y riesgos que afectan a la gente. "
+    "Es importante recordar que la información que nos proporcionas es confidencial y solo se usará para "
+    "mejorar la seguridad en nuestra área."
 )
 
-# -----------------------------
-# 🎛️ Configuración de la app
-# -----------------------------
-st.set_page_config(
-    page_title="Barbería - Registro de Cortes",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ------------------------------------------------------------------------------------------
+# Precarga EXACTA de preguntas (páginas 2–7)
+# ------------------------------------------------------------------------------------------
+if "seed_cargado" not in st.session_state:
 
-# -----------------------------
-# 📌 Menú lateral
-# -----------------------------
-menu = st.sidebar.radio(
-    "Selecciona una sección",
-    [
-        "✂️ Registro de Cortes",
-        "📦 Inventario",
-        "📅 Citas",
-        "💵 Finanzas",
-        "📊 Reporte General"
+    v_si = slugify_name("Si")
+    v_no = slugify_name("No")
+    v_mas_seguro  = slugify_name("Más seguro")
+    v_igual       = slugify_name("Igual")
+    v_menos_seg   = slugify_name("Menos seguro")
+
+    seed = [
+        # ---------------- Página 2: Datos demográficos ----------------
+        {"tipo_ui":"Selección única","label":"Cantón","name":"canton","required":True,
+         "opciones":["— cargado desde Excel —"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Distrito","name":"distrito","required":True,
+         "opciones":["— se rellena según Cantón —"],"appearance":None,"choice_filter":"canton_key=${canton}","relevant":None},
+        {"tipo_ui":"Selección única","label":"Barrio","name":"barrio","required":True,
+         "opciones":["— se rellena según Distrito —"],"appearance":None,"choice_filter":"distrito_key=${distrito}","relevant":None},
+        {"tipo_ui":"Número","label":"Edad","name":"edad","required":True,"opciones":[],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Género","name":"genero","required":True,
+         "opciones":["Masculino","Femenino","LGTBQ+"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Escolaridad","name":"escolaridad","required":True,
+         "opciones":["Ninguna","Primaria","Primaria incompleta","Secundaria completa","Secundaria incompleta","Universitaria","Universitaria incompleta","Técnico"],
+         "appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"¿Cuál es su relación con la zona?","name":"relacion_zona","required":True,
+         "opciones":["Vivo en la zona","Trabajo en la zona","Visito la zona"],"appearance":None,"choice_filter":None,"relevant":None},
+
+        # ---------------- Página 3: Sentimiento de inseguridad ----------------
+        {"tipo_ui":"Selección única","label":"¿Se siente seguro en su barrio?","name":"se_siente_seguro","required":True,
+         "opciones":["Si","No"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Párrafo (texto largo)","label":"Indique por qué considera el barrio inseguro","name":"motivo_inseguridad","required":True,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":f"${{se_siente_seguro}}='{slugify_name('No')}'"},
+        {"tipo_ui":"Selección única","label":"¿Cómo se siente respecto a la seguridad en su barrio este año comparado con el anterior?","name":"comparacion_anual","required":True,
+         "opciones":["Más seguro","Igual","Menos seguro"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Párrafo (texto largo)","label":"Indique por qué.","name":"motivo_comparacion","required":True,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":xlsform_or_expr([
+            f"${{comparacion_anual}}='{v_mas_seguro}'",
+            f"${{comparacion_anual}}='{v_igual}'",
+            f"${{comparacion_anual}}='{v_menos_seg}'"
+         ])},
+
+        # ---------------- Página 4: Lugares del barrio ----------------
+        {"tipo_ui":"Selección única","label":"Discotecas, bares, sitios de entretenimiento","name":"lugar_entretenimiento","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Espacios recreativos","name":"espacios_recreativos","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Lugar de residencia","name":"lugar_residencia","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Paradas/estaciones (buses, taxis, trenes)","name":"paradas_estaciones","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Puentes peatonales","name":"puentes_peatonales","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Transporte público","name":"transporte_publico","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Zona bancaria","name":"zona_bancaria","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Zona de comercio","name":"zona_comercio","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Zonas residenciales","name":"zonas_residenciales","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"Lugares de interés turístico","name":"lugares_turisticos","required":True,
+         "opciones":["Seguro","Inseguro","No existe en el Barrio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Texto (corto)","label":"¿Cuál es el lugar o zona más inseguro en su barrio? (opcional)","name":"zona_mas_insegura","required":False,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Párrafo (texto largo)","label":"Describa por qué considera que esa zona es insegura (opcional)","name":"porque_insegura","required":False,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":None},
+
+        # ---------------- Página 5: Incidencia de delitos ----------------
+        {"tipo_ui":"Selección múltiple","label":"Incidencia relacionada a delitos","name":"incidencia_delitos","required":False,
+         "opciones":[
+            "Disturbios en vía pública.(Riñas o Agresión)","Daños a la propiedad. (Destruir, inutilizar o desaparecer).",
+            "Extorsión (intimidar o amenazar a otras personas con fines de lucro).","Hurto. (sustracción de artículos mediante el descuido).",
+            "Receptación (persona que adquiere, recibe u oculta artículos provenientes de un delito en el que no participó).",
+            "Contrabando (licor, cigarrillos, medicinas, ropa, calzado, etc.)","Maltrato animal","Tráfico ilegal de personas (coyotaje)"
+         ],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Venta de drogas","name":"venta_drogas","required":False,
+         "opciones":["bunker espacio cerrado","vía pública","exprés"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Delitos contra la vida","name":"delitos_vida","required":False,
+         "opciones":["Homicidios","Heridos"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Delitos sexuales","name":"delitos_sexuales","required":False,
+         "opciones":["Abuso sexual","Acoso sexual","Violación"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Asaltos","name":"asaltos","required":False,
+         "opciones":["Asalto a personas","Asalto a comercio","Asalto a vivienda","Asalto a transporte público"],
+         "appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Estafas","name":"estafas","required":False,
+         "opciones":["Billetes falso","Documentos falsos","Estafa (Oro)","Lotería falsos","Estafas informáticas","Estafa telefónica","Estafa con tarjetas"],
+         "appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Robo (sustracción con fuerza)","name":"robo_fuerza","required":False,
+         "opciones":["Tacha a comercio","Tacha a edificaciones","Tacha a vivienda","Tacha de vehículos","Robo de Ganado Abigeato (Destace de ganado)",
+                     "Robo de bienes agrícola","Robo de vehículos","Robo de cable","Robo de combustible"],
+         "appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Abandono de personas","name":"abandono_personas","required":False,
+         "opciones":["Abandono de adulto mayor","Abandono de menor de edad","Abandono de incapaz"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Explotación infantil","name":"explotacion_infantil","required":False,
+         "opciones":["Sexual","Laboral"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Delitos ambientales","name":"delitos_ambientales","required":False,
+         "opciones":["Caza ilegal","Pesca ilegal","Tala ilegal"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Trata de personas","name":"trata_personas","required":False,
+         "opciones":["Con fines laborales","Con fines sexuales"],"appearance":None,"choice_filter":None,"relevant":None},
+
+        # Subflujo Violencia Intrafamiliar (no obligatorias salvo al entrar al subflujo)
+        {"tipo_ui":"Selección única","label":"Violencia Intrafamiliar","name":"vi","required":False,
+         "opciones":["Si","No"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"¿Ha sido víctima o conoce a alguien que haya sido víctima de VI en el último año?","name":"vi_victima_ultimo_anno","required":True,
+         "opciones":["Si","No"],"appearance":None,"choice_filter":None,"relevant":f"${{vi}}='{slugify_name('Si')}'"},
+        {"tipo_ui":"Selección múltiple","label":"Tipos de Violencia Intrafamiliar (marque todos los que correspondan)","name":"vi_tipos","required":True,
+         "opciones":["Violencia psicológica (gritos, amenazas, burlas, maltratos, etc)",
+                     "Violencia física (golpes, empujones, etc)","Violencia patrimonial (destrucción o retención de artículos, documentos, dinero, etc)",
+                     "Violencia sexual (actos sexuales no consentido)"],
+         "appearance":None,"choice_filter":None,"relevant":f"${{vi}}='{slugify_name('Si')}'"},
+        {"tipo_ui":"Selección única","label":"¿Fue abordado por Fuerza Pública?","name":"vi_fp_abordaje","required":True,
+         "opciones":["Si","No"],"appearance":None,"choice_filter":None,"relevant":f"${{vi}}='{slugify_name('Si')}'"},
+        {"tipo_ui":"Selección única","label":"¿Cómo fue el abordaje de la Fuerza Pública?","name":"vi_fp_eval","required":True,
+         "opciones":["Excelente","Bueno","Regular","Malo"],"appearance":None,"choice_filter":None,"relevant":f"${{vi_fp_abordaje}}='{slugify_name('Si')}'"},
+
+        # ---------------- Página 6: Riesgos Sociales ----------------
+        {"tipo_ui":"Selección múltiple","label":"Riesgos Sociales","name":"riesgos_sociales","required":False,
+         "opciones":[
+            "Escándalos musicales.","Falta de oportunidades laborales.","Problemas Vecinales.",
+            "Asentamientos ilegales (conocido como precarios).","Personas en situación de calle.",
+            "Desvinculación escolar (deserción escolar)","Zona de prostitución","Consumo de alcohol en vía pública",
+            "Personas con exceso de tiempo de ocio","Acumulación de basuras, aguas negras, mal alcantarillado.",
+            "Carencia o inexistencia de alumbrado público.","Cuarterías","Lotes baldíos.","Ventas informales",
+            "Pérdida de espacios públicos (parques, polideportivos, etc.).","Otro"
+         ],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Falta de inversión social","name":"falta_inversion_social","required":False,
+         "opciones":["Falta de oferta educativa","Falta de oferta deportiva","Falta de oferta recreativa","Falta de actividades culturales"],
+         "appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Consumo de drogas","name":"consumo_drogas","required":False,
+         "opciones":["Área privada","Área pública"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Deficiencia en la infraestructura vial","name":"infra_vial","required":False,
+         "opciones":["Calles en mal estado","Falta de señalización de tránsito","Carencia o inexistencia de aceras"],
+         "appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección múltiple","label":"Búnker","name":"bunker","required":False,
+         "opciones":["Casa de habitación","Edificación abandonada","Lote baldío","Otro"],
+         "appearance":None,"choice_filter":None,"relevant":None},
+
+        # ---------------- Página 7: Información adicional ----------------
+        {"tipo_ui":"Selección única","label":"¿Tiene información de alguna persona o grupo que realice delitos en su comunidad? (confidencial)","name":"info_grupo_delito","required":True,
+         "opciones":["Si","No"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Párrafo (texto largo)","label":"Si su respuesta es \"SI\", describa características relevantes (estructura, personas, alias, señas, domicilios, vehículos, etc.)","name":"desc_info_grupo","required":True,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":f"${{info_grupo_delito}}='{slugify_name('Si')}'"},
+        {"tipo_ui":"Selección única","label":"¿Usted o algún familiar ha sido víctima de un delito en los últimos 12 meses? ¿Denunció ante el OIJ?","name":"victimizacion_12m","required":True,
+         "opciones":["NO he sido víctima de ningún delito","SI he sido víctima y SI denuncié","SI he sido víctima pero NO denuncié"],
+         "appearance":None,"choice_filter":None,"relevant":None},
+
+        # Rama: SI víctima y SI denunció
+        {"tipo_ui":"Texto (corto)","label":"¿Cuál fue el delito del que fue víctima?","name":"delito_victima_si","required":True,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima y SI denuncié')}'"},
+        {"tipo_ui":"Selección múltiple","label":"Modo de operar en el delito (marque todos los factores pertinentes)","name":"modo_operar_si","required":True,
+         "opciones":["Arma blanca (cuchillo, machete, tijeras).","Arma de fuego.","Amenazas","Arrebato","Boquete","Ganzúa (pata de chancho)","Engaño","No sé.","Otro"],
+         "appearance":None,"choice_filter":None,"relevant":f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima y SI denuncié')}'"},
+        {"tipo_ui":"Selección única","label":"Horario del hecho delictivo","name":"horario_hecho_si","required":True,
+         "opciones":["00:00 - 02:59 a. m.","03:00 - 05:59 a. m.","06:00 - 08:59 a. m.","09:00 - 11:59 a. m.","12:00 - 14:59 p. m.","15:00 - 17:59 p. m.","18:00 - 20:59 p. m.","21:00 - 23:59 p. m.","DESCONOCIDO"],
+         "appearance":None,"choice_filter":None,"relevant":f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima y SI denuncié')}'"},
+
+        # Rama: SI víctima pero NO denunció
+        {"tipo_ui":"Texto (corto)","label":"¿Cuál fue el delito del que fue víctima?","name":"delito_victima_no","required":True,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima pero NO denuncié')}'"},
+        {"tipo_ui":"Selección múltiple","label":"Motivo de no denunciar (marque todos los que apliquen)","name":"motivo_no_denuncia","required":True,
+         "opciones":["Distancia (falta de oficinas)","Miedo a represalias","Falta de respuesta oportuna","He realizado denuncias y no ha pasado nada",
+                     "Complejidad al colocar la denuncia","Desconocimiento de dónde denunciar","El policía sugirió no denunciar","Falta de tiempo"],
+         "appearance":None,"choice_filter":None,"relevant":f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima pero NO denuncié')}'"},
+        {"tipo_ui":"Selección múltiple","label":"Modo de operar en el delito","name":"modo_operar_no","required":True,
+         "opciones":["Arma blanca (cuchillo, machete, tijeras).","Arma de fuego.","Amenazas","Arrebato","Boquete","Ganzúa (pata de chancho)","Engaño","No sé.","Otro"],
+         "appearance":None,"choice_filter":None,"relevant":f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima pero NO denuncié')}'"},
+        {"tipo_ui":"Selección única","label":"Horario del hecho delictivo","name":"horario_hecho_no","required":True,
+         "opciones":["00:00 - 02:59 a. m.","03:00 - 05:59 a. m.","06:00 - 08:59 a. m.","09:00 - 11:59 a. m.","12:00 - 14:59 p. m.","15:00 - 17:59 p. m.","18:00 - 20:59 p. m.","21:00 - 23:59 p. m.","DESCONOCIDO"],
+         "appearance":None,"choice_filter":None,"relevant":f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima pero NO denuncié')}'"},
+
+        # Evaluación y sugerencias
+        {"tipo_ui":"Selección única","label":"¿Cómo califica el servicio policial de la Fuerza Pública de Costa Rica en su comunidad?","name":"fp_calificacion","required":True,
+         "opciones":["Excelente","Bueno","Regular","Mala","Muy mala"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"¿Cómo ha sido el servicio de la Fuerza Pública en los últimos 24 meses?","name":"fp_24m","required":True,
+         "opciones":["Mejor servicio","Igual","Peor servicio"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"¿Conoce a los policías de su comunidad?","name":"conoce_policias","required":True,
+         "opciones":["Si","No"],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Selección única","label":"¿Ha conversado con ellos/ellas sobre temas de seguridad?","name":"conversa_policias","required":True,
+         "opciones":["Si","No"],"appearance":None,"choice_filter":None,"relevant":f"${{conoce_policias}}='{slugify_name('Si')}'"},
+        {"tipo_ui":"Párrafo (texto largo)","label":"¿Qué actividad debería realizar la Fuerza Pública para mejorar la seguridad en su comunidad? (opcional)","name":"sugerencia_fp","required":False,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Párrafo (texto largo)","label":"¿Qué actividad debería realizar la municipalidad para mejorar la seguridad en su comunidad? (opcional)","name":"sugerencia_muni","required":False,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Párrafo (texto largo)","label":"Otra información que estime pertinente (opcional)","name":"otra_info","required":False,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":None},
+        {"tipo_ui":"Párrafo (texto largo)","label":"(Voluntario) Nombre, teléfono o correo de contacto (confidencial)","name":"contacto_voluntario","required":False,
+         "opciones":[],"appearance":None,"choice_filter":None,"relevant":None},
     ]
-)
 
-# ---------------------------------------------
-# ✂️ PESTAÑA 1: Registro de Cortes
-# ---------------------------------------------
-if menu == "✂️ Registro de Cortes":
-    st.title("✂️ Registro de Cortes Realizados")
-    st.markdown("Agrega, consulta o elimina cortes realizados por los barberos.")
-
-    # ---------- FORMULARIO NUEVO CORTE ----------
-    st.subheader("➕ Agregar nuevo corte")
-
-    with st.form("form_nuevo_corte"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            fecha = st.date_input("Fecha", value=date.today())
-        with col2:
-            barbero = st.text_input("Nombre del barbero")
-        with col3:
-            cliente = st.text_input("Nombre del cliente")
-
-        tipo_corte = st.selectbox("Tipo de corte", ["Clásico", "Fade", "Diseño", "Barba", "Otro"])
-        precio = st.number_input("Precio (₡)", min_value=0.0, step=500.0, format="%.2f")
-        observacion = st.text_area("Observaciones (opcional)")
-        submitted = st.form_submit_button("💾 Guardar")
-
-        if submitted:
-            if not barbero.strip() or not cliente.strip():
-                st.warning("⚠️ Barbero y Cliente son campos obligatorios.")
-            else:
-                insertar_corte(str(fecha), barbero.strip(), cliente.strip(), tipo_corte, precio, observacion.strip())
-                st.success("✅ Corte registrado correctamente")
-                st.rerun()
-
-    st.divider()
-
-    # ---------- LISTADO DE CORTES REGISTRADOS ----------
-    st.subheader("📋 Historial de cortes")
-
-    cortes = obtener_cortes()
-    if cortes:
-        df = pd.DataFrame(cortes)
-        df["fecha"] = pd.to_datetime(df["fecha"]).dt.strftime("%d/%m/%Y")
-        df["precio"] = df["precio"].map(lambda x: round(x, 2))
-
-        # Botón para descargar respaldo en Excel
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name="Cortes")
-        st.download_button(
-            label="⬇️ Descargar respaldo en Excel",
-            data=output.getvalue(),
-            file_name="cortes_registrados.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        # Mostrar los cortes en tarjetas editables
-        for corte in cortes:
-            with st.container():
-                id_corte = corte["id"]
-                editar = st.session_state.get(f"edit_{id_corte}", False)
-
-                if editar:
-                    st.markdown(f"### ✏️ Editando corte ID {id_corte}")
-                    f = st.date_input("Fecha", value=pd.to_datetime(corte["fecha"]), key=f"fecha_{id_corte}")
-                    b = st.text_input("Barbero", value=corte["barbero"], key=f"barbero_{id_corte}")
-                    c = st.text_input("Cliente", value=corte["cliente"], key=f"cliente_{id_corte}")
-                    t = st.selectbox("Tipo de corte", ["Clásico", "Fade", "Diseño", "Barba", "Otro"], index=0, key=f"tipo_{id_corte}")
-                    p = st.number_input("Precio (₡)", value=float(corte["precio"]), step=500.0, format="%.2f", key=f"precio_{id_corte}")
-                    o = st.text_area("Observación", value=corte["observacion"] or "", key=f"obs_{id_corte}")
-
-                    col1, col2 = st.columns(2)
-                    if col1.button("💾 Guardar", key=f"guardar_{id_corte}"):
-                        actualizar_corte(id_corte, {
-                            "fecha": str(f),
-                            "barbero": b,
-                            "cliente": c,
-                            "tipo_corte": t,
-                            "precio": p,
-                            "observacion": o
-                        })
-                        st.session_state[f"edit_{id_corte}"] = False
-                        st.success("✅ Corte actualizado")
-                        st.rerun()
-                    if col2.button("❌ Cancelar", key=f"cancelar_{id_corte}"):
-                        st.session_state[f"edit_{id_corte}"] = False
-                        st.rerun()
-                else:
-                    cols = st.columns([1.5, 2, 2, 2, 1.5, 3, 1, 1])
-                    cols[0].markdown(f"🗓️ **{corte['fecha']}**")
-                    cols[1].markdown(f"💈 **{corte['barbero']}**")
-                    cols[2].markdown(f"👤 {corte['cliente']}")
-                    cols[3].markdown(f"✂️ {corte['tipo_corte']}")
-                    cols[4].markdown(f"💰 ₡{corte['precio']:,.2f}")
-                    cols[5].markdown(f"📝 {corte['observacion'] or '—'}")
-                    if cols[6].button("✏️", key=f"edit_{id_corte}"):
-                        st.session_state[f"edit_{id_corte}"] = True
-                        st.rerun()
-                    if cols[7].button("🗑️", key=f"delete_{id_corte}"):
-                        eliminar_corte(id_corte)
-                        st.success("✅ Corte eliminado")
-                        st.rerun()
-    else:
-        st.info("Aún no se han registrado cortes.")
-# ---------------------------------------------
-# 📦 PESTAÑA 2: Inventario
-# ---------------------------------------------
-elif menu == "📦 Inventario":
-    from database import (
-        insertar_producto,
-        obtener_productos,
-        actualizar_producto,
-        eliminar_producto
+    st.session_state.preguntas = seed
+    st.session_state.seed_cargado = True
+# ------------------------------------------------------------------------------------------
+# Sidebar: Metadatos + Acciones (cargar Excel cascadas / exportar-importar proyecto)
+# ------------------------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Configuración")
+    form_title = st.text_input(
+        "Título del formulario",
+        value=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad")
     )
+    idioma = st.selectbox("Idioma por defecto (default_language)", options=["es","en"], index=0)
+    version_auto = datetime.now().strftime("%Y%m%d%H%M")
+    version = st.text_input("Versión (settings.version)", value=version_auto)
 
-    st.title("📦 Inventario de Productos")
-    st.markdown("Administra los productos disponibles y su stock.")
+    st.markdown("---")
+    st.caption("📚 **Fuente de cascadas** Cantón→Distrito→Barrio (Excel)")
+    ruta_excel = st.text_input("Ruta del Excel", value=st.session_state.ruta_excel_cascadas,
+                               help="Debe contener columnas: Cantón, Distrito, Localidad (barrios).")
+    up_excel = st.file_uploader("…o subir Excel", type=["xlsx"])
 
-    # ---------- AGREGAR PRODUCTO ----------
-    st.subheader("➕ Agregar nuevo producto")
-    with st.form("form_nuevo_producto"):
-        col1, col2 = st.columns(2)
-        nombre = col1.text_input("Nombre del producto")
-        precio_unitario = col2.number_input("Precio unitario (₡)", min_value=0.0, step=100.0, format="%.2f")
-        descripcion = st.text_input("Descripción (opcional)")
-        stock = st.number_input("Stock inicial", min_value=0, step=1)
-        enviado = st.form_submit_button("💾 Guardar producto")
+    col_c1, col_c2 = st.columns(2)
+    if col_c1.button("Cargar/recargar cascadas", use_container_width=True):
+        try:
+            if up_excel is not None:
+                data_bytes = up_excel.read()
+                tmp_buf = BytesIO(data_bytes)
+                df = pd.read_excel(tmp_buf, dtype=str)
 
-        if enviado:
-            if not nombre.strip():
-                st.warning("⚠️ El nombre del producto es obligatorio.")
-            else:
-                insertar_producto(nombre.strip(), descripcion.strip(), stock, precio_unitario)
-                st.success("✅ Producto registrado correctamente")
-                st.rerun()
+                cols = {c.lower().strip(): c for c in df.columns}
+                def pick(*opcs):
+                    for k in opcs:
+                        if k in cols: return cols[k]
+                    return None
+                c_col = pick("cantón","canton","cantón ","cantón/canton","canton/cantón")
+                d_col = pick("distrito","distritos")
+                b_col = pick("localidad","barrio","barrios","localidades")
+                if not (c_col and d_col and b_col):
+                    raise ValueError("No se encontraron columnas Cantón/Distrito/Localidad en el Excel subido.")
+                sub = df[[c_col, d_col, b_col]].dropna(how="any").copy()
+                sub[c_col] = sub[c_col].str.strip()
+                sub[d_col] = sub[d_col].str.strip()
+                sub[b_col] = sub[b_col].str.strip()
+                sub = sub[(sub[c_col]!="") & (sub[d_col]!="") & (sub[b_col]!="")]
 
-    st.divider()
-
-    # ---------- LISTADO DE PRODUCTOS ----------
-    st.subheader("📋 Productos en inventario")
-    productos = obtener_productos()
-
-    if productos:
-        df = pd.DataFrame(productos)
-        df["precio_unitario"] = df["precio_unitario"].map(lambda x: round(x, 2))
-
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Productos")
-        st.download_button(
-            label="⬇️ Descargar inventario en Excel",
-            data=output.getvalue(),
-            file_name="inventario_productos.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        for producto in productos:
-            id_producto = producto["id"]
-            editando = st.session_state.get(f"edit_prod_{id_producto}", False)
-
-            if editando:
-                st.markdown(f"### ✏️ Editando producto ID {id_producto}")
-                col1, col2 = st.columns(2)
-                nombre_edit = col1.text_input("Nombre", value=producto["nombre"], key=f"nombre_{id_producto}")
-                precio_edit = col2.number_input("Precio (₡)", value=float(producto["precio_unitario"]), step=100.0, format="%.2f", key=f"precio_{id_producto}")
-                descripcion_edit = st.text_input("Descripción", value=producto["descripcion"] or "", key=f"desc_{id_producto}")
-                stock_edit = st.number_input("Stock", value=int(producto["stock"]), step=1, key=f"stock_{id_producto}")
-                col1, col2 = st.columns(2)
-                if col1.button("💾 Guardar", key=f"guardar_{id_producto}"):
-                    actualizar_producto(id_producto, {
-                        "nombre": nombre_edit,
-                        "precio_unitario": precio_edit,
-                        "descripcion": descripcion_edit,
-                        "stock": stock_edit
+                st.session_state.choices_extra_cols.update({"canton_key","distrito_key"})
+                st.session_state.choices_ext_rows = [r for r in st.session_state.choices_ext_rows
+                                                     if r.get("list_name") not in ("list_distrito","list_barrio")]
+                distritos = sub[[c_col, d_col]].drop_duplicates().sort_values([c_col, d_col])
+                barrios   = sub[[d_col, b_col]].drop_duplicates().sort_values([d_col, b_col])
+                for _, row in distritos.iterrows():
+                    st.session_state.choices_ext_rows.append({
+                        "list_name":"list_distrito",
+                        "name":slugify_name(str(row[d_col])),
+                        "label":str(row[d_col]),
+                        "canton_key":str(row[c_col])
                     })
-                    st.session_state[f"edit_prod_{id_producto}"] = False
-                    st.success("✅ Producto actualizado")
-                    st.rerun()
-                if col2.button("❌ Cancelar", key=f"cancelar_{id_producto}"):
-                    st.session_state[f"edit_prod_{id_producto}"] = False
-                    st.rerun()
+                for _, row in barrios.iterrows():
+                    st.session_state.choices_ext_rows.append({
+                        "list_name":"list_barrio",
+                        "name":slugify_name(str(row[b_col])),
+                        "label":str(row[b_col]),
+                        "distrito_key":str(row[d_col])
+                    })
+                st.session_state.cascadas_cargadas = True
+                st.success("Cascadas cargadas desde Excel subido.")
             else:
-                cols = st.columns([2, 2, 2, 2, 1, 1])
-                cols[0].markdown(f"📦 **{producto['nombre']}**")
-                cols[1].markdown(f"🧾 {producto['descripcion'] or '—'}")
-                cols[2].markdown(f"💰 ₡{producto['precio_unitario']:,.2f}")
-                cols[3].markdown(f"📦 Stock: {producto['stock']}")
-                if cols[4].button("✏️", key=f"edit_{id_producto}"):
-                    st.session_state[f"edit_prod_{id_producto}"] = True
-                    st.rerun()
-                if cols[5].button("🗑️", key=f"del_{id_producto}"):
-                    eliminar_producto(id_producto)
-                    st.success("✅ Producto eliminado")
-                    st.rerun()
+                st.session_state.ruta_excel_cascadas = ruta_excel
+                cargar_cascadas_desde_excel(ruta_excel)
+                st.session_state.cascadas_cargadas = True
+                st.success("Cascadas cargadas desde ruta.")
+        except Exception as e:
+            st.error(f"No se pudieron cargar las cascadas: {e}")
+
+    if col_c2.button("Limpiar cascadas", use_container_width=True):
+        st.session_state.choices_ext_rows = [r for r in st.session_state.choices_ext_rows
+                                             if r.get("list_name") not in ("list_distrito","list_barrio")]
+        st.session_state.cascadas_cargadas = False
+        st.info("Cascadas eliminadas de la sesión.")
+
+    st.markdown("---")
+    st.caption("💾 Exporta/Importa tu proyecto (JSON)")
+    col_exp, col_imp = st.columns(2)
+    with col_exp:
+        if st.button("Exportar proyecto (JSON)", use_container_width=True):
+            proj = {
+                "form_title": form_title,
+                "idioma": idioma,
+                "version": version,
+                "preguntas": st.session_state.preguntas,
+                "reglas_visibilidad": st.session_state.reglas_visibilidad,
+                "reglas_finalizar": st.session_state.reglas_finalizar
+            }
+            jbuf = BytesIO(json.dumps(proj, ensure_ascii=False, indent=2).encode("utf-8"))
+            st.download_button("Descargar JSON", data=jbuf, file_name="proyecto_encuesta.json",
+                               mime="application/json", use_container_width=True)
+    with col_imp:
+        up = st.file_uploader("Importar JSON", type=["json"], label_visibility="collapsed")
+        if up is not None:
+            try:
+                raw = up.read().decode("utf-8")
+                data = json.loads(raw)
+                st.session_state.preguntas = list(data.get("preguntas", []))
+                st.session_state.reglas_visibilidad = list(data.get("reglas_visibilidad", []))
+                st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
+                _rerun()
+            except Exception as e:
+                st.error(f"No se pudo importar el JSON: {e}")
+# ------------------------------------------------------------------------------------------
+# Constructor: Agregar nuevas preguntas
+# ------------------------------------------------------------------------------------------
+st.subheader("📝 Diseña tus preguntas")
+
+with st.form("form_add_q", clear_on_submit=False):
+    tipo_ui = st.selectbox("Tipo de pregunta", options=TIPOS)
+    label = st.text_input("Etiqueta (texto exacto)")
+    sugerido = slugify_name(label) if label else ""
+    col_n1, col_n2, col_n3 = st.columns([2,1,1])
+    with col_n1:
+        name = st.text_input("Nombre interno (XLSForm 'name')", value=sugerido)
+    with col_n2:
+        required = st.checkbox("Requerida", value=False)
+    with col_n3:
+        appearance = st.text_input("Appearance (opcional)", value="")
+
+    opciones = []
+    if tipo_ui in ("Selección única","Selección múltiple"):
+        st.markdown("**Opciones (una por línea)**")
+        txt_opts = st.text_area("Opciones", height=120)
+        if txt_opts.strip():
+            opciones = [o.strip() for o in txt_opts.splitlines() if o.strip()]
+
+    add = st.form_submit_button("➕ Agregar pregunta")
+
+if add:
+    if not label.strip():
+        st.warning("Agrega una etiqueta.")
     else:
-        st.info("No hay productos registrados todavía.")
-# ---------------------------------------------
-# 📅 PESTAÑA: Gestión de Citas
-# ---------------------------------------------
-elif menu == "📅 Citas":
-    from database import obtener_citas, actualizar_estado_cita, actualizar_cita, eliminar_cita
-    from datetime import datetime, date, time
-    import pandas as pd
+        base = slugify_name(name or label)
+        usados = {q["name"] for q in st.session_state.preguntas}
+        unico = asegurar_nombre_unico(base, usados)
+        nueva = {
+            "tipo_ui": tipo_ui,
+            "label": label.strip(),
+            "name": unico,
+            "required": required,
+            "opciones": opciones,
+            "appearance": (appearance.strip() or None),
+            "choice_filter": None,
+            "relevant": None
+        }
+        st.session_state.preguntas.append(nueva)
+        st.success(f"Pregunta agregada: **{label}** (name: `{unico}`)")
+# ------------------------------------------------------------------------------------------
+# Panel de Condicionales (mostrar / finalizar)
+# ------------------------------------------------------------------------------------------
+st.subheader("🔀 Condicionales (mostrar / finalizar)")
 
-    st.title("📅 Gestión de Citas")
-    st.markdown("Revisa y administra las citas solicitadas por los clientes.")
+if not st.session_state.preguntas:
+    st.info("Agrega preguntas para definir condicionales.")
+else:
+    # ----- Reglas de visibilidad -----
+    with st.expander("👁️ Mostrar pregunta si se cumple condición", expanded=False):
+        names = [q["name"] for q in st.session_state.preguntas]
+        labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
 
-    citas = obtener_citas()
-    df = pd.DataFrame(citas)
+        target = st.selectbox("Pregunta a mostrar (target)", options=names, format_func=lambda n: f"{n} — {labels_by_name[n]}")
+        src = st.selectbox("Depende de (source)", options=names, format_func=lambda n: f"{n} — {labels_by_name[n]}")
+        op = st.selectbox("Operador", options=["=", "selected"], help="= para select_one; selected para select_multiple")
 
-    if df.empty:
-        st.info("No hay citas registradas.")
-    else:
-        estados = ["todas", "pendiente", "aceptada", "rechazada"]
-        estado_filtro = st.selectbox("🔍 Filtrar por estado", estados)
-
-        if estado_filtro != "todas":
-            df = df[df["estado"] == estado_filtro]
-
-        for cita in df.itertuples():
-            with st.container():
-                st.markdown(f"### 🧾 Cita ID {cita.id}")
-                col1, col2, col3 = st.columns(3)
-                fecha_str = cita.fecha.strftime("%d/%m/%Y") if not isinstance(cita.fecha, str) else cita.fecha
-                col1.markdown(f"**📅 Fecha:** {fecha_str}")
-                col2.markdown(f"**🕒 Hora:** {cita.hora}")
-                col3.markdown(f"**🧴 Servicio:** {cita.servicio}")
-                st.markdown(f"**👤 Cliente:** {cita.cliente_nombre}")
-                st.markdown(f"**✂️ Barbero asignado:** {cita.barbero or 'Sin asignar'}")
-                st.markdown(f"**📌 Estado actual:** `{cita.estado}`")
-
-                with st.expander("✏️ Editar cita"):
-                    # Convertir fecha a formato compatible
-                    if isinstance(cita.fecha, str):
-                        try:
-                            valor_fecha = datetime.strptime(cita.fecha, "%d/%m/%Y").date()
-                        except ValueError:
-                            valor_fecha = datetime.strptime(cita.fecha, "%Y-%m-%d").date()
-                    else:
-                        valor_fecha = cita.fecha
-
-                    nueva_fecha = st.date_input("📅 Nueva fecha", value=valor_fecha, key=f"fecha_{cita.id}")
-
-                    # Convertir hora a formato time
-                    try:
-                        hora_original = datetime.strptime(cita.hora, "%H:%M").time()
-                    except ValueError:
-                        hora_original = datetime.strptime(cita.hora, "%H:%M:%S").time()
-
-                    nueva_hora = st.time_input("🕒 Nueva hora", value=hora_original, key=f"hora_{cita.id}")
-                    nuevo_barbero = st.text_input("✂️ Asignar barbero", value=cita.barbero or "", key=f"barbero_{cita.id}")
-                    nueva_fecha_str = nueva_fecha.strftime("%Y-%m-%d")
-                    nueva_hora_str = nueva_hora.strftime("%H:%M")
-
-                    col_e1, col_e2 = st.columns(2)
-                    if col_e1.button("💾 Guardar cambios", key=f"guardar_cita_{cita.id}"):
-                        actualizar_cita(cita.id, {
-                            "fecha": nueva_fecha_str,
-                            "hora": nueva_hora_str,
-                            "barbero": nuevo_barbero
-                        })
-                        st.success("✅ Cita actualizada")
-                        st.rerun()
-
-                    if col_e2.button("🗑️ Eliminar cita", key=f"eliminar_cita_{cita.id}"):
-                        eliminar_cita(cita.id)
-                        st.success("✅ Cita eliminada")
-                        st.rerun()
-
-                col_a1, col_a2 = st.columns(2)
-                if cita.estado == "pendiente":
-                    if col_a1.button("✅ Aceptar", key=f"aceptar_{cita.id}"):
-                        actualizar_estado_cita(cita.id, "aceptada")
-                        st.success("📬 Cita aceptada")
-                        st.rerun()
-                    if col_a2.button("❌ Rechazar", key=f"rechazar_{cita.id}"):
-                        actualizar_estado_cita(cita.id, "rechazada")
-                        st.warning("📭 Cita rechazada")
-                        st.rerun()
-
-
-# ---------------------------------------------
-# 💵 PESTAÑA 4: Finanzas
-# ---------------------------------------------
-elif menu == "💵 Finanzas":
-    from database import (
-        insertar_ingreso,
-        obtener_ingresos,
-        actualizar_ingreso,
-        eliminar_ingreso,
-        insertar_gasto,
-        obtener_gastos,
-        actualizar_gasto,
-        eliminar_gasto
-    )
-
-    st.title("💵 Control de Finanzas")
-    st.markdown("Registra ingresos y gastos de la barbería, y consulta el balance general.")
-
-    # ----------- FORMULARIO INGRESO -----------
-    st.subheader("➕ Agregar Ingreso")
-    with st.form("form_ingreso"):
-        col1, col2 = st.columns(2)
-        fecha_i = col1.date_input("Fecha del ingreso", value=date.today())
-        concepto_i = col2.text_input("Concepto del ingreso")
-        monto_i = st.number_input("Monto (₡)", min_value=0.0, step=500.0, format="%.2f", key="monto_ingreso")
-        observacion_i = st.text_area("Observación (opcional)")
-        enviar_i = st.form_submit_button("💾 Guardar ingreso")
-        if enviar_i:
-            if not concepto_i.strip():
-                st.warning("⚠️ El concepto es obligatorio.")
-            else:
-                insertar_ingreso(str(fecha_i), concepto_i.strip(), monto_i, observacion_i.strip())
-                st.success("✅ Ingreso registrado")
-                st.rerun()
-
-    # ----------- FORMULARIO GASTO -----------
-    st.subheader("➖ Agregar Gasto")
-    with st.form("form_gasto"):
-        col1, col2 = st.columns(2)
-        fecha_g = col1.date_input("Fecha del gasto", value=date.today())
-        concepto_g = col2.text_input("Concepto del gasto")
-        monto_g = st.number_input("Monto (₡)", min_value=0.0, step=500.0, format="%.2f", key="monto_gasto")
-        observacion_g = st.text_area("Observación (opcional)", key="obs_gasto")
-        enviar_g = st.form_submit_button("💾 Guardar gasto")
-        if enviar_g:
-            if not concepto_g.strip():
-                st.warning("⚠️ El concepto es obligatorio.")
-            else:
-                insertar_gasto(str(fecha_g), concepto_g.strip(), monto_g, observacion_g.strip())
-                st.success("✅ Gasto registrado")
-                st.rerun()
-
-    st.divider()
-
-    # ----------- HISTORIAL Y BALANCE -----------
-    st.subheader("📊 Resumen de movimientos")
-
-    ingresos = obtener_ingresos()
-    gastos = obtener_gastos()
-
-    df_i = pd.DataFrame(ingresos) if ingresos else pd.DataFrame()
-    df_g = pd.DataFrame(gastos) if gastos else pd.DataFrame()
-
-    total_i = sum(i["monto"] for i in ingresos)
-    total_g = sum(g["monto"] for g in gastos)
-    balance = total_i - total_g
-    color = "green" if balance >= 0 else "red"
-
-    st.markdown(f"**💰 Total Ingresos:** ₡{total_i:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    st.markdown(f"**💸 Total Gastos:** ₡{total_g:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    st.markdown(
-        f"<strong>🧾 Balance general:</strong> <span style='color:{color}; font-weight:bold;'>₡{balance:,.2f}</span>"
-        .replace(",", "X").replace(".", ",").replace("X", "."), unsafe_allow_html=True
-    )
-
-    st.divider()
-
-    # ----------- LISTADOS Y DESCARGA -----------
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### 📋 Ingresos")
-        if not df_i.empty:
-            df_i["fecha"] = pd.to_datetime(df_i["fecha"]).dt.strftime("%d/%m/%Y")
-            df_i["monto"] = df_i["monto"].map(lambda x: round(x, 2))
-            for ingreso in ingresos:
-                id = ingreso["id"]
-                editando = st.session_state.get(f"edit_ingreso_{id}", False)
-
-                if editando:
-                    st.markdown(f"#### ✏️ Editando ingreso ID {id}")
-                    f = st.date_input("Fecha", value=pd.to_datetime(ingreso["fecha"]), key=f"fecha_i_{id}")
-                    c = st.text_input("Concepto", value=ingreso["concepto"], key=f"concepto_i_{id}")
-                    m = st.number_input("Monto (₡)", value=float(ingreso["monto"]), key=f"monto_i_{id}", step=500.0)
-                    o = st.text_input("Observación", value=ingreso["observacion"] or "", key=f"obs_i_{id}")
-                    col1a, col2a = st.columns(2)
-                    if col1a.button("💾 Guardar", key=f"guardar_i_{id}"):
-                        actualizar_ingreso(id, {"fecha": str(f), "concepto": c, "monto": m, "observacion": o})
-                        st.session_state[f"edit_ingreso_{id}"] = False
-                        st.rerun()
-                    if col2a.button("❌ Cancelar", key=f"cancelar_i_{id}"):
-                        st.session_state[f"edit_ingreso_{id}"] = False
-                        st.rerun()
-                else:
-                    st.markdown(f"📅 {ingreso['fecha']} | 💰 ₡{ingreso['monto']:,.2f} | 📄 {ingreso['concepto']}")
-                    st.markdown(f"📝 {ingreso['observacion'] or '—'}")
-                    col1b, col2b = st.columns(2)
-                    if col1b.button("✏️ Editar", key=f"editar_i_{id}"):
-                        st.session_state[f"edit_ingreso_{id}"] = True
-                        st.rerun()
-                    if col2b.button("🗑️ Eliminar", key=f"eliminar_i_{id}"):
-                        eliminar_ingreso(id)
-                        st.success("✅ Ingreso eliminado")
-                        st.rerun()
+        src_q = next((q for q in st.session_state.preguntas if q["name"] == src), None)
+        vals = []
+        if src_q and src_q["opciones"]:
+            vals = st.multiselect("Valores que activan la visibilidad (elige texto; internamente se usa el 'name' slug)", options=src_q["opciones"])
+            vals = [slugify_name(v) for v in vals]
         else:
-            st.info("No hay ingresos registrados.")
+            manual = st.text_input("Valor (si la pregunta no tiene opciones)")
+            vals = [slugify_name(manual)] if manual.strip() else []
 
-    with col2:
-        st.markdown("### 📋 Gastos")
-        if not df_g.empty:
-            df_g["fecha"] = pd.to_datetime(df_g["fecha"]).dt.strftime("%d/%m/%Y")
-            df_g["monto"] = df_g["monto"].map(lambda x: round(x, 2))
-            for gasto in gastos:
-                id = gasto["id"]
-                editando = st.session_state.get(f"edit_gasto_{id}", False)
+        if st.button("➕ Agregar regla de visibilidad"):
+            if target == src:
+                st.error("Target y Source no pueden ser la misma pregunta.")
+            elif not vals:
+                st.error("Indica al menos un valor.")
+            else:
+                st.session_state.reglas_visibilidad.append({"target": target, "src": src, "op": op, "values": vals})
+                st.success("Regla agregada.")
+                _rerun()
 
-                if editando:
-                    st.markdown(f"#### ✏️ Editando gasto ID {id}")
-                    f = st.date_input("Fecha", value=pd.to_datetime(gasto["fecha"]), key=f"fecha_g_{id}")
-                    c = st.text_input("Concepto", value=gasto["concepto"], key=f"concepto_g_{id}")
-                    m = st.number_input("Monto (₡)", value=float(gasto["monto"]), key=f"monto_g_{id}", step=500.0)
-                    o = st.text_input("Observación", value=gasto["observacion"] or "", key=f"obs_g_{id}")
-                    col1a, col2a = st.columns(2)
-                    if col1a.button("💾 Guardar", key=f"guardar_g_{id}"):
-                        actualizar_gasto(id, {"fecha": str(f), "concepto": c, "monto": m, "observacion": o})
-                        st.session_state[f"edit_gasto_{id}"] = False
-                        st.rerun()
-                    if col2a.button("❌ Cancelar", key=f"cancelar_g_{id}"):
-                        st.session_state[f"edit_gasto_{id}"] = False
-                        st.rerun()
-                else:
-                    st.markdown(f"📅 {gasto['fecha']} | 💸 ₡{gasto['monto']:,.2f} | 📄 {gasto['concepto']}")
-                    st.markdown(f"📝 {gasto['observacion'] or '—'}")
-                    col1b, col2b = st.columns(2)
-                    if col1b.button("✏️ Editar", key=f"editar_g_{id}"):
-                        st.session_state[f"edit_gasto_{id}"] = True
-                        st.rerun()
-                    if col2b.button("🗑️ Eliminar", key=f"eliminar_g_{id}"):
-                        eliminar_gasto(id)
-                        st.success("✅ Gasto eliminado")
-                        st.rerun()
+        if st.session_state.reglas_visibilidad:
+            st.markdown("**Reglas de visibilidad actuales:**")
+            for i, r in enumerate(st.session_state.reglas_visibilidad):
+                st.write(f"- Mostrar **{r['target']}** si **{r['src']}** {r['op']} {r['values']}")
+                if st.button(f"Eliminar regla #{i+1}", key=f"del_vis_{i}"):
+                    del st.session_state.reglas_visibilidad[i]
+                    _rerun()
+
+    # ----- Reglas de finalizar -----
+    with st.expander("⏹️ Finalizar temprano si se cumple condición", expanded=False):
+        names = [q["name"] for q in st.session_state.preguntas]
+        labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
+        src2 = st.selectbox("Condición basada en", options=names, format_func=lambda n: f"{n} — {labels_by_name[n]}", key="final_src")
+        op2 = st.selectbox("Operador", options=["=", "selected", "!="], key="final_op")
+        src2_q = next((q for q in st.session_state.preguntas if q["name"] == src2), None)
+        vals2 = []
+        if src2_q and src2_q["opciones"]:
+            vals2 = st.multiselect("Valores que disparan el fin (se usan como 'name' slug)", options=src2_q["opciones"], key="final_vals")
+            vals2 = [slugify_name(v) for v in vals2]
         else:
-            st.info("No hay gastos registrados.")
-# ---------------------------------------------
-# 📊 PESTAÑA 5: Reporte General
-# ---------------------------------------------
-elif menu == "📊 Reporte General":
-    from database import obtener_cortes, obtener_ingresos, obtener_gastos
+            manual2 = st.text_input("Valor (si no hay opciones)", key="final_manual")
+            vals2 = [slugify_name(manual2)] if manual2.strip() else []
+        if st.button("➕ Agregar regla de finalización"):
+            if not vals2:
+                st.error("Indica al menos un valor.")
+            else:
+                idx_src = next((i for i, q in enumerate(st.session_state.preguntas) if q["name"] == src2), 0)
+                st.session_state.reglas_finalizar.append({"src": src2, "op": op2, "values": vals2, "index_src": idx_src})
+                st.success("Regla agregada.")
+                _rerun()
 
-    st.title("📊 Reporte General")
-    st.markdown("Resumen de actividad y finanzas por período de tiempo.")
+        if st.session_state.reglas_finalizar:
+            st.markdown("**Reglas de finalización actuales:**")
+            for i, r in enumerate(st.session_state.reglas_finalizar):
+                st.write(f"- Si **{r['src']}** {r['op']} {r['values']} ⇒ ocultar lo que sigue (efecto fin)")
+                if st.button(f"Eliminar regla fin #{i+1}", key=f"del_fin_{i}"):
+                    del st.session_state.reglas_finalizar[i]
+                    _rerun()
+# ------------------------------------------------------------------------------------------
+# Lista / Ordenado / Edición (completa)
+# ------------------------------------------------------------------------------------------
+st.subheader("📚 Preguntas (ordénalas y edítalas)")
 
-    # --------- Filtro de fechas ---------
-    col1, col2 = st.columns(2)
-    fecha_inicio = col1.date_input("📅 Desde", value=date(2025, 1, 1))
-    fecha_fin = col2.date_input("📅 Hasta", value=date.today())
+if not st.session_state.preguntas:
+    st.info("Aún no has agregado preguntas.")
+else:
+    for idx, q in enumerate(st.session_state.preguntas):
+        with st.container(border=True):
+            c1, c2, c3, c4, c5 = st.columns([4, 2, 2, 2, 2])
+            c1.markdown(f"**{idx+1}. {q['label']}**")
+            meta = f"type: {q['tipo_ui']}  •  name: `{q['name']}`  •  requerida: {'sí' if q['required'] else 'no'}"
+            if q.get("appearance"): meta += f"  •  appearance: `{q['appearance']}`"
+            if q.get("choice_filter"): meta += f"  •  choice_filter: `{q['choice_filter']}`"
+            if q.get("relevant"): meta += f"  •  relevant: `{q['relevant']}`"
+            c1.caption(meta)
+            if q["tipo_ui"] in ("Selección única","Selección múltiple"):
+                c1.caption("Opciones: " + ", ".join(q.get("opciones") or []))
 
-    cortes = obtener_cortes()
-    ingresos = obtener_ingresos()
-    gastos = obtener_gastos()
+            up = c2.button("⬆️ Subir", key=f"up_{idx}", use_container_width=True, disabled=(idx == 0))
+            down = c3.button("⬇️ Bajar", key=f"down_{idx}", use_container_width=True, disabled=(idx == len(st.session_state.preguntas)-1))
+            edit = c4.button("✏️ Editar", key=f"edit_{idx}", use_container_width=True)
+            borrar = c5.button("🗑️ Eliminar", key=f"del_{idx}", use_container_width=True)
 
-    df_cortes = pd.DataFrame(cortes)
-    df_ingresos = pd.DataFrame(ingresos)
-    df_gastos = pd.DataFrame(gastos)
+            if up:
+                st.session_state.preguntas[idx-1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx-1]
+                _rerun()
+            if down:
+                st.session_state.preguntas[idx+1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx+1]
+                _rerun()
 
-    # --------- Filtros por fecha ---------
-    def filtrar_por_fecha(df, columna="fecha"):
-        if df.empty:
-            return df
-        df[columna] = pd.to_datetime(df[columna]).dt.date
-        return df[(df[columna] >= fecha_inicio) & (df[columna] <= fecha_fin)]
+            if edit:
+                st.markdown("**Editar esta pregunta**")
+                ne_label = st.text_input("Etiqueta", value=q["label"], key=f"e_label_{idx}")
+                ne_name = st.text_input("Nombre interno (name)", value=q["name"], key=f"e_name_{idx}")
+                ne_required = st.checkbox("Requerida", value=q["required"], key=f"e_req_{idx}")
+                ne_appearance = st.text_input("Appearance", value=q.get("appearance") or "", key=f"e_app_{idx}")
+                ne_choice_filter = st.text_input("choice_filter (opcional)", value=q.get("choice_filter") or "", key=f"e_cf_{idx}")
+                ne_relevant = st.text_input("relevant (opcional – se autogenera por reglas)", value=q.get("relevant") or "", key=f"e_rel_{idx}")
 
-    df_cortes = filtrar_por_fecha(df_cortes)
-    df_ingresos = filtrar_por_fecha(df_ingresos)
-    df_gastos = filtrar_por_fecha(df_gastos)
+                ne_opciones = q.get("opciones") or []
+                if q["tipo_ui"] in ("Selección única","Selección múltiple"):
+                    ne_opts_txt = st.text_area("Opciones (una por línea)", value="\n".join(ne_opciones), key=f"e_opts_{idx}")
+                    ne_opciones = [o.strip() for o in ne_opts_txt.splitlines() if o.strip()]
 
-    # --------- Cortes realizados ---------
-    st.subheader("💈 Cortes realizados")
-    if not df_cortes.empty:
-        total_cortes = len(df_cortes)
-        total_por_barbero = df_cortes["barbero"].value_counts().reset_index()
-        total_por_barbero.columns = ["Barbero", "Cantidad de cortes"]
-        st.markdown(f"**Total de cortes:** {total_cortes}")
-        st.dataframe(total_por_barbero, use_container_width=True)
-    else:
-        st.info("No hay cortes registrados en el rango seleccionado.")
+                col_ok, col_cancel = st.columns(2)
+                if col_ok.button("💾 Guardar cambios", key=f"e_save_{idx}", use_container_width=True):
+                    new_base = slugify_name(ne_name or ne_label)
+                    usados = {qq["name"] for j, qq in enumerate(st.session_state.preguntas) if j != idx}
+                    ne_name_final = new_base if new_base not in usados else asegurar_nombre_unico(new_base, usados)
 
-    # --------- Ingresos ---------
-    st.subheader("💰 Ingresos")
-    if not df_ingresos.empty:
-        total_ingresos = df_ingresos["monto"].sum()
-        st.markdown(f"**Total de ingresos:** ₡{total_ingresos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        st.dataframe(df_ingresos[["fecha", "concepto", "monto", "observacion"]], use_container_width=True)
-    else:
-        st.info("No hay ingresos registrados en el rango seleccionado.")
+                    st.session_state.preguntas[idx]["label"] = ne_label.strip() or q["label"]
+                    st.session_state.preguntas[idx]["name"] = ne_name_final
+                    st.session_state.preguntas[idx]["required"] = ne_required
+                    st.session_state.preguntas[idx]["appearance"] = ne_appearance.strip() or None
+                    st.session_state.preguntas[idx]["choice_filter"] = ne_choice_filter.strip() or None
+                    st.session_state.preguntas[idx]["relevant"] = ne_relevant.strip() or None
+                    if q["tipo_ui"] in ("Selección única","Selección múltiple"):
+                        st.session_state.preguntas[idx]["opciones"] = ne_opciones
+                    st.success("Cambios guardados.")
+                    _rerun()
+                if col_cancel.button("Cancelar", key=f"e_cancel_{idx}", use_container_width=True):
+                    _rerun()
 
-    # --------- Gastos ---------
-    st.subheader("💸 Gastos")
-    if not df_gastos.empty:
-        total_gastos = df_gastos["monto"].sum()
-        st.markdown(f"**Total de gastos:** ₡{total_gastos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        st.dataframe(df_gastos[["fecha", "concepto", "monto", "observacion"]], use_container_width=True)
-    else:
-        st.info("No hay gastos registrados en el rango seleccionado.")
+            if borrar:
+                del st.session_state.preguntas[idx]
+                st.warning("Pregunta eliminada.")
+                _rerun()
+# ------------------------------------------------------------------------------------------
+# Construcción XLSForm (páginas, condicionales y logo)
+# ------------------------------------------------------------------------------------------
+def _get_logo_media_name():
+    return logo_media_name
 
-    # --------- Balance final ---------
-    st.divider()
-    st.subheader("📉 Balance del período")
+def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
+                      reglas_vis, reglas_fin):
+    survey_rows = []
+    choices_rows = []
 
-    balance = total_ingresos - total_gastos
-    color = "green" if balance >= 0 else "red"
-    st.markdown(
-        f"<strong>Balance final:</strong> <span style='color:{color}; font-weight:bold;'>₡{balance:,.2f}</span>"
-        .replace(",", "X").replace(".", ",").replace("X", "."),
-        unsafe_allow_html=True
-    )
+    vis_by_target = {}
+    for r in reglas_vis:
+        vis_by_target.setdefault(r["target"], []).append({
+            "src": r["src"], "op": r.get("op","="), "values": r.get("values",[])
+        })
 
-    # --------- Descargar resumen Excel ---------
-    st.divider()
-    st.subheader("⬇️ Descargar respaldo")
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_cortes.to_excel(writer, index=False, sheet_name="Cortes")
-        df_ingresos.to_excel(writer, index=False, sheet_name="Ingresos")
-        df_gastos.to_excel(writer, index=False, sheet_name="Gastos")
+    fin_conds = []
+    for r in reglas_fin:
+        cond = build_relevant_expr([{"src": r["src"], "op": r.get("op","="), "values": r.get("values",[])}])
+        if cond:
+            fin_conds.append((r["index_src"], cond))
 
+    # ------------------- Página 1: INTRO -------------------
+    survey_rows.append({"type":"begin_group","name":"p1_intro","label":"Introducción","appearance":"field-list"})
+    survey_rows.append({"type":"note","name":"intro_logo","label":form_title, "media::image": _get_logo_media_name()})
+    survey_rows.append({"type":"note","name":"intro_texto","label":INTRO_COMUNIDAD})
+    survey_rows.append({"type":"end_group","name":"p1_end"})
+
+    # Sets por página
+    p2 = {"canton","distrito","barrio","edad","genero","escolaridad","relacion_zona"}
+    p3 = {"se_siente_seguro","motivo_inseguridad","comparacion_anual","motivo_comparacion"}
+    p4 = {"lugar_entretenimiento","espacios_recreativos","lugar_residencia","paradas_estaciones",
+          "puentes_peatonales","transporte_publico","zona_bancaria","zona_comercio",
+          "zonas_residenciales","lugares_turisticos","zona_mas_insegura","porque_insegura"}
+    p5 = {"incidencia_delitos","venta_drogas","delitos_vida","delitos_sexuales","asaltos","estafas",
+          "robo_fuerza","abandono_personas","explotacion_infantil","delitos_ambientales","trata_personas",
+          "vi","vi_victima_ultimo_anno","vi_tipos","vi_fp_abordaje","vi_fp_eval"}
+    p6 = {"riesgos_sociales","falta_inversion_social","consumo_drogas","infra_vial","bunker"}
+    p7 = {"info_grupo_delito","desc_info_grupo","victimizacion_12m",
+          "delito_victima_si","modo_operar_si","horario_hecho_si",
+          "delito_victima_no","motivo_no_denuncia","modo_operar_no","horario_hecho_no",
+          "fp_calificacion","fp_24m","conoce_policias","conversa_policias",
+          "sugerencia_fp","sugerencia_muni","otra_info","contacto_voluntario"}
+
+    def add_q(q, idx):
+        x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"])
+
+        rel_manual = q.get("relevant") or None
+        rel_panel  = build_relevant_expr(vis_by_target.get(q["name"], []))
+
+        nots = []
+        for idx_src, cond in fin_conds:
+            if idx_src < idx:
+                nots.append(xlsform_not(cond))
+        rel_fin = "(" + " and ".join(nots) + ")" if nots else None
+
+        parts = [p for p in [rel_manual, rel_panel, rel_fin] if p]
+        rel_final = parts[0] if parts and len(parts)==1 else ("(" + ") and (".join(parts) + ")" if parts else None)
+
+        row = {"type": x_type, "name": q["name"], "label": q["label"]}
+        if q.get("required"): row["required"] = "yes"
+        app = q.get("appearance") or default_app
+        if app: row["appearance"] = app
+        if q.get("choice_filter"): row["choice_filter"] = q["choice_filter"]
+        if rel_final: row["relevant"] = rel_final
+        survey_rows.append(row)
+
+        if list_name:
+            usados = set()
+            for opt_label in (q.get("opciones") or []):
+                base = slugify_name(opt_label)
+                opt_name = asegurar_nombre_unico(base, usados)
+                usados.add(opt_name)
+                choices_rows.append({"list_name": list_name, "name": opt_name, "label": str(opt_label)})
+
+    def add_page(group_name, page_label, names_set):
+        survey_rows.append({"type":"begin_group","name":group_name,"label":page_label,"appearance":"field-list"})
+        for i, q in enumerate(preguntas):
+            if q["name"] in names_set:
+                add_q(q, i)
+        survey_rows.append({"type":"end_group","name":f"{group_name}_end"})
+
+    add_page("p2_demograficos", "Datos demográficos", p2)
+    add_page("p3_sentimiento", "Sentimiento de inseguridad en el barrio", p3)
+    add_page("p4_lugares", "Indique cómo se siente en los siguientes lugares de su barrio", p4)
+    add_page("p5_incidencia", "Incidencia relacionada a delitos", p5)
+    add_page("p6_riesgos", "Riesgos Sociales", p6)
+    add_page("p7_info_adicional", "Información adicional", p7)
+
+    # Choices extendidos (cascadas)
+    if "choices_ext_rows" in st.session_state:
+        for r in st.session_state.choices_ext_rows:
+            choices_rows.append(dict(r))
+
+    # DataFrames
+    survey_cols_all = set()
+    for r in survey_rows:
+        survey_cols_all.update(r.keys())
+    survey_cols = [c for c in ["type","name","label","required","appearance","choice_filter","relevant","media::image"] if c in survey_cols_all]
+    for k in sorted(survey_cols_all):
+        if k not in survey_cols:
+            survey_cols.append(k)
+    df_survey = pd.DataFrame(survey_rows, columns=survey_cols)
+
+    choices_cols_all = set()
+    for r in choices_rows:
+        choices_cols_all.update(r.keys())
+    base_choice_cols = ["list_name","name","label"]
+    for extra in sorted(choices_cols_all):
+        if extra not in base_choice_cols:
+            base_choice_cols.append(extra)
+    df_choices = pd.DataFrame(choices_rows, columns=base_choice_cols) if choices_rows else pd.DataFrame(columns=base_choice_cols)
+
+    df_settings = pd.DataFrame([{
+        "form_title": form_title,
+        "version": version,
+        "default_language": idioma,
+        "style": "pages"
+    }], columns=["form_title","version","default_language","style"])
+
+    return df_survey, df_choices, df_settings
+
+def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: str):
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df_survey.to_excel(writer,  sheet_name="survey",   index=False)
+        df_choices.to_excel(writer, sheet_name="choices",  index=False)
+        df_settings.to_excel(writer, sheet_name="settings", index=False)
+        wb = writer.book
+        fmt_hdr = wb.add_format({"bold": True, "align": "left"})
+        for sheet, df in (("survey", df_survey), ("choices", df_choices), ("settings", df_settings)):
+            ws = writer.sheets[sheet]
+            ws.freeze_panes(1, 0)
+            ws.set_row(0, None, fmt_hdr)
+            cols = list(df.columns)
+            for col_idx, col_name in enumerate(cols):
+                ws.set_column(col_idx, col_idx, max(14, min(40, len(str(col_name)) + 10)))
+    buffer.seek(0)
     st.download_button(
-        label="📁 Descargar respaldo en Excel",
-        data=output.getvalue(),
-        file_name="resumen_general.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        label=f"📥 Descargar XLSForm ({nombre_archivo})",
+        data=buffer,
+        file_name=nombre_archivo,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+# ------------------------------------------------------------------------------------------
+# Exportar / Vista previa XLSForm
+# ------------------------------------------------------------------------------------------
+st.markdown("---")
+st.subheader("📦 Generar XLSForm (Excel) para Survey123")
+
+st.caption("""
+Incluye:
+- **survey** con tipos, `relevant`, `choice_filter`, `appearance`, `media::image` (portada),
+- **choices** (con columnas extra como `canton_key`/`distrito_key` para cascadas),
+- **settings** con título, versión, idioma y **style = pages**.
+""")
+
+if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st.session_state.preguntas):
+    try:
+        names = [q["name"] for q in st.session_state.preguntas]
+        if len(names) != len(set(names)):
+            st.error("Hay 'name' duplicados. Edita las preguntas para que cada 'name' sea único.")
+        else:
+            df_survey, df_choices, df_settings = construir_xlsform(
+                st.session_state.preguntas,
+                form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
+                idioma=st.session_state.get("idioma", "es") if False else "es",
+                version=version.strip() or datetime.now().strftime("%Y%m%d%H%M"),
+                reglas_vis=st.session_state.reglas_visibilidad,
+                reglas_fin=st.session_state.reglas_finalizar
+            )
+
+            st.success("XLSForm construido. Vista previa:")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown("**Hoja: survey**")
+                st.dataframe(df_survey, use_container_width=True, hide_index=True)
+            with c2:
+                st.markdown("**Hoja: choices**")
+                st.dataframe(df_choices, use_container_width=True, hide_index=True)
+            with c3:
+                st.markdown("**Hoja: settings**")
+                st.dataframe(df_settings, use_container_width=True, hide_index=True)
+
+            nombre_archivo = slugify_name(form_title) + "_xlsform.xlsx"
+            descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo=nombre_archivo)
+
+            if st.session_state.get("_logo_bytes"):
+                st.download_button(
+                    "📥 Descargar logo para carpeta media",
+                    data=st.session_state["_logo_bytes"],
+                    file_name=logo_media_name,
+                    mime="image/png",
+                    use_container_width=True
+                )
+
+            st.info("""
+**Publicar en Survey123 (Connect)**
+1) Crea la encuesta **desde archivo** con el XLSForm exportado.
+2) Copia tu imagen de logo a la carpeta **media/** del proyecto con el **mismo nombre** que figura en `media::image`.
+3) Previsualiza: verás la página 1 **Introducción** y el encabezado **“Encuesta comunidad – …”**.
+4) Usa **Siguiente / Atrás** para navegar y publica.
+""")
+    except Exception as e:
+        st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+# ------------------------------------------------------------------------------------------
+# PARTE 10/10 — Exportar Word y PDF editable con el estilo afinado
+# - Portada con logo grande, título centrado (negro), intro
+# - Secciones por página (P2..P7) con sus títulos
+# - Debajo de cada pregunta: cuadro de observaciones (sin límite), colores rotativos
+# - Mostrar opciones para preguntas de selección (excepto Sí/No)
+# ------------------------------------------------------------------------------------------
+from typing import List, Dict
+
+try:
+    from docx import Document
+    from docx.shared import Pt, Inches, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+except Exception:
+    Document = None
+
+try:
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.lib.colors import HexColor, black
+except Exception:
+    canvas = None
+
+# ---------- utilidades compartidas ----------
+def _build_cond_text(qname: str, reglas_vis: List[Dict]) -> str:
+    rels = [r for r in reglas_vis if r.get("target") == qname]
+    if not rels:
+        return ""
+    parts = []
+    for r in rels:
+        op = r.get("op", "=")
+        vals = r.get("values", [])
+        vtxt = ", ".join(vals) if vals else ""
+        parts.append(f"{r['src']} {op} [{vtxt}]")
+    return "Condición: se muestra si " + " OR ".join(parts)
+
+def _get_logo_bytes_fallback() -> bytes | None:
+    if st.session_state.get("_logo_bytes"):
+        return st.session_state["_logo_bytes"]
+    try:
+        with open("001.png", "rb") as f:
+            return f.read()
+    except Exception:
+        return None
+
+def _wrap_text_lines(text: str, font_name: str, font_size: float, max_width: float) -> List[str]:
+    if not text:
+        return []
+    words = text.split()
+    lines, current = [], ""
+    for w in words:
+        test = (current + " " + w).strip()
+        if stringWidth(test, font_name, font_size) <= max_width:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            if stringWidth(w, font_name, font_size) > max_width:
+                chunk = ""
+                for ch in w:
+                    if stringWidth(chunk + ch, font_name, font_size) <= max_width:
+                        chunk += ch
+                    else:
+                        if chunk:
+                            lines.append(chunk)
+                        chunk = ch
+                current = chunk
+            else:
+                current = w
+    if current:
+        lines.append(current)
+    return lines
+
+def _is_yes_no_options(opts: List[str]) -> bool:
+    if not opts: return False
+    norm = {slugify_name(x) for x in opts if x and str(x).strip()}
+    yes_variants = {"si","sí","yes"}
+    no_variants = {"no"}
+    return norm.issubset(yes_variants | no_variants) and any(y in norm for y in yes_variants) and any(n in norm for n in no_variants)
+
+def _should_show_options(q: Dict) -> bool:
+    if q.get("tipo_ui") not in ("Selección única", "Selección múltiple"):
+        return False
+    opts = q.get("opciones") or []
+    return bool(opts) and not _is_yes_no_options(opts)
+
+# Sets por página (para imprimir secciones)
+P2_NAMES = {"canton","distrito","barrio","edad","genero","escolaridad","relacion_zona"}
+P3_NAMES = {"se_siente_seguro","motivo_inseguridad","comparacion_anual","motivo_comparacion"}
+P4_NAMES = {"lugar_entretenimiento","espacios_recreativos","lugar_residencia","paradas_estaciones",
+            "puentes_peatonales","transporte_publico","zona_bancaria","zona_comercio",
+            "zonas_residenciales","lugares_turisticos","zona_mas_insegura","porque_insegura"}
+P5_NAMES = {"incidencia_delitos","venta_drogas","delitos_vida","delitos_sexuales","asaltos","estafas",
+            "robo_fuerza","abandono_personas","explotacion_infantil","delitos_ambientales","trata_personas",
+            "vi","vi_victima_ultimo_anno","vi_tipos","vi_fp_abordaje","vi_fp_eval"}
+P6_NAMES = {"riesgos_sociales","falta_inversion_social","consumo_drogas","infra_vial","bunker"}
+P7_NAMES = {"info_grupo_delito","desc_info_grupo","victimizacion_12m",
+            "delito_victima_si","modo_operar_si","horario_hecho_si",
+            "delito_victima_no","motivo_no_denuncia","modo_operar_no","horario_hecho_no",
+            "fp_calificacion","fp_24m","conoce_policias","conversa_policias",
+            "sugerencia_fp","sugerencia_muni","otra_info","contacto_voluntario"}
+
+ALL_BY_PAGE = [
+    ("Datos demográficos", P2_NAMES),
+    ("Sentimiento de inseguridad en el barrio", P3_NAMES),
+    ("Indique cómo se siente en los siguientes lugares de su barrio", P4_NAMES),
+    ("Incidencia relacionada a delitos", P5_NAMES),
+    ("Riesgos Sociales", P6_NAMES),
+    ("Información adicional", P7_NAMES),
+]
+
+# ---------- helpers Word ----------
+def _set_cell_shading(cell, fill_hex: str):
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    shd = tcPr.find(qn('w:shd'))
+    if shd is None:
+        shd = OxmlElement('w:shd')
+        tcPr.append(shd)
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), fill_hex.replace('#','').upper())
+
+def _set_cell_borders(cell, color_hex: str):
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    borders = tcPr.find(qn('w:tcBorders'))
+    if borders is None:
+        borders = OxmlElement('w:tcBorders')
+        tcPr.append(borders)
+    for edge in ('top','left','bottom','right'):
+        tag = OxmlElement(f'w:{edge}')
+        tag.set(qn('w:val'), 'single')
+        tag.set(qn('w:sz'), '8')  # ~0.5pt
+        tag.set(qn('w:color'), color_hex.replace('#','').upper())
+        borders.append(tag)
+
+def _add_observation_box(doc: Document, fill_hex: str, border_hex: str):
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+    tbl.autofit = True
+    cell = tbl.cell(0, 0)
+    _set_cell_shading(cell, fill_hex)
+    _set_cell_borders(cell, border_hex)
+    row = tbl.rows[0]
+    row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+    row.height = Inches(1.1)  # alto mínimo, luego crece sin límite
+    p = cell.paragraphs[0]
+    p.add_run("")
+
+# ---------- EXPORT WORD ----------
+def export_docx_form(preguntas: List[Dict], form_title: str, intro: str, reglas_vis: List[Dict]):
+    if Document is None:
+        st.error("Falta dependencia: instala `python-docx` para generar Word.")
+        return
+
+    fills = ["#E6F4EA", "#E7F0FE", "#FDECEA"]
+    borders = ["#1E8E3E", "#1A73E8", "#D93025"]
+    BLACK = RGBColor(0, 0, 0)
+
+    doc = Document()
+
+    # Título 24pt centrado
+    p = doc.add_paragraph()
+    run = p.add_run(form_title)
+    run.bold = True
+    run.font.size = Pt(24)
+    run.font.color.rgb = BLACK
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # Logo grande centrado
+    logo_b = _get_logo_bytes_fallback()
+    if logo_b:
+        try:
+            img_buf = BytesIO(logo_b)
+            doc.add_paragraph().alignment = WD_ALIGN_PARAGRAPH.CENTER
+            doc.add_picture(img_buf, width=Inches(2.8))
+        except Exception:
+            pass
+
+    # Introducción 12pt
+    intro_p = doc.add_paragraph(intro)
+    intro_p.runs[0].font.size = Pt(12)
+    intro_p.runs[0].font.color.rgb = BLACK
+
+    # Secciones por página
+    i = 1
+    color_idx = 0
+    for section_title, names in ALL_BY_PAGE:
+        sec = doc.add_paragraph(section_title)
+        rs = sec.runs[0]; rs.bold = True; rs.font.size = Pt(14); rs.font.color.rgb = BLACK
+
+        for q in preguntas:
+            if q.get("name") not in names:
+                continue
+
+            doc.add_paragraph("")
+            h = doc.add_paragraph(f"{i}. {q['label']}")
+            r = h.runs[0]; r.font.size = Pt(11); r.font.color.rgb = BLACK
+
+            cond_txt = _build_cond_text(q["name"], reglas_vis)
+            if cond_txt:
+                cpara = doc.add_paragraph(cond_txt)
+                rc = cpara.runs[0]; rc.italic = True; rc.font.size = Pt(9); rc.font.color.rgb = BLACK
+
+            if _should_show_options(q):
+                opts_str = ", ".join([str(x) for x in q.get("opciones") if str(x).strip()])
+                opara = doc.add_paragraph(f"Opciones: {opts_str}")
+                ro = opara.runs[0]; ro.font.size = Pt(10); ro.font.color.rgb = BLACK
+
+            fill = fills[color_idx % len(fills)]
+            border = borders[color_idx % len(borders)]
+            color_idx += 1
+            _add_observation_box(doc, fill, border)
+
+            help_p = doc.add_paragraph("Agregue sus observaciones sobre la pregunta.")
+            rh = help_p.runs[0]; rh.italic = True; rh.font.size = Pt(9); rh.font.color.rgb = BLACK
+
+            i += 1
+
+    buf = BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    st.download_button(
+        "📄 Descargar Word del formulario",
+        data=buf,
+        file_name=slugify_name(form_title) + "_formulario.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        use_container_width=True
     )
 
+# ---------- EXPORT PDF ----------
+def export_pdf_editable_form(preguntas: List[Dict], form_title: str, intro: str, reglas_vis: List[Dict]):
+    if canvas is None:
+        st.error("Falta dependencia: instala `reportlab` para generar PDF.")
+        return
+
+    PAGE_W, PAGE_H = A4
+    margin = 2 * cm
+    max_text_w = PAGE_W - 2 * margin
+
+    title_font, title_size = "Helvetica-Bold", 24
+    intro_font, intro_size = "Helvetica", 12
+    intro_line_h = 18
+    sec_font, sec_size = "Helvetica-Bold", 14
+    label_font, label_size = "Helvetica", 11
+    cond_font, cond_size = "Helvetica-Oblique", 9
+    helper_font, helper_size = "Helvetica-Oblique", 9
+    opts_font, opts_size = "Helvetica", 10
+
+    fills = [HexColor("#E6F4EA"), HexColor("#E7F0FE"), HexColor("#FDECEA")]
+    borders = [HexColor("#1E8E3E"), HexColor("#1A73E8"), HexColor("#D93025")]
+
+    field_h = 80
+    line_h = 14
+    y = PAGE_H - margin
+
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    c.setTitle(form_title)
+
+    # Portada
+    logo_b = _get_logo_bytes_fallback()
+    if logo_b:
+        try:
+            img = ImageReader(BytesIO(logo_b))
+            logo_w, logo_h = 160, 115
+            c.drawImage(img, (PAGE_W - logo_w) / 2, y - logo_h, width=logo_w, height=logo_h,
+                        preserveAspectRatio=True, mask='auto')
+            y -= (logo_h + 24)
+        except Exception:
+            pass
+
+    c.setFillColor(black)
+    title_lines = _wrap_text_lines(form_title, title_font, title_size, max_text_w) or [form_title]
+    c.setFont(title_font, title_size)
+    for tl in title_lines:
+        c.drawCentredString(PAGE_W / 2, y, tl)
+        y -= 26
+
+    c.setFont(intro_font, intro_size)
+    intro_lines = _wrap_text_lines(intro, intro_font, intro_size, max_text_w)
+    for line in intro_lines:
+        if y < margin + 80:
+            c.showPage(); y = PAGE_H - margin
+            c.setFillColor(black); c.setFont(intro_font, intro_size)
+        c.drawString(margin, y, line)
+        y -= intro_line_h
+
+    # Páginas/secciones
+    def ensure_space(need, section_title=None):
+        nonlocal y
+        if y - need < margin:
+            c.showPage()
+            y = PAGE_H - margin
+            c.setFillColor(black)
+            if section_title:
+                c.setFont(sec_font, sec_size)
+                c.drawString(margin, y, section_title)
+                y -= (line_h + 6)
+                c.setFont(label_font, label_size)
+
+    c.showPage()
+    y = PAGE_H - margin
+    c.setFillColor(black)
+
+    i = 1
+    color_idx = 0
+    for section_title, names in ALL_BY_PAGE:
+        c.setFont(sec_font, sec_size)
+        c.drawString(margin, y, section_title)
+        y -= (line_h + 6)
+        c.setFont(label_font, label_size)
+
+        for q in st.session_state.preguntas:
+            if q.get("name") not in names:
+                continue
+
+            label_lines = _wrap_text_lines(f"{i}. {q['label']}", label_font, label_size, max_text_w)
+            needed = line_h * len(label_lines) + field_h + 26
+
+            cond_txt = _build_cond_text(q["name"], reglas_vis)
+            cond_lines = []
+            if cond_txt:
+                cond_lines = _wrap_text_lines(cond_txt, cond_font, cond_size, max_text_w)
+                needed += line_h * len(cond_lines)
+
+            opts_lines = []
+            if _should_show_options(q):
+                opts_str = ", ".join([str(x) for x in q.get("opciones") if str(x).strip()])
+                opts_lines = _wrap_text_lines(f"Opciones: {opts_str}", opts_font, opts_size, max_text_w)
+                needed += line_h * len(opts_lines)
+
+            ensure_space(needed, section_title=section_title)
+
+            for line in label_lines:
+                c.drawString(margin, y, line)
+                y -= line_h
+
+            if cond_lines:
+                c.setFont(cond_font, cond_size)
+                for cl in cond_lines:
+                    c.drawString(margin, y, cl)
+                    y -= line_h
+                c.setFont(label_font, label_size)
+
+            if opts_lines:
+                c.setFont(opts_font, opts_size)
+                for ol in opts_lines:
+                    c.drawString(margin, y, ol)
+                    y -= line_h
+                c.setFont(label_font, label_size)
+
+            fill_color = fills[color_idx % len(fills)]
+            border_color = borders[color_idx % len(borders)]
+            color_idx += 1
+            c.setFillColor(fill_color); c.setStrokeColor(border_color)
+            c.rect(margin, y - field_h, max_text_w, field_h, fill=1, stroke=1)
+            c.setFillColor(black)
+
+            c.acroForm.textfield(
+                name=f"campo_obs_{i}",
+                tooltip=f"Observaciones para: {q['name']}",
+                x=margin, y=y - field_h,
+                width=max_text_w, height=field_h,
+                borderWidth=1, borderStyle='solid',
+                forceBorder=True, fieldFlags=4096, value=""
+            )
+            c.setFont(helper_font, helper_size)
+            c.drawString(margin, y - field_h - 10, "Agregue sus observaciones sobre la pregunta.")
+            c.setFont(label_font, label_size)
+
+            y -= (field_h + 26)
+            i += 1
+
+        # salto si queda poco para siguiente sección
+        if y < margin + 120:
+            c.showPage(); y = PAGE_H - margin; c.setFillColor(black)
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    st.download_button(
+        "🧾 Descargar PDF editable del formulario",
+        data=buf,
+        file_name=slugify_name(form_title) + "_formulario_editable.pdf",
+        mime="application/pdf",
+        use_container_width=True
+    )
+
+# ---------- Botones ----------
+st.markdown("### 📝 Exportar formulario en **Word** y **PDF editable**")
+col_w, col_p = st.columns(2)
+
+with col_w:
+    if st.button("Generar Word (DOCX)"):
+        export_docx_form(
+            preguntas=st.session_state.preguntas,
+            form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
+            intro=INTRO_COMUNIDAD,
+            reglas_vis=st.session_state.reglas_visibilidad
+        )
+
+with col_p:
+    if st.button("Generar PDF editable"):
+        export_pdf_editable_form(
+            preguntas=st.session_state.preguntas,
+            form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
+            intro=INTRO_COMUNIDAD,
+            reglas_vis=st.session_state.reglas_visibilidad
+        )
 
 
 
