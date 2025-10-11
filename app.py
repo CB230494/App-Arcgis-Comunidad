@@ -8,12 +8,12 @@
 # - Exportar a XLSForm (survey/choices/settings)
 # - PÁGINAS reales (style="pages"): Intro + P2..P7
 # - Portada con logo (media::image) y texto de introducción
-# - Exportes Word/PDF afinados (opciones visibles y cajas de observación)
+# - Word/PDF: imprimen P1, P3, P4, P5, P6 y P7
 # ==========================================================================================
 
 import re
 import json
-from io import BytesIO, StringIO
+from io import BytesIO
 from datetime import datetime
 from typing import List, Dict
 
@@ -27,7 +27,7 @@ st.set_page_config(page_title="Encuesta Comunidad → XLSForm (Survey123)", layo
 st.title("🏘️ Encuesta Comunidad → XLSForm para ArcGIS Survey123")
 
 st.markdown("""
-Crea tu cuestionario y **exporta un XLSForm** listo para **ArcGIS Survey123** (Connect/Web Designer).
+Crea tu cuestionario y **exporta un XLSForm** listo para **ArcGIS Survey123**.
 
 Incluye:
 - Tipos: **text**, **integer/decimal**, **date**, **time**, **geopoint**, **select_one**, **select_multiple**.
@@ -59,39 +59,27 @@ def slugify_name(texto: str) -> str:
     if not texto:
         return "campo"
     t = texto.lower()
-    t = re.sub(r"[áàäâ]", "a", t)
-    t = re.sub(r"[éèëê]", "e", t)
-    t = re.sub(r"[íìïî]", "i", t)
-    t = re.sub(r"[óòöô]", "o", t)
-    t = re.sub(r"[úùüû]", "u", t)
-    t = re.sub(r"ñ", "n", t)
+    t = re.sub(r"[áàäâ]", "a", t); t = re.sub(r"[éèëê]", "e", t)
+    t = re.sub(r"[íìïî]", "i", t); t = re.sub(r"[óòöô]", "o", t)
+    t = re.sub(r"[úùüû]", "u", t); t = re.sub(r"ñ", "n", t)
     t = re.sub(r"[^a-z0-9]+", "_", t).strip("_")
     return t or "campo"
 
 def asegurar_nombre_unico(base: str, usados: set) -> str:
     if base not in usados: return base
     i = 2
-    while f"{base}_{i}" in usados:
-        i += 1
+    while f"{base}_{i}" in usados: i += 1
     return f"{base}_{i}"
 
 def map_tipo_to_xlsform(tipo_ui: str, name: str):
-    if tipo_ui == "Texto (corto)":
-        return ("text", None, None)
-    if tipo_ui == "Párrafo (texto largo)":
-        return ("text", "multiline", None)
-    if tipo_ui == "Número":
-        return ("integer", None, None)
-    if tipo_ui == "Selección única":
-        return (f"select_one list_{name}", None, f"list_{name}")
-    if tipo_ui == "Selección múltiple":
-        return (f"select_multiple list_{name}", None, f"list_{name}")
-    if tipo_ui == "Fecha":
-        return ("date", None, None)
-    if tipo_ui == "Hora":
-        return ("time", None, None)
-    if tipo_ui == "GPS (ubicación)":
-        return ("geopoint", None, None)
+    if tipo_ui == "Texto (corto)": return ("text", None, None)
+    if tipo_ui == "Párrafo (texto largo)": return ("text", "multiline", None)
+    if tipo_ui == "Número": return ("integer", None, None)
+    if tipo_ui == "Selección única": return (f"select_one list_{name}", None, f"list_{name}")
+    if tipo_ui == "Selección múltiple": return (f"select_multiple list_{name}", None, f"list_{name}")
+    if tipo_ui == "Fecha": return ("date", None, None)
+    if tipo_ui == "Hora": return ("time", None, None)
+    if tipo_ui == "GPS (ubicación)": return ("geopoint", None, None)
     return ("text", None, None)
 
 def xlsform_or_expr(conds):
@@ -106,9 +94,7 @@ def xlsform_not(expr):
 def build_relevant_expr(rules_for_target: List[Dict]):
     or_parts = []
     for r in rules_for_target:
-        src = r["src"]
-        op = r.get("op", "=")
-        vals = r.get("values", [])
+        src = r["src"]; op = r.get("op", "="); vals = r.get("values", [])
         if not vals: continue
         if op == "=":
             segs = [f"${{{src}}}='{v}'" for v in vals]
@@ -125,12 +111,12 @@ def build_relevant_expr(rules_for_target: List[Dict]):
 # Catálogo manual por lotes: Cantón → Distrito → (Barrios…)
 # ------------------------------------------------------------------------------------------
 if "choices_ext_rows" not in st.session_state:
-    st.session_state.choices_ext_rows = []  # filas para hoja "choices"
+    st.session_state.choices_ext_rows = []  # filas para hoja choices
 if "choices_extra_cols" not in st.session_state:
     st.session_state.choices_extra_cols = set()
 
 def _append_choice_unique(row: Dict):
-    """Inserta una fila en choices evitando duplicados exactos por (list_name,name)."""
+    """Inserta fila en choices evitando duplicados por (list_name,name)."""
     key = (row.get("list_name"), row.get("name"))
     exists = any((r.get("list_name"), r.get("name")) == key for r in st.session_state.choices_ext_rows)
     if not exists:
@@ -141,80 +127,43 @@ with st.expander("Agrega un lote (un Cantón, un Distrito y varios Barrios)", ex
     col_c1, col_c2 = st.columns(2)
     canton_txt = col_c1.text_input("Cantón (una vez)", value="")
     distrito_txt = col_c2.text_input("Distrito (una vez)", value="")
-    barrios_txt = st.text_area("Barrios del distrito (uno por línea)", value="", height=130,
-                               help="Pega aquí todos los barrios que pertenecen al distrito indicado arriba.")
+    barrios_txt = st.text_area("Barrios del distrito (uno por línea)", value="", height=130)
 
     col_b1, col_b2, col_b3 = st.columns([1,1,2])
-    with col_b1:
-        add_lote = st.button("Agregar lote", type="primary", use_container_width=True)
-    with col_b2:
-        clear_all = st.button("Limpiar catálogo", use_container_width=True)
+    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True)
+    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True)
 
     if clear_all:
         st.session_state.choices_ext_rows = []
         st.success("Catálogo limpiado.")
 
     if add_lote:
-        c = canton_txt.strip()
-        d = distrito_txt.strip()
+        c = canton_txt.strip(); d = distrito_txt.strip()
         barrios = [b.strip() for b in barrios_txt.splitlines() if b.strip()]
         if not c or not d or not barrios:
             st.error("Debes indicar Cantón, Distrito y al menos un Barrio.")
         else:
-            slug_c = slugify_name(c)
-            slug_d = slugify_name(d)
+            slug_c = slugify_name(c); slug_d = slugify_name(d)
 
-            # Columnas extra usadas por filtros/placeholder
+            # columnas extra usadas por filtros/placeholder
             st.session_state.choices_extra_cols.update({"canton_key","distrito_key","any"})
 
-            # ---------- Placeholders (una vez) ----------
-            # Cantón placeholder (no necesita 'any')
-            _append_choice_unique({
-                "list_name": "list_canton",
-                "name": "__pick_canton__",
-                "label": "— escoja un cantón —"
-            })
-            # Distrito placeholder: visible siempre gracias a any='1'
-            _append_choice_unique({
-                "list_name": "list_distrito",
-                "name": "__pick_distrito__",
-                "label": "— escoja un cantón —",
-                "any": "1"
-            })
-            # Barrio placeholder: visible siempre gracias a any='1'
-            _append_choice_unique({
-                "list_name": "list_barrio",
-                "name": "__pick_barrio__",
-                "label": "— escoja un distrito —",
-                "any": "1"
-            })
+            # Placeholders (una sola vez por lista)
+            _append_choice_unique({"list_name":"list_canton", "name":"__pick_canton__", "label":"— escoja un cantón —"})
+            _append_choice_unique({"list_name":"list_distrito","name":"__pick_distrito__","label":"— escoja un cantón —","any":"1"})
+            _append_choice_unique({"list_name":"list_barrio", "name":"__pick_barrio__", "label":"— escoja un distrito —","any":"1"})
 
-            # ---------- list_canton ----------
-            _append_choice_unique({
-                "list_name": "list_canton",
-                "name": slug_c,
-                "label": c
-            })
+            # Cantón (evita duplicados automáticamente)
+            _append_choice_unique({"list_name":"list_canton","name":slug_c,"label":c})
 
-            # ---------- list_distrito ----------
-            _append_choice_unique({
-                "list_name": "list_distrito",
-                "name": slug_d,
-                "label": d,
-                "canton_key": slug_c
-            })
+            # Distrito
+            _append_choice_unique({"list_name":"list_distrito","name":slug_d,"label":d,"canton_key":slug_c})
 
-            # ---------- list_barrio ----------
+            # Barrios
             usados_b = set()
             for b in barrios:
-                slug_b = asegurar_nombre_unico(slugify_name(b), usados_b)
-                usados_b.add(slug_b)
-                _append_choice_unique({
-                    "list_name": "list_barrio",
-                    "name": slug_b,
-                    "label": b,
-                    "distrito_key": slug_d
-                })
+                slug_b = asegurar_nombre_unico(slugify_name(b), usados_b); usados_b.add(slug_b)
+                _append_choice_unique({"list_name":"list_barrio","name":slug_b,"label":b,"distrito_key":slug_d})
 
             st.success(f"Lote agregado: {c} → {d} → {len(barrios)} barrios.")
 
@@ -224,7 +173,7 @@ if st.session_state.choices_ext_rows:
                  use_container_width=True, hide_index=True, height=240)
 
 # ------------------------------------------------------------------------------------------
-# Cabecera: Logo + “Nombre de la Delegación”
+# Cabecera: Logo + Delegación
 # ------------------------------------------------------------------------------------------
 DEFAULT_LOGO_PATH = "001.png"
 
@@ -248,24 +197,18 @@ with col_logo:
 with col_txt:
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste")
-    logo_media_name = st.text_input(
-        "Nombre de archivo para `media::image`",
-        value=st.session_state.get("_logo_name","001.png"),
-        help="Debe coincidir con el archivo en la carpeta `media/` de Survey123 Connect."
-    )
-    titulo_compuesto = (f"Encuesta comunidad – {delegacion.strip()}"
-                        if delegacion.strip() else "Encuesta comunidad")
+    logo_media_name = st.text_input("Nombre de archivo para `media::image`",
+                                    value=st.session_state.get("_logo_name","001.png"),
+                                    help="Debe coincidir con el archivo en `media/` de Survey123 Connect.")
+    titulo_compuesto = (f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad")
     st.markdown(f"<h5 style='text-align:center;margin:4px 0'>📋 {titulo_compuesto}</h5>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------------------
-# Estado (session_state)
+# Estado
 # ------------------------------------------------------------------------------------------
-if "preguntas" not in st.session_state:
-    st.session_state.preguntas = []
-if "reglas_visibilidad" not in st.session_state:
-    st.session_state.reglas_visibilidad = []
-if "reglas_finalizar" not in st.session_state:
-    st.session_state.reglas_finalizar = []
+if "preguntas" not in st.session_state: st.session_state.preguntas = []
+if "reglas_visibilidad" not in st.session_state: st.session_state.reglas_visibilidad = []
+if "reglas_finalizar" not in st.session_state: st.session_state.reglas_finalizar = []
 
 # ------------------------------------------------------------------------------------------
 # Intro (Página 1)
@@ -279,12 +222,11 @@ INTRO_COMUNIDAD = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Precarga de preguntas (P2 se mantiene igual, sin opciones dummy)
+# Precarga de preguntas (P2 incluida; SIN opciones dummy en C/D/B)
 # ------------------------------------------------------------------------------------------
 if "seed_cargado" not in st.session_state:
 
-    v_si = slugify_name("Si")
-    v_no = slugify_name("No")
+    v_si = slugify_name("Si"); v_no = slugify_name("No")
     v_mas_seguro  = slugify_name("Más seguro")
     v_igual       = slugify_name("Igual")
     v_menos_seg   = slugify_name("Menos seguro")
@@ -378,7 +320,6 @@ if "seed_cargado" not in st.session_state:
          "opciones":["Caza ilegal","Pesca ilegal","Tala ilegal"],"appearance":None,"choice_filter":None,"relevant":None},
         {"tipo_ui":"Selección múltiple","label":"Trata de personas","name":"trata_personas","required":False,
          "opciones":["Con fines laborales","Con fines sexuales"],"appearance":None,"choice_filter":None,"relevant":None},
-        # Subflujo Violencia Intrafamiliar
         {"tipo_ui":"Selección única","label":"Violencia Intrafamiliar","name":"vi","required":False,
          "opciones":["Si","No"],"appearance":None,"choice_filter":None,"relevant":None},
         {"tipo_ui":"Selección única","label":"¿Ha sido víctima o conoce a alguien que haya sido víctima de VI en el último año?","name":"vi_victima_ultimo_anno","required":True,
@@ -472,10 +413,8 @@ if "seed_cargado" not in st.session_state:
 # ------------------------------------------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Configuración")
-    form_title = st.text_input(
-        "Título del formulario",
-        value=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad")
-    )
+    form_title = st.text_input("Título del formulario",
+                               value=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"))
     idioma = st.selectbox("Idioma por defecto (default_language)", options=["es","en"], index=0)
     version_auto = datetime.now().strftime("%Y%m%d%H%M")
     version = st.text_input("Versión (settings.version)", value=version_auto)
@@ -483,31 +422,26 @@ with st.sidebar:
     st.markdown("---")
     st.caption("💾 Exporta/Importa tu proyecto (JSON)")
     col_exp, col_imp = st.columns(2)
-    with col_exp:
-        if st.button("Exportar proyecto (JSON)", use_container_width=True):
-            proj = {
-                "form_title": form_title,
-                "idioma": idioma,
-                "version": version,
-                "preguntas": st.session_state.preguntas,
-                "reglas_visibilidad": st.session_state.reglas_visibilidad,
-                "reglas_finalizar": st.session_state.reglas_finalizar
-            }
-            jbuf = BytesIO(json.dumps(proj, ensure_ascii=False, indent=2).encode("utf-8"))
-            st.download_button("Descargar JSON", data=jbuf, file_name="proyecto_encuesta.json",
-                               mime="application/json", use_container_width=True)
-    with col_imp:
-        up = st.file_uploader("Importar JSON", type=["json"], label_visibility="collapsed")
-        if up is not None:
-            try:
-                raw = up.read().decode("utf-8")
-                data = json.loads(raw)
-                st.session_state.preguntas = list(data.get("preguntas", []))
-                st.session_state.reglas_visibilidad = list(data.get("reglas_visibilidad", []))
-                st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
-                _rerun()
-            except Exception as e:
-                st.error(f"No se pudo importar el JSON: {e}")
+    if col_exp.button("Exportar proyecto (JSON)", use_container_width=True):
+        proj = {
+            "form_title": form_title, "idioma": idioma, "version": version,
+            "preguntas": st.session_state.preguntas,
+            "reglas_visibilidad": st.session_state.reglas_visibilidad,
+            "reglas_finalizar": st.session_state.reglas_finalizar
+        }
+        jbuf = BytesIO(json.dumps(proj, ensure_ascii=False, indent=2).encode("utf-8"))
+        st.download_button("Descargar JSON", data=jbuf, file_name="proyecto_encuesta.json",
+                           mime="application/json", use_container_width=True)
+    up = col_imp.file_uploader("Importar JSON", type=["json"], label_visibility="collapsed")
+    if up is not None:
+        try:
+            raw = up.read().decode("utf-8"); data = json.loads(raw)
+            st.session_state.preguntas = list(data.get("preguntas", []))
+            st.session_state.reglas_visibilidad = list(data.get("reglas_visibilidad", []))
+            st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
+            _rerun()
+        except Exception as e:
+            st.error(f"No se pudo importar el JSON: {e}")
 
 # ------------------------------------------------------------------------------------------
 # Constructor: Agregar nuevas preguntas
@@ -519,20 +453,14 @@ with st.form("form_add_q", clear_on_submit=False):
     label = st.text_input("Etiqueta (texto exacto)")
     sugerido = slugify_name(label) if label else ""
     col_n1, col_n2, col_n3 = st.columns([2,1,1])
-    with col_n1:
-        name = st.text_input("Nombre interno (XLSForm 'name')", value=sugerido)
-    with col_n2:
-        required = st.checkbox("Requerida", value=False)
-    with col_n3:
-        appearance = st.text_input("Appearance (opcional)", value="")
-
+    name = col_n1.text_input("Nombre interno (XLSForm 'name')", value=sugerido)
+    required = col_n2.checkbox("Requerida", value=False)
+    appearance = col_n3.text_input("Appearance (opcional)", value="")
     opciones = []
     if tipo_ui in ("Selección única","Selección múltiple"):
         st.markdown("**Opciones (una por línea)**")
         txt_opts = st.text_area("Opciones", height=120)
-        if txt_opts.strip():
-            opciones = [o.strip() for o in txt_opts.splitlines() if o.strip()]
-
+        if txt_opts.strip(): opciones = [o.strip() for o in txt_opts.splitlines() if o.strip()]
     add = st.form_submit_button("➕ Agregar pregunta")
 
 if add:
@@ -542,24 +470,82 @@ if add:
         base = slugify_name(name or label)
         usados = {q["name"] for q in st.session_state.preguntas}
         unico = asegurar_nombre_unico(base, usados)
-        nueva = {
-            "tipo_ui": tipo_ui,
-            "label": label.strip(),
-            "name": unico,
-            "required": required,
-            "opciones": opciones,
-            "appearance": (appearance.strip() or None),
-            "choice_filter": None,
-            "relevant": None
-        }
-        st.session_state.preguntas.append(nueva)
+        st.session_state.preguntas.append({
+            "tipo_ui": tipo_ui, "label": label.strip(), "name": unico, "required": required,
+            "opciones": opciones, "appearance": (appearance.strip() or None),
+            "choice_filter": None, "relevant": None
+        })
         st.success(f"Pregunta agregada: **{label}** (name: `{unico}`)")
 
 # ------------------------------------------------------------------------------------------
-# Panel de Condicionales (mostrar / finalizar)
+# Lista / Ordenado / Edición (completa) — RESTAURADA
+# ------------------------------------------------------------------------------------------
+st.subheader("📚 Preguntas (ordénalas y edítalas)")
+if not st.session_state.preguntas:
+    st.info("Aún no has agregado preguntas.")
+else:
+    for idx, q in enumerate(st.session_state.preguntas):
+        with st.container(border=True):
+            c1, c2, c3, c4, c5 = st.columns([4, 2, 2, 2, 2])
+            c1.markdown(f"**{idx+1}. {q['label']}**")
+            meta = f"type: {q['tipo_ui']}  •  name: `{q['name']}`  •  requerida: {'sí' if q['required'] else 'no'}"
+            if q.get("appearance"): meta += f"  •  appearance: `{q['appearance']}`"
+            if q.get("choice_filter"): meta += f"  •  choice_filter: `{q['choice_filter']}`"
+            if q.get("relevant"): meta += f"  •  relevant: `{q['relevant']}`"
+            c1.caption(meta)
+            if q["tipo_ui"] in ("Selección única","Selección múltiple"):
+                c1.caption("Opciones: " + ", ".join(q.get("opciones") or []))
+
+            up = c2.button("⬆️ Subir", key=f"up_{idx}", use_container_width=True, disabled=(idx == 0))
+            down = c3.button("⬇️ Bajar", key=f"down_{idx}", use_container_width=True, disabled=(idx == len(st.session_state.preguntas)-1))
+            edit = c4.button("✏️ Editar", key=f"edit_{idx}", use_container_width=True)
+            borrar = c5.button("🗑️ Eliminar", key=f"del_{idx}", use_container_width=True)
+
+            if up:
+                st.session_state.preguntas[idx-1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx-1]; _rerun()
+            if down:
+                st.session_state.preguntas[idx+1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx+1]; _rerun()
+
+            if edit:
+                st.markdown("**Editar esta pregunta**")
+                ne_label = st.text_input("Etiqueta", value=q["label"], key=f"e_label_{idx}")
+                ne_name = st.text_input("Nombre interno (name)", value=q["name"], key=f"e_name_{idx}")
+                ne_required = st.checkbox("Requerida", value=q["required"], key=f"e_req_{idx}")
+                ne_appearance = st.text_input("Appearance", value=q.get("appearance") or "", key=f"e_app_{idx}")
+                ne_choice_filter = st.text_input("choice_filter (opcional)", value=q.get("choice_filter") or "", key=f"e_cf_{idx}")
+                ne_relevant = st.text_input("relevant (opcional – se autogenera por reglas)", value=q.get("relevant") or "", key=f"e_rel_{idx}")
+
+                ne_opciones = q.get("opciones") or []
+                if q["tipo_ui"] in ("Selección única","Selección múltiple"):
+                    ne_opts_txt = st.text_area("Opciones (una por línea)", value="\n".join(ne_opciones), key=f"e_opts_{idx}")
+                    ne_opciones = [o.strip() for o in ne_opts_txt.splitlines() if o.strip()]
+
+                col_ok, col_cancel = st.columns(2)
+                if col_ok.button("💾 Guardar cambios", key=f"e_save_{idx}", use_container_width=True):
+                    new_base = slugify_name(ne_name or ne_label)
+                    usados = {qq["name"] for j, qq in enumerate(st.session_state.preguntas) if j != idx}
+                    ne_name_final = new_base if new_base not in usados else asegurar_nombre_unico(new_base, usados)
+
+                    st.session_state.preguntas[idx]["label"] = ne_label.strip() or q["label"]
+                    st.session_state.preguntas[idx]["name"] = ne_name_final
+                    st.session_state.preguntas[idx]["required"] = ne_required
+                    st.session_state.preguntas[idx]["appearance"] = ne_appearance.strip() or None
+                    st.session_state.preguntas[idx]["choice_filter"] = ne_choice_filter.strip() or None
+                    st.session_state.preguntas[idx]["relevant"] = ne_relevant.strip() or None
+                    if q["tipo_ui"] in ("Selección única","Selección múltiple"):
+                        st.session_state.preguntas[idx]["opciones"] = ne_opciones
+                    st.success("Cambios guardados."); _rerun()
+                if col_cancel.button("Cancelar", key=f"e_cancel_{idx}", use_container_width=True):
+                    _rerun()
+
+            if borrar:
+                del st.session_state.preguntas[idx]
+                st.warning("Pregunta eliminada."); _rerun()
+
+# ------------------------------------------------------------------------------------------
+# Condicionales
 # ------------------------------------------------------------------------------------------
 st.subheader("🔀 Condicionales (mostrar / finalizar)")
-
 if not st.session_state.preguntas:
     st.info("Agrega preguntas para definir condicionales.")
 else:
@@ -569,12 +555,12 @@ else:
 
         target = st.selectbox("Pregunta a mostrar (target)", options=names, format_func=lambda n: f"{n} — {labels_by_name[n]}")
         src = st.selectbox("Depende de (source)", options=names, format_func=lambda n: f"{n} — {labels_by_name[n]}")
-        op = st.selectbox("Operador", options=["=", "selected"], help="= para select_one; selected para select_multiple")
-
+        op = st.selectbox("Operador", options=["=", "selected"])
         src_q = next((q for q in st.session_state.preguntas if q["name"] == src), None)
+
         vals = []
         if src_q and src_q["opciones"]:
-            vals = st.multiselect("Valores que activan la visibilidad (elige texto; internamente se usa el 'name' slug)", options=src_q["opciones"])
+            vals = st.multiselect("Valores (usa texto, internamente se usará slug)", options=src_q["opciones"])
             vals = [slugify_name(v) for v in vals]
         else:
             manual = st.text_input("Valor (si la pregunta no tiene opciones)")
@@ -587,16 +573,14 @@ else:
                 st.error("Indica al menos un valor.")
             else:
                 st.session_state.reglas_visibilidad.append({"target": target, "src": src, "op": op, "values": vals})
-                st.success("Regla agregada.")
-                _rerun()
+                st.success("Regla agregada."); _rerun()
 
         if st.session_state.reglas_visibilidad:
             st.markdown("**Reglas de visibilidad actuales:**")
             for i, r in enumerate(st.session_state.reglas_visibilidad):
                 st.write(f"- Mostrar **{r['target']}** si **{r['src']}** {r['op']} {r['values']}")
                 if st.button(f"Eliminar regla #{i+1}", key=f"del_vis_{i}"):
-                    del st.session_state.reglas_visibilidad[i]
-                    _rerun()
+                    del st.session_state.reglas_visibilidad[i]; _rerun()
 
     with st.expander("⏹️ Finalizar temprano si se cumple condición", expanded=False):
         names = [q["name"] for q in st.session_state.preguntas]
@@ -606,7 +590,7 @@ else:
         src2_q = next((q for q in st.session_state.preguntas if q["name"] == src2), None)
         vals2 = []
         if src2_q and src2_q["opciones"]:
-            vals2 = st.multiselect("Valores que disparan el fin (se usan como 'name' slug)", options=src2_q["opciones"], key="final_vals")
+            vals2 = st.multiselect("Valores (slug interno)", options=src2_q["opciones"], key="final_vals")
             vals2 = [slugify_name(v) for v in vals2]
         else:
             manual2 = st.text_input("Valor (si no hay opciones)", key="final_manual")
@@ -617,45 +601,42 @@ else:
             else:
                 idx_src = next((i for i, q in enumerate(st.session_state.preguntas) if q["name"] == src2), 0)
                 st.session_state.reglas_finalizar.append({"src": src2, "op": op2, "values": vals2, "index_src": idx_src})
-                st.success("Regla agregada.")
-                _rerun()
+                st.success("Regla agregada."); _rerun()
 
         if st.session_state.reglas_finalizar:
             st.markdown("**Reglas de finalización actuales:**")
             for i, r in enumerate(st.session_state.reglas_finalizar):
                 st.write(f"- Si **{r['src']}** {r['op']} {r['values']} ⇒ ocultar lo que sigue (efecto fin)")
                 if st.button(f"Eliminar regla fin #{i+1}", key=f"del_fin_{i}"):
-                    del st.session_state.reglas_finalizar[i]
-                    _rerun()
+                    del st.session_state.reglas_finalizar[i]; _rerun()
 
 # ------------------------------------------------------------------------------------------
 # Construcción XLSForm (incluye P2) + constraints para placeholders
 # ------------------------------------------------------------------------------------------
-def _get_logo_media_name():
-    return logo_media_name
+def _get_logo_media_name(): return logo_media_name
 
 def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                       reglas_vis, reglas_fin):
-    survey_rows = []
-    choices_rows = []
+    survey_rows = []; choices_rows = []
 
     vis_by_target = {}
     for r in reglas_vis:
-        vis_by_target.setdefault(r["target"], []).append({
-            "src": r["src"], "op": r.get("op","="), "values": r.get("values",[])
-        })
+        vis_by_target.setdefault(r["target"], []).append(
+            {"src": r["src"], "op": r.get("op","="), "values": r.get("values",[])}
+        )
 
     fin_conds = []
     for r in reglas_fin:
         cond = build_relevant_expr([{"src": r["src"], "op": r.get("op","="), "values": r.get("values",[])}])
-        if cond:
-            fin_conds.append((r["index_src"], cond))
+        if cond: fin_conds.append((r["index_src"], cond))
 
-    # ------------------- Página 1: INTRO -------------------
-    survey_rows.append({"type":"begin_group","name":"p1_intro","label":"Introducción","appearance":"field-list"})
-    survey_rows.append({"type":"note","name":"intro_logo","label":form_title, "media::image": _get_logo_media_name()})
-    survey_rows.append({"type":"note","name":"intro_texto","label":INTRO_COMUNIDAD})
-    survey_rows.append({"type":"end_group","name":"p1_end"})
+    # Página 1: Intro
+    survey_rows += [
+        {"type":"begin_group","name":"p1_intro","label":"Introducción","appearance":"field-list"},
+        {"type":"note","name":"intro_logo","label":form_title, "media::image": _get_logo_media_name()},
+        {"type":"note","name":"intro_texto","label":INTRO_COMUNIDAD},
+        {"type":"end_group","name":"p1_end"}
+    ]
 
     # Sets por página
     p2 = {"canton","distrito","barrio","edad","genero","escolaridad","relacion_zona"}
@@ -678,13 +659,8 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
         rel_manual = q.get("relevant") or None
         rel_panel  = build_relevant_expr(vis_by_target.get(q["name"], []))
-
-        nots = []
-        for idx_src, cond in fin_conds:
-            if idx_src < idx:
-                nots.append(xlsform_not(cond))
+        nots = [xlsform_not(cond) for idx_src, cond in fin_conds if idx_src < idx]
         rel_fin = "(" + " and ".join(nots) + ")" if nots else None
-
         parts = [p for p in [rel_manual, rel_panel, rel_fin] if p]
         rel_final = parts[0] if parts and len(parts)==1 else ("(" + ") and (".join(parts) + ")" if parts else None)
 
@@ -695,7 +671,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         if q.get("choice_filter"): row["choice_filter"] = q["choice_filter"]
         if rel_final: row["relevant"] = rel_final
 
-        # Constraints para evitar placeholders
+        # Constraints placeholders
         if q["name"] == "canton":
             row["constraint"] = ". != '__pick_canton__'"
             row["constraint_message"] = "Seleccione un cantón válido."
@@ -708,23 +684,20 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
         survey_rows.append(row)
 
-        # NUNCA agregar opciones para canton/distrito/barrio aquí (se usan las del catálogo manual)
+        # No generar opciones para C/D/B (se usan las del catálogo).
         if list_name and q["name"] not in {"canton","distrito","barrio"}:
             usados = set()
             for opt_label in (q.get("opciones") or []):
                 base = slugify_name(opt_label)
-                opt_name = asegurar_nombre_unico(base, usados)
-                usados.add(opt_name)
+                opt_name = asegurar_nombre_unico(base, usados); usados.add(opt_name)
                 choices_rows.append({"list_name": list_name, "name": opt_name, "label": str(opt_label)})
 
     def add_page(group_name, page_label, names_set):
         survey_rows.append({"type":"begin_group","name":group_name,"label":page_label,"appearance":"field-list"})
         for i, q in enumerate(preguntas):
-            if q["name"] in names_set:
-                add_q(q, i)
+            if q["name"] in names_set: add_q(q, i)
         survey_rows.append({"type":"end_group","name":f"{group_name}_end"})
 
-    # Páginas (P2 incluida en XLSForm)
     add_page("p2_demograficos", "Datos demográficos", p2)
     add_page("p3_sentimiento", "Sentimiento de inseguridad en el barrio", p3)
     add_page("p4_lugares", "Indique cómo se siente en los siguientes lugares de su barrio", p4)
@@ -732,34 +705,26 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     add_page("p6_riesgos", "Riesgos Sociales", p6)
     add_page("p7_info_adicional", "Información adicional", p7)
 
-    # Choices del catálogo manual
+    # Choices del catálogo manual (con unicidad por list+name)
     for r in st.session_state.choices_ext_rows:
         choices_rows.append(dict(r))
 
     # DataFrames
-    survey_cols_all = set()
-    for r in survey_rows:
-        survey_cols_all.update(r.keys())
+    survey_cols_all = set().union(*[r.keys() for r in survey_rows])
     survey_cols = [c for c in ["type","name","label","required","appearance","choice_filter","relevant","constraint","constraint_message","media::image"] if c in survey_cols_all]
     for k in sorted(survey_cols_all):
-        if k not in survey_cols:
-            survey_cols.append(k)
+        if k not in survey_cols: survey_cols.append(k)
     df_survey = pd.DataFrame(survey_rows, columns=survey_cols)
 
     choices_cols_all = set()
-    for r in choices_rows:
-        choices_cols_all.update(r.keys())
+    for r in choices_rows: choices_cols_all.update(r.keys())
     base_choice_cols = ["list_name","name","label"]
     for extra in sorted(choices_cols_all):
-        if extra not in base_choice_cols:
-            base_choice_cols.append(extra)
+        if extra not in base_choice_cols: base_choice_cols.append(extra)
     df_choices = pd.DataFrame(choices_rows, columns=base_choice_cols) if choices_rows else pd.DataFrame(columns=base_choice_cols)
 
     df_settings = pd.DataFrame([{
-        "form_title": form_title,
-        "version": version,
-        "default_language": idioma,
-        "style": "pages"
+        "form_title": form_title, "version": version, "default_language": idioma, "style": "pages"
     }], columns=["form_title","version","default_language","style"])
 
     return df_survey, df_choices, df_settings
@@ -770,20 +735,15 @@ def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: 
         df_survey.to_excel(writer,  sheet_name="survey",   index=False)
         df_choices.to_excel(writer, sheet_name="choices",  index=False)
         df_settings.to_excel(writer, sheet_name="settings", index=False)
-        wb = writer.book
-        fmt_hdr = wb.add_format({"bold": True, "align": "left"})
+        wb = writer.book; fmt_hdr = wb.add_format({"bold": True, "align": "left"})
         for sheet, df in (("survey", df_survey), ("choices", df_choices), ("settings", df_settings)):
-            ws = writer.sheets[sheet]
-            ws.freeze_panes(1, 0)
-            ws.set_row(0, None, fmt_hdr)
-            cols = list(df.columns)
-            for col_idx, col_name in enumerate(cols):
+            ws = writer.sheets[sheet]; ws.freeze_panes(1, 0); ws.set_row(0, None, fmt_hdr)
+            for col_idx, col_name in enumerate(list(df.columns)):
                 ws.set_column(col_idx, col_idx, max(14, min(42, len(str(col_name)) + 8)))
     buffer.seek(0)
     st.download_button(
         label=f"📥 Descargar XLSForm ({nombre_archivo})",
-        data=buffer,
-        file_name=nombre_archivo,
+        data=buffer, file_name=nombre_archivo,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
@@ -793,11 +753,10 @@ def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: 
 # ------------------------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("📦 Generar XLSForm (Excel) para Survey123")
-
 st.caption("""
 Incluye:
-- **survey** con tipos, `relevant`, `choice_filter`, `appearance`, `constraint`, `media::image`,
-- **choices** (con columnas extra como `canton_key`/`distrito_key` y `any` para placeholders),
+- **survey** con `type,name,label,required,appearance,choice_filter,relevant,constraint,media::image`,
+- **choices** (con `canton_key`, `distrito_key` y `any` para placeholders),
 - **settings** con título, versión, idioma y **style = pages**.
 """)
 
@@ -811,46 +770,31 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
                 st.session_state.preguntas,
                 form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
                 idioma="es",
-                version=version.strip() or datetime.now().strftime("%Y%m%d%H%M"),
+                version=(version.strip() or datetime.now().strftime("%Y%m%d%H%M")),
                 reglas_vis=st.session_state.reglas_visibilidad,
                 reglas_fin=st.session_state.reglas_finalizar
             )
-
             st.success("XLSForm construido. Vista previa:")
             c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown("**Hoja: survey**")
-                st.dataframe(df_survey, use_container_width=True, hide_index=True)
-            with c2:
-                st.markdown("**Hoja: choices**")
-                st.dataframe(df_choices, use_container_width=True, hide_index=True)
-            with c3:
-                st.markdown("**Hoja: settings**")
-                st.dataframe(df_settings, use_container_width=True, hide_index=True)
+            c1.markdown("**Hoja: survey**");   c1.dataframe(df_survey,  use_container_width=True, hide_index=True)
+            c2.markdown("**Hoja: choices**");  c2.dataframe(df_choices, use_container_width=True, hide_index=True)
+            c3.markdown("**Hoja: settings**"); c3.dataframe(df_settings,use_container_width=True, hide_index=True)
 
             nombre_archivo = slugify_name(form_title) + "_xlsform.xlsx"
-            descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo=nombre_archivo)
+            descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo)
 
             if st.session_state.get("_logo_bytes"):
-                st.download_button(
-                    "📥 Descargar logo para carpeta media",
-                    data=st.session_state["_logo_bytes"],
-                    file_name=logo_media_name,
-                    mime="image/png",
-                    use_container_width=True
-                )
+                st.download_button("📥 Descargar logo para carpeta media",
+                                   data=st.session_state["_logo_bytes"],
+                                   file_name=logo_media_name, mime="image/png",
+                                   use_container_width=True)
 
-            st.info("""
-**Publicar en Survey123 (Connect)**
-1) Crea la encuesta **desde archivo** con el XLSForm exportado.
-2) Copia tu imagen de logo a la carpeta **media/** del proyecto con el **mismo nombre** que figura en `media::image`.
-3) Previsualiza y publica. En P2 verás placeholders; el formulario **obliga** a elegir opciones válidas.
-""")
+            st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
 
 # ------------------------------------------------------------------------------------------
-# Exportar Word y PDF — SOLO Páginas 1, 3, 4, 5, 6 y 7
+# Exportar Word y PDF — SOLO P1, P3, P4, P5, P6, P7
 # ------------------------------------------------------------------------------------------
 try:
     from docx import Document
@@ -874,68 +818,56 @@ except Exception:
 
 def _build_cond_text(qname: str, reglas_vis: List[Dict]) -> str:
     rels = [r for r in reglas_vis if r.get("target") == qname]
-    if not rels:
-        return ""
+    if not rels: return ""
     parts = []
     for r in rels:
-        op = r.get("op", "=")
-        vals = r.get("values", [])
+        op = r.get("op", "="); vals = r.get("values", [])
         vtxt = ", ".join(vals) if vals else ""
         parts.append(f"{r['src']} {op} [{vtxt}]")
     return "Condición: se muestra si " + " OR ".join(parts)
 
 def _get_logo_bytes_fallback() -> bytes | None:
-    if st.session_state.get("_logo_bytes"):
-        return st.session_state["_logo_bytes"]
+    if st.session_state.get("_logo_bytes"): return st.session_state["_logo_bytes"]
     try:
-        with open("001.png", "rb") as f:
-            return f.read()
+        with open("001.png", "rb") as f: return f.read()
     except Exception:
         return None
 
 def _wrap_text_lines(text: str, font_name: str, font_size: float, max_width: float) -> List[str]:
-    if not text:
-        return []
-    words = text.split()
-    lines, current = [], ""
+    if not text: return []
     from reportlab.pdfbase.pdfmetrics import stringWidth
+    words = text.split(); lines, current = [], ""
     for w in words:
         test = (current + " " + w).strip()
         if stringWidth(test, font_name, font_size) <= max_width:
             current = test
         else:
-            if current:
-                lines.append(current)
+            if current: lines.append(current)
             if stringWidth(w, font_name, font_size) > max_width:
                 chunk = ""
                 for ch in w:
-                    if stringWidth(chunk + ch, font_name, font_size) <= max_width:
-                        chunk += ch
+                    if stringWidth(chunk + ch, font_name, font_size) <= max_width: chunk += ch
                     else:
-                        if chunk:
-                            lines.append(chunk)
+                        if chunk: lines.append(chunk)
                         chunk = ch
                 current = chunk
             else:
                 current = w
-    if current:
-        lines.append(current)
+    if current: lines.append(current)
     return lines
 
 def _is_yes_no_options(opts: List[str]) -> bool:
     if not opts: return False
     norm = {slugify_name(x) for x in opts if x and str(x).strip()}
-    yes_variants = {"si","sí","yes"}
-    no_variants = {"no"}
+    yes_variants = {"si","sí","yes"}; no_variants = {"no"}
     return norm.issubset(yes_variants | no_variants) and any(y in norm for y in yes_variants) and any(n in norm for n in no_variants)
 
 def _should_show_options(q: Dict) -> bool:
-    if q.get("tipo_ui") not in ("Selección única", "Selección múltiple"):
-        return False
+    if q.get("tipo_ui") not in ("Selección única", "Selección múltiple"): return False
     opts = q.get("opciones") or []
     return bool(opts) and not _is_yes_no_options(opts)
 
-# Páginas a imprimir en Word/PDF (sin P2)
+# Páginas a imprimir (sin P2)
 P3_NAMES = {"se_siente_seguro","motivo_inseguridad","comparacion_anual","motivo_comparacion"}
 P4_NAMES = {"lugar_entretenimiento","espacios_recreativos","lugar_residencia","paradas_estaciones",
             "puentes_peatonales","transporte_publico","zona_bancaria","zona_comercio",
@@ -965,55 +897,38 @@ from docx.oxml.ns import qn
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
 
 def _set_cell_shading(cell, fill_hex: str):
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
+    tc = cell._tc; tcPr = tc.get_or_add_tcPr()
     shd = tcPr.find(qn('w:shd'))
     if shd is None:
-        shd = OxmlElement('w:shd')
-        tcPr.append(shd)
-    shd.set(qn('w:val'), 'clear')
-    shd.set(qn('w:color'), 'auto')
-    shd.set(qn('w:fill'), fill_hex.replace('#','').upper())
+        shd = OxmlElement('w:shd'); tcPr.append(shd)
+    shd.set(qn('w:val'), 'clear'); shd.set(qn('w:color'), 'auto'); shd.set(qn('w:fill'), fill_hex.replace('#','').upper())
 
 def _set_cell_borders(cell, color_hex: str):
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
+    tc = cell._tc; tcPr = tc.get_or_add_tcPr()
     borders = tcPr.find(qn('w:tcBorders'))
     if borders is None:
-        borders = OxmlElement('w:tcBorders')
-        tcPr.append(borders)
+        borders = OxmlElement('w:tcBorders'); tcPr.append(borders)
     for edge in ('top','left','bottom','right'):
-        tag = OxmlElement(f'w:{edge}')
-        tag.set(qn('w:val'), 'single')
-        tag.set(qn('w:sz'), '8')
-        tag.set(qn('w:color'), color_hex.replace('#','').upper())
+        tag = OxmlElement(f'w:{edge}'); tag.set(qn('w:val'), 'single'); tag.set(qn('w:sz'), '8'); tag.set(qn('w:color'), color_hex.replace('#','').upper())
         borders.append(tag)
 
 def _add_observation_box(doc: _Doc, fill_hex: str, border_hex: str):
-    tbl = doc.add_table(rows=1, cols=1)
-    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
-    tbl.autofit = True
-    cell = tbl.cell(0, 0)
-    _set_cell_shading(cell, fill_hex)
-    _set_cell_borders(cell, border_hex)
-    row = tbl.rows[0]
-    row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
-    row.height = Inches(1.1)
-    p = cell.paragraphs[0]
-    p.add_run("")
+    from docx.shared import Inches
+    tbl = doc.add_table(rows=1, cols=1); tbl.alignment = WD_TABLE_ALIGNMENT.LEFT; tbl.autofit = True
+    cell = tbl.cell(0, 0); _set_cell_shading(cell, fill_hex); _set_cell_borders(cell, border_hex)
+    row = tbl.rows[0]; row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST; row.height = Inches(1.1)
+    cell.paragraphs[0].add_run("")
 
 def export_docx_form(preguntas: List[Dict], form_title: str, intro: str, reglas_vis: List[Dict]):
     if Document is None:
-        st.error("Falta dependencia: instala `python-docx` para generar Word.")
-        return
+        st.error("Falta dependencia: instala `python-docx` para generar Word."); return
+    from docx.shared import Pt, Inches, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-    fills = ["#E6F4EA", "#E7F0FE", "#FDECEA"]
-    borders = ["#1E8E3E", "#1A73E8", "#D93025"]
-    BLACK = RGBColor(0, 0, 0)
+    fills = ["#E6F4EA", "#E7F0FE", "#FDECEA"]; borders = ["#1E8E3E", "#1A73E8", "#D93025"]; BLACK = RGBColor(0,0,0)
 
     doc = Document()
-    p = doc.add_paragraph()
-    run = p.add_run(form_title); run.bold = True; run.font.size = Pt(24); run.font.color.rgb = BLACK
+    p = doc.add_paragraph(); run = p.add_run(form_title); run.bold = True; run.font.size = Pt(24); run.font.color.rgb = BLACK
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     logo_b = _get_logo_bytes_fallback()
@@ -1022,134 +937,96 @@ def export_docx_form(preguntas: List[Dict], form_title: str, intro: str, reglas_
             img_buf = BytesIO(logo_b)
             doc.add_paragraph().alignment = WD_ALIGN_PARAGRAPH.CENTER
             doc.add_picture(img_buf, width=Inches(2.8))
-        except Exception:
-            pass
+        except Exception: pass
 
-    intro_p = doc.add_paragraph(intro)
-    intro_p.runs[0].font.size = Pt(12); intro_p.runs[0].font.color.rgb = BLACK
+    intro_p = doc.add_paragraph(intro); intro_p.runs[0].font.size = Pt(12); intro_p.runs[0].font.color.rgb = BLACK
 
-    i = 1
-    color_idx = 0
+    i = 1; color_idx = 0
     for section_title, names in ALL_BY_PAGE_PRINT:
-        if "__INTRO__" in names:
-            continue
+        if "__INTRO__" in names: continue
         sec = doc.add_paragraph(section_title)
         rs = sec.runs[0]; rs.bold = True; rs.font.size = Pt(14); rs.font.color.rgb = BLACK
 
         for q in preguntas:
-            if q.get("name") not in names:
-                continue
-
+            if q.get("name") not in names: continue
             doc.add_paragraph("")
-            h = doc.add_paragraph(f"{i}. {q['label']}")
-            r = h.runs[0]; r.font.size = Pt(11); r.font.color.rgb = BLACK
+            h = doc.add_paragraph(f"{i}. {q['label']}"); r = h.runs[0]; r.font.size = Pt(11); r.font.color.rgb = BLACK
 
             cond_txt = _build_cond_text(q["name"], reglas_vis)
             if cond_txt:
-                cpara = doc.add_paragraph(cond_txt)
-                rc = cpara.runs[0]; rc.italic = True; rc.font.size = Pt(9); rc.font.color.rgb = BLACK
+                cpara = doc.add_paragraph(cond_txt); rc = cpara.runs[0]; rc.italic = True; rc.font.size = Pt(9); rc.font.color.rgb = BLACK
 
             if _should_show_options(q):
                 opts_str = ", ".join([str(x) for x in q.get("opciones") if str(x).strip()])
-                opara = doc.add_paragraph(f"Opciones: {opts_str}")
-                ro = opara.runs[0]; ro.font.size = Pt(10); ro.font.color.rgb = BLACK
+                opara = doc.add_paragraph(f"Opciones: {opts_str}"); ro = opara.runs[0]; ro.font.size = Pt(10); ro.font.color.rgb = BLACK
 
-            fill = fills[color_idx % len(fills)]
-            border = borders[color_idx % len(borders)]
-            color_idx += 1
+            fill = fills[color_idx % len(fills)]; border = borders[color_idx % len(borders)]; color_idx += 1
             _add_observation_box(doc, fill, border)
-
             help_p = doc.add_paragraph("Agregue sus observaciones sobre la pregunta.")
             rh = help_p.runs[0]; rh.italic = True; rh.font.size = Pt(9); rh.font.color.rgb = BLACK
-
             i += 1
 
     buf = BytesIO(); doc.save(buf); buf.seek(0)
-    st.download_button(
-        "📄 Descargar Word del formulario",
-        data=buf,
-        file_name=slugify_name(form_title) + "_formulario.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        use_container_width=True
-    )
+    st.download_button("📄 Descargar Word del formulario", data=buf,
+                       file_name=slugify_name(form_title) + "_formulario.docx",
+                       mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                       use_container_width=True)
 
 def export_pdf_editable_form(preguntas: List[Dict], form_title: str, intro: str, reglas_vis: List[Dict]):
     if canvas is None:
-        st.error("Falta dependencia: instala `reportlab` para generar PDF.")
-        return
+        st.error("Falta dependencia: instala `reportlab` para generar PDF."); return
+    from reportlab.pdfgen import canvas as _canvas
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.lib.utils import ImageReader
+    from reportlab.lib.colors import HexColor, black
 
-    PAGE_W, PAGE_H = A4
-    margin = 2 * cm
-    max_text_w = PAGE_W - 2 * margin
-
+    PAGE_W, PAGE_H = A4; margin = 2 * cm; max_text_w = PAGE_W - 2 * margin
     title_font, title_size = "Helvetica-Bold", 24
-    intro_font, intro_size = "Helvetica", 12
-    intro_line_h = 18
+    intro_font, intro_size = "Helvetica", 12; intro_line_h = 18
     sec_font, sec_size = "Helvetica-Bold", 14
     label_font, label_size = "Helvetica", 11
     cond_font, cond_size = "Helvetica-Oblique", 9
     helper_font, helper_size = "Helvetica-Oblique", 9
     opts_font, opts_size = "Helvetica", 10
-
     fills = [HexColor("#E6F4EA"), HexColor("#E7F0FE"), HexColor("#FDECEA")]
     borders = [HexColor("#1E8E3E"), HexColor("#1A73E8"), HexColor("#D93025")]
+    field_h = 80; line_h = 14; y = PAGE_H - margin
 
-    field_h = 80
-    line_h = 14
-    y = PAGE_H - margin
-
-    from reportlab.pdfgen import canvas as _canvas
-    c = _canvas.Canvas(BytesIO(), pagesize=A4)
-    buf = c._filename
-    c = _canvas.Canvas(buf, pagesize=A4)
-    c.setTitle(form_title)
+    c = _canvas.Canvas(BytesIO(), pagesize=A4); buf = c._filename
+    c = _canvas.Canvas(buf, pagesize=A4); c.setTitle(form_title)
 
     logo_b = _get_logo_bytes_fallback()
     if logo_b:
         try:
             img = ImageReader(BytesIO(logo_b))
             logo_w, logo_h = 160, 115
-            c.drawImage(img, (PAGE_W - logo_w) / 2, y - logo_h, width=logo_w, height=logo_h,
-                        preserveAspectRatio=True, mask='auto')
+            c.drawImage(img, (PAGE_W - logo_w)/2, y - logo_h, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
             y -= (logo_h + 24)
-        except Exception:
-            pass
+        except Exception: pass
 
-    from reportlab.lib.colors import black
-    c.setFillColor(black)
-    c.setFont(title_font, title_size)
-    c.drawCentredString(PAGE_W / 2, y, form_title); y -= 26
-
+    c.setFillColor(black); c.setFont(title_font, title_size); c.drawCentredString(PAGE_W/2, y, form_title); y -= 26
     c.setFont(intro_font, intro_size)
-    intro_lines = _wrap_text_lines(intro, intro_font, intro_size, max_text_w)
-    for line in intro_lines:
-        if y < margin + 80:
-            c.showPage(); y = PAGE_H - margin; c.setFillColor(black); c.setFont(intro_font, intro_size)
+    for line in _wrap_text_lines(intro, intro_font, intro_size, max_text_w):
+        if y < margin + 80: c.showPage(); y = PAGE_H - margin; c.setFillColor(black); c.setFont(intro_font, intro_size)
         c.drawString(margin, y, line); y -= intro_line_h
 
     c.showPage(); y = PAGE_H - margin; c.setFillColor(black)
 
-    i = 1
-    color_idx = 0
+    i = 1; color_idx = 0
     for section_title, names in ALL_BY_PAGE_PRINT:
-        if "__INTRO__" in names:
-            continue
-
-        c.setFont(sec_font, sec_size); c.drawString(margin, y, section_title)
-        y -= (line_h + 6); c.setFont(label_font, label_size)
+        if "__INTRO__" in names: continue
+        c.setFont(sec_font, sec_size); c.drawString(margin, y, section_title); y -= (line_h + 6); c.setFont(label_font, label_size)
 
         for q in st.session_state.preguntas:
-            if q.get("name") not in names:
-                continue
+            if q.get("name") not in names: continue
 
             label_lines = _wrap_text_lines(f"{i}. {q['label']}", label_font, label_size, max_text_w)
             needed = line_h * len(label_lines) + field_h + 26
 
             cond_txt = _build_cond_text(q["name"], reglas_vis)
-            cond_lines = []
-            if cond_txt:
-                cond_lines = _wrap_text_lines(cond_txt, cond_font, cond_size, max_text_w)
-                needed += line_h * len(cond_lines)
+            cond_lines = _wrap_text_lines(cond_txt, cond_font, cond_size, max_text_w) if cond_txt else []
+            needed += line_h * len(cond_lines)
 
             opts_lines = []
             if _should_show_options(q):
@@ -1162,75 +1039,41 @@ def export_pdf_editable_form(preguntas: List[Dict], form_title: str, intro: str,
                 c.setFont(sec_font, sec_size); c.drawString(margin, y, section_title)
                 y -= (line_h + 6); c.setFont(label_font, label_size)
 
-            for line in label_lines:
-                c.drawString(margin, y, line); y -= line_h
-
+            for line in label_lines: c.drawString(margin, y, line); y -= line_h
             if cond_lines:
                 c.setFont(cond_font, cond_size)
-                for cl in cond_lines:
-                    c.drawString(margin, y, cl); y -= line_h
+                for cl in cond_lines: c.drawString(margin, y, cl); y -= line_h
                 c.setFont(label_font, label_size)
-
             if opts_lines:
                 c.setFont(opts_font, opts_size)
-                for ol in opts_lines:
-                    c.drawString(margin, y, ol); y -= line_h
+                for ol in opts_lines: c.drawString(margin, y, ol); y -= line_h
                 c.setFont(label_font, label_size)
 
-            fill_color = fills[color_idx % len(fills)]
-            border_color = borders[color_idx % len(borders)]
-            color_idx += 1
+            fill_color = fills[color_idx % len(fills)]; border_color = borders[color_idx % len(borders)]; color_idx += 1
             c.setFillColor(fill_color); c.setStrokeColor(border_color)
-            c.rect(margin, y - field_h, max_text_w, field_h, fill=1, stroke=1)
-            c.setFillColor(black)
+            c.rect(margin, y - field_h, max_text_w, field_h, fill=1, stroke=1); c.setFillColor(black)
+            c.acroForm.textfield(name=f"campo_obs_{i}", tooltip=f"Observaciones para: {q['name']}",
+                                 x=margin, y=y - field_h, width=max_text_w, height=field_h,
+                                 borderWidth=1, borderStyle='solid', forceBorder=True, fieldFlags=4096, value="")
+            c.setFont(helper_font, helper_size); c.drawString(margin, y - field_h - 10, "Agregue sus observaciones sobre la pregunta.")
+            c.setFont(label_font, label_size); y -= (field_h + 26); i += 1
 
-            c.acroForm.textfield(
-                name=f"campo_obs_{i}",
-                tooltip=f"Observaciones para: {q['name']}",
-                x=margin, y=y - field_h,
-                width=max_text_w, height=field_h,
-                borderWidth=1, borderStyle='solid',
-                forceBorder=True, fieldFlags=4096, value=""
-            )
-            c.setFont(helper_font, helper_size)
-            c.drawString(margin, y - field_h - 10, "Agregue sus observaciones sobre la pregunta.")
-            c.setFont(label_font, label_size)
-
-            y -= (field_h + 26); i += 1
-
-        if y < margin + 120:
-            c.showPage(); y = PAGE_H - margin; c.setFillColor(black)
+        if y < margin + 120: c.showPage(); y = PAGE_H - margin; c.setFillColor(black)
 
     c.showPage(); c.save()
-    pdf_buf = c._filename
-    data = pdf_buf.getvalue() if hasattr(pdf_buf, "getvalue") else pdf_buf
+    pdf_buf = c._filename; data = pdf_buf.getvalue() if hasattr(pdf_buf,"getvalue") else pdf_buf
+    st.download_button("🧾 Descargar PDF editable del formulario", data=data,
+                       file_name=slugify_name(form_title) + "_formulario_editable.pdf",
+                       mime="application/pdf", use_container_width=True)
 
-    st.download_button(
-        "🧾 Descargar PDF editable del formulario",
-        data=data,
-        file_name=slugify_name(form_title) + "_formulario_editable.pdf",
-        mime="application/pdf",
-        use_container_width=True
-    )
-
-# ---------- Botones Word/PDF ----------
+# ---------- Botones ----------
 st.markdown("### 📝 Exportar formulario en **Word** y **PDF editable**")
 col_w, col_p = st.columns(2)
-
-with col_w:
-    if st.button("Generar Word (DOCX)"):
-        export_docx_form(
-            preguntas=st.session_state.preguntas,
-            form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
-            intro=INTRO_COMUNIDAD,
-            reglas_vis=st.session_state.reglas_visibilidad
-        )
-
-with col_p:
-    if st.button("Generar PDF editable"):
-        export_pdf_editable_form(
-            preguntas=st.session_state.preguntas,
-            form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
-            intro=INTRO_COMUNIDAD,
-            reglas_vis=st.session_state.reglas_visibilidad
-        )
+if col_w.button("Generar Word (DOCX)"):
+    export_docx_form(st.session_state.preguntas,
+                     form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
+                     intro=INTRO_COMUNIDAD, reglas_vis=st.session_state.reglas_visibilidad)
+if col_p.button("Generar PDF editable"):
+    export_pdf_editable_form(st.session_state.preguntas,
+                             form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
+                             intro=INTRO_COMUNIDAD, reglas_vis=st.session_state.reglas_visibilidad)
