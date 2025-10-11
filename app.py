@@ -3,13 +3,12 @@
 # App: Encuesta Comunidad → XLSForm para ArcGIS Survey123 (versión extendida)
 # - Constructor completo (agregar/editar/ordenar/borrar)
 # - Condicionales (relevant) + finalizar temprano
-# - Listas en cascada (choice_filter) Cantón→Distrito→Barrio [PEGADO MANUAL EN APP]
+# - Listas en cascada (choice_filter) Cantón→Distrito→Barrio [CATÁLOGO MANUAL POR LOTES]
 # - Exportar/Importar proyecto (JSON)
 # - Exportar a XLSForm (survey/choices/settings)
 # - PÁGINAS reales (style="pages"): Intro + P2..P7
 # - Portada con logo (media::image) y texto de introducción
-# - Exportes Word/PDF con el estilo afinado (observaciones sin límite, colores)
-# - Opciones visibles en Word/PDF para select_one/multiple, salvo preguntas Sí/No
+# - Exportes Word/PDF afinados (opciones visibles y cajas de observación)
 # ==========================================================================================
 
 import re
@@ -33,7 +32,7 @@ Crea tu cuestionario y **exporta un XLSForm** listo para **ArcGIS Survey123** (C
 Incluye:
 - Tipos: **text**, **integer/decimal**, **date**, **time**, **geopoint**, **select_one**, **select_multiple**.
 - **Constructor completo** (agregar, editar, ordenar, borrar) con condicionales.
-- **Listas en cascada** **Cantón→Distrito→Barrio** (**pegado manual en la app**).
+- **Listas en cascada** **Cantón→Distrito→Barrio** (**catálogo manual por lotes**).
 - **Páginas** con navegación **Siguiente/Anterior** (`settings.style = pages`).
 - **Portada** con **logo** (`media::image`) e **introducción**.
 """)
@@ -123,84 +122,109 @@ def build_relevant_expr(rules_for_target: List[Dict]):
     return xlsform_or_expr(or_parts)
 
 # ------------------------------------------------------------------------------------------
-# PEGADO MANUAL: Cantón→Distrito→Barrio (reemplaza la lectura desde Excel)
+# Catálogo manual por lotes: Cantón → Distrito → (Barrios…)
 # ------------------------------------------------------------------------------------------
+if "choices_ext_rows" not in st.session_state:
+    st.session_state.choices_ext_rows = []  # filas para hoja "choices"
 if "choices_extra_cols" not in st.session_state:
     st.session_state.choices_extra_cols = set()
-if "choices_ext_rows" not in st.session_state:
-    st.session_state.choices_ext_rows = []
 
-st.markdown("### 📚 Catálogo Cantón → Distrito → Barrio (PEGAR manualmente)")
-with st.expander("Pega filas: canton, distrito, barrio  (separado por coma, punto y coma o TAB)", expanded=True):
-    ejemplo = "Sarapiquí, La Virgen, San Miguel\nSarapiquí, Puerto Viejo, San Juan\nPococí, Guápiles, Barrio Central"
-    txt_cdb = st.text_area("Pega aquí tus filas (una por línea)", value=ejemplo, height=140)
-    delim = st.radio("Separador", options=["auto", ",", ";", "TAB"], horizontal=True, index=0)
-    col_cd1, col_cd2 = st.columns(2)
-    with col_cd1:
-        do_overwrite_cdb = st.checkbox("Reemplazar catálogo actual", value=True)
-    with col_cd2:
-        if st.button("Procesar catálogo", use_container_width=True):
-            data = txt_cdb.strip("\n")
-            if not data:
-                st.warning("No hay datos para procesar.")
-            else:
-                if delim == "TAB":
-                    sep = "\t"
-                elif delim in [",",";"]:
-                    sep = delim
-                else:
-                    sep = "\t" if ("\t" in data) else ("," if ("," in data) else ";")
+def _append_choice_unique(row: Dict):
+    """Inserta una fila en choices evitando duplicados exactos por (list_name,name)."""
+    key = (row.get("list_name"), row.get("name"))
+    exists = any((r.get("list_name"), r.get("name")) == key for r in st.session_state.choices_ext_rows)
+    if not exists:
+        st.session_state.choices_ext_rows.append(row)
 
-                try:
-                    df = pd.read_csv(StringIO(data), header=None, names=["canton","distrito","barrio"], sep=sep, dtype=str)
-                    for c in ["canton","distrito","barrio"]:
-                        df[c] = df[c].fillna("").astype(str).str.strip()
-                    df = df[(df["canton"]!="") & (df["distrito"]!="") & (df["barrio"]!="")].drop_duplicates()
+st.markdown("### 📚 Catálogo Cantón → Distrito → Barrios (por lotes)")
+with st.expander("Agrega un lote (un Cantón, un Distrito y varios Barrios)", expanded=True):
+    col_c1, col_c2 = st.columns(2)
+    canton_txt = col_c1.text_input("Cantón (una vez)", value="")
+    distrito_txt = col_c2.text_input("Distrito (una vez)", value="")
+    barrios_txt = st.text_area("Barrios del distrito (uno por línea)", value="", height=130,
+                               help="Pega aquí todos los barrios que pertenecen al distrito indicado arriba.")
 
-                    # Preparar filas de choices: list_canton / list_distrito (+canton_key) / list_barrio (+distrito_key)
-                    cantones = sorted(df["canton"].dropna().unique().tolist())
-                    distritos = df[["canton","distrito"]].drop_duplicates().sort_values(["canton","distrito"])
-                    barrios   = df[["distrito","barrio"]].drop_duplicates().sort_values(["distrito","barrio"])
+    col_b1, col_b2, col_b3 = st.columns([1,1,2])
+    with col_b1:
+        add_lote = st.button("Agregar lote", type="primary", use_container_width=True)
+    with col_b2:
+        clear_all = st.button("Limpiar catálogo", use_container_width=True)
 
-                    # Limpiar versiones previas de CDB
-                    if do_overwrite_cdb:
-                        st.session_state.choices_ext_rows = [
-                            r for r in st.session_state.choices_ext_rows
-                            if r.get("list_name") not in ("list_canton","list_distrito","list_barrio")
-                        ]
+    if clear_all:
+        st.session_state.choices_ext_rows = []
+        st.success("Catálogo limpiado.")
 
-                    st.session_state.choices_extra_cols.update({"canton_key", "distrito_key"})
+    if add_lote:
+        c = canton_txt.strip()
+        d = distrito_txt.strip()
+        barrios = [b.strip() for b in barrios_txt.splitlines() if b.strip()]
+        if not c or not d or not barrios:
+            st.error("Debes indicar Cantón, Distrito y al menos un Barrio.")
+        else:
+            slug_c = slugify_name(c)
+            slug_d = slugify_name(d)
 
-                    for c in cantones:
-                        st.session_state.choices_ext_rows.append({
-                            "list_name": "list_canton",
-                            "name": slugify_name(c),
-                            "label": c
-                        })
-                    for _, row in distritos.iterrows():
-                        st.session_state.choices_ext_rows.append({
-                            "list_name": "list_distrito",
-                            "name": slugify_name(str(row["distrito"])),
-                            "label": str(row["distrito"]),
-                            "canton_key": str(row["canton"])
-                        })
-                    for _, row in barrios.iterrows():
-                        st.session_state.choices_ext_rows.append({
-                            "list_name": "list_barrio",
-                            "name": slugify_name(str(row["barrio"])),
-                            "label": str(row["barrio"]),
-                            "distrito_key": str(row["distrito"])
-                        })
+            # Columnas extra usadas por filtros/placeholder
+            st.session_state.choices_extra_cols.update({"canton_key","distrito_key","any"})
 
-                    st.success("Catálogo Cantón→Distrito→Barrio cargado desde pegado manual.")
-                except Exception as e:
-                    st.error(f"Error al procesar el catálogo pegado: {e}")
+            # ---------- Placeholders (una vez) ----------
+            # Cantón placeholder (no necesita 'any')
+            _append_choice_unique({
+                "list_name": "list_canton",
+                "name": "__pick_canton__",
+                "label": "— escoja un cantón —"
+            })
+            # Distrito placeholder: visible siempre gracias a any='1'
+            _append_choice_unique({
+                "list_name": "list_distrito",
+                "name": "__pick_distrito__",
+                "label": "— escoja un cantón —",
+                "any": "1"
+            })
+            # Barrio placeholder: visible siempre gracias a any='1'
+            _append_choice_unique({
+                "list_name": "list_barrio",
+                "name": "__pick_barrio__",
+                "label": "— escoja un distrito —",
+                "any": "1"
+            })
 
+            # ---------- list_canton ----------
+            _append_choice_unique({
+                "list_name": "list_canton",
+                "name": slug_c,
+                "label": c
+            })
+
+            # ---------- list_distrito ----------
+            _append_choice_unique({
+                "list_name": "list_distrito",
+                "name": slug_d,
+                "label": d,
+                "canton_key": slug_c
+            })
+
+            # ---------- list_barrio ----------
+            usados_b = set()
+            for b in barrios:
+                slug_b = asegurar_nombre_unico(slugify_name(b), usados_b)
+                usados_b.add(slug_b)
+                _append_choice_unique({
+                    "list_name": "list_barrio",
+                    "name": slug_b,
+                    "label": b,
+                    "distrito_key": slug_d
+                })
+
+            st.success(f"Lote agregado: {c} → {d} → {len(barrios)} barrios.")
+
+# Vista previa de catálogo
 if st.session_state.choices_ext_rows:
-    st.dataframe(pd.DataFrame(st.session_state.choices_ext_rows), use_container_width=True, hide_index=True, height=220)
+    st.dataframe(pd.DataFrame(st.session_state.choices_ext_rows),
+                 use_container_width=True, hide_index=True, height=240)
 
 # ------------------------------------------------------------------------------------------
-# Cabecera: Logo + “Nombre de la Delegación” (encabezado compuesto)
+# Cabecera: Logo + “Nombre de la Delegación”
 # ------------------------------------------------------------------------------------------
 DEFAULT_LOGO_PATH = "001.png"
 
@@ -255,8 +279,7 @@ INTRO_COMUNIDAD = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Precarga EXACTA de preguntas (páginas 2–7) — SIN CAMBIOS DE CONTENIDO
-# (P2 se mantiene para XLSForm. En Word/PDF se ocultará más abajo)
+# Precarga de preguntas (P2 se mantiene igual, sin opciones dummy)
 # ------------------------------------------------------------------------------------------
 if "seed_cargado" not in st.session_state:
 
@@ -267,13 +290,13 @@ if "seed_cargado" not in st.session_state:
     v_menos_seg   = slugify_name("Menos seguro")
 
     seed = [
-        # ---------------- Página 2: Datos demográficos (EXISTE para XLSForm) ----------------
+        # ---------------- Página 2: Datos demográficos ----------------
         {"tipo_ui":"Selección única","label":"Cantón","name":"canton","required":True,
-         "opciones":["— cargado en app —"],"appearance":None,"choice_filter":None,"relevant":None},
+         "opciones":[], "appearance":None, "choice_filter":None, "relevant":None},
         {"tipo_ui":"Selección única","label":"Distrito","name":"distrito","required":True,
-         "opciones":["— según Cantón —"],"appearance":None,"choice_filter":"canton_key=${canton}","relevant":None},
+         "opciones":[], "appearance":None, "choice_filter":"canton_key=${canton} or any='1'", "relevant":None},
         {"tipo_ui":"Selección única","label":"Barrio","name":"barrio","required":True,
-         "opciones":["— según Distrito —"],"appearance":None,"choice_filter":"distrito_key=${distrito}","relevant":None},
+         "opciones":[], "appearance":None, "choice_filter":"distrito_key=${distrito} or any='1'", "relevant":None},
         {"tipo_ui":"Número","label":"Edad","name":"edad","required":True,"opciones":[],"appearance":None,"choice_filter":None,"relevant":None},
         {"tipo_ui":"Selección única","label":"Género","name":"genero","required":True,
          "opciones":["Masculino","Femenino","LGTBQ+"],"appearance":None,"choice_filter":None,"relevant":None},
@@ -445,7 +468,7 @@ if "seed_cargado" not in st.session_state:
     st.session_state.seed_cargado = True
 
 # ------------------------------------------------------------------------------------------
-# Sidebar: Metadatos + Exportar/Importar proyecto (SIN la carga por Excel)
+# Sidebar: Metadatos + Exportar/Importar proyecto
 # ------------------------------------------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -533,14 +556,13 @@ if add:
         st.success(f"Pregunta agregada: **{label}** (name: `{unico}`)")
 
 # ------------------------------------------------------------------------------------------
-# Panel de Condicionales (mostrar / finalizar) — SIN CAMBIOS
+# Panel de Condicionales (mostrar / finalizar)
 # ------------------------------------------------------------------------------------------
 st.subheader("🔀 Condicionales (mostrar / finalizar)")
 
 if not st.session_state.preguntas:
     st.info("Agrega preguntas para definir condicionales.")
 else:
-    # ----- Reglas de visibilidad -----
     with st.expander("👁️ Mostrar pregunta si se cumple condición", expanded=False):
         names = [q["name"] for q in st.session_state.preguntas]
         labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
@@ -576,7 +598,6 @@ else:
                     del st.session_state.reglas_visibilidad[i]
                     _rerun()
 
-    # ----- Reglas de finalizar -----
     with st.expander("⏹️ Finalizar temprano si se cumple condición", expanded=False):
         names = [q["name"] for q in st.session_state.preguntas]
         labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
@@ -608,77 +629,7 @@ else:
                     _rerun()
 
 # ------------------------------------------------------------------------------------------
-# Lista / Ordenado / Edición (completa)
-# ------------------------------------------------------------------------------------------
-st.subheader("📚 Preguntas (ordénalas y edítalas)")
-
-if not st.session_state.preguntas:
-    st.info("Aún no has agregado preguntas.")
-else:
-    for idx, q in enumerate(st.session_state.preguntas):
-        with st.container(border=True):
-            c1, c2, c3, c4, c5 = st.columns([4, 2, 2, 2, 2])
-            c1.markdown(f"**{idx+1}. {q['label']}**")
-            meta = f"type: {q['tipo_ui']}  •  name: `{q['name']}`  •  requerida: {'sí' if q['required'] else 'no'}"
-            if q.get("appearance"): meta += f"  •  appearance: `{q['appearance']}`"
-            if q.get("choice_filter"): meta += f"  •  choice_filter: `{q['choice_filter']}`"
-            if q.get("relevant"): meta += f"  •  relevant: `{q['relevant']}`"
-            c1.caption(meta)
-            if q["tipo_ui"] in ("Selección única","Selección múltiple"):
-                c1.caption("Opciones: " + ", ".join(q.get("opciones") or []))
-
-            up = c2.button("⬆️ Subir", key=f"up_{idx}", use_container_width=True, disabled=(idx == 0))
-            down = c3.button("⬇️ Bajar", key=f"down_{idx}", use_container_width=True, disabled=(idx == len(st.session_state.preguntas)-1))
-            edit = c4.button("✏️ Editar", key=f"edit_{idx}", use_container_width=True)
-            borrar = c5.button("🗑️ Eliminar", key=f"del_{idx}", use_container_width=True)
-
-            if up:
-                st.session_state.preguntas[idx-1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx-1]
-                _rerun()
-            if down:
-                st.session_state.preguntas[idx+1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx+1]
-                _rerun()
-
-            if edit:
-                st.markdown("**Editar esta pregunta**")
-                ne_label = st.text_input("Etiqueta", value=q["label"], key=f"e_label_{idx}")
-                ne_name = st.text_input("Nombre interno (name)", value=q["name"], key=f"e_name_{idx}")
-                ne_required = st.checkbox("Requerida", value=q["required"], key=f"e_req_{idx}")
-                ne_appearance = st.text_input("Appearance", value=q.get("appearance") or "", key=f"e_app_{idx}")
-                ne_choice_filter = st.text_input("choice_filter (opcional)", value=q.get("choice_filter") or "", key=f"e_cf_{idx}")
-                ne_relevant = st.text_input("relevant (opcional – se autogenera por reglas)", value=q.get("relevant") or "", key=f"e_rel_{idx}")
-
-                ne_opciones = q.get("opciones") or []
-                if q["tipo_ui"] in ("Selección única","Selección múltiple"):
-                    ne_opts_txt = st.text_area("Opciones (una por línea)", value="\n".join(ne_opciones), key=f"e_opts_{idx}")
-                    ne_opciones = [o.strip() for o in ne_opts_txt.splitlines() if o.strip()]
-
-                col_ok, col_cancel = st.columns(2)
-                if col_ok.button("💾 Guardar cambios", key=f"e_save_{idx}", use_container_width=True):
-                    new_base = slugify_name(ne_name or ne_label)
-                    usados = {qq["name"] for j, qq in enumerate(st.session_state.preguntas) if j != idx}
-                    ne_name_final = new_base if new_base not in usados else asegurar_nombre_unico(new_base, usados)
-
-                    st.session_state.preguntas[idx]["label"] = ne_label.strip() or q["label"]
-                    st.session_state.preguntas[idx]["name"] = ne_name_final
-                    st.session_state.preguntas[idx]["required"] = ne_required
-                    st.session_state.preguntas[idx]["appearance"] = ne_appearance.strip() or None
-                    st.session_state.preguntas[idx]["choice_filter"] = ne_choice_filter.strip() or None
-                    st.session_state.preguntas[idx]["relevant"] = ne_relevant.strip() or None
-                    if q["tipo_ui"] in ("Selección única","Selección múltiple"):
-                        st.session_state.preguntas[idx]["opciones"] = ne_opciones
-                    st.success("Cambios guardados.")
-                    _rerun()
-                if col_cancel.button("Cancelar", key=f"e_cancel_{idx}", use_container_width=True):
-                    _rerun()
-
-            if borrar:
-                del st.session_state.preguntas[idx]
-                st.warning("Pregunta eliminada.")
-                _rerun()
-
-# ------------------------------------------------------------------------------------------
-# Construcción XLSForm (páginas, condicionales y logo) — P2 INCLUIDA EN XLSForm
+# Construcción XLSForm (incluye P2) + constraints para placeholders
 # ------------------------------------------------------------------------------------------
 def _get_logo_media_name():
     return logo_media_name
@@ -743,9 +694,22 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         if app: row["appearance"] = app
         if q.get("choice_filter"): row["choice_filter"] = q["choice_filter"]
         if rel_final: row["relevant"] = rel_final
+
+        # Constraints para evitar placeholders
+        if q["name"] == "canton":
+            row["constraint"] = ". != '__pick_canton__'"
+            row["constraint_message"] = "Seleccione un cantón válido."
+        if q["name"] == "distrito":
+            row["constraint"] = ". != '__pick_distrito__'"
+            row["constraint_message"] = "Seleccione un distrito válido."
+        if q["name"] == "barrio":
+            row["constraint"] = ". != '__pick_barrio__'"
+            row["constraint_message"] = "Seleccione un barrio válido."
+
         survey_rows.append(row)
 
-        if list_name:
+        # NUNCA agregar opciones para canton/distrito/barrio aquí (se usan las del catálogo manual)
+        if list_name and q["name"] not in {"canton","distrito","barrio"}:
             usados = set()
             for opt_label in (q.get("opciones") or []):
                 base = slugify_name(opt_label)
@@ -760,7 +724,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                 add_q(q, i)
         survey_rows.append({"type":"end_group","name":f"{group_name}_end"})
 
-    # IMPORTANTE: P2 SÍ SE INCLUYE EN XLSFORM
+    # Páginas (P2 incluida en XLSForm)
     add_page("p2_demograficos", "Datos demográficos", p2)
     add_page("p3_sentimiento", "Sentimiento de inseguridad en el barrio", p3)
     add_page("p4_lugares", "Indique cómo se siente en los siguientes lugares de su barrio", p4)
@@ -768,16 +732,15 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     add_page("p6_riesgos", "Riesgos Sociales", p6)
     add_page("p7_info_adicional", "Información adicional", p7)
 
-    # Choices extendidos (cascadas pegadas)
-    if "choices_ext_rows" in st.session_state:
-        for r in st.session_state.choices_ext_rows:
-            choices_rows.append(dict(r))
+    # Choices del catálogo manual
+    for r in st.session_state.choices_ext_rows:
+        choices_rows.append(dict(r))
 
     # DataFrames
     survey_cols_all = set()
     for r in survey_rows:
         survey_cols_all.update(r.keys())
-    survey_cols = [c for c in ["type","name","label","required","appearance","choice_filter","relevant","media::image"] if c in survey_cols_all]
+    survey_cols = [c for c in ["type","name","label","required","appearance","choice_filter","relevant","constraint","constraint_message","media::image"] if c in survey_cols_all]
     for k in sorted(survey_cols_all):
         if k not in survey_cols:
             survey_cols.append(k)
@@ -815,7 +778,7 @@ def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: 
             ws.set_row(0, None, fmt_hdr)
             cols = list(df.columns)
             for col_idx, col_name in enumerate(cols):
-                ws.set_column(col_idx, col_idx, max(14, min(40, len(str(col_name)) + 10)))
+                ws.set_column(col_idx, col_idx, max(14, min(42, len(str(col_name)) + 8)))
     buffer.seek(0)
     st.download_button(
         label=f"📥 Descargar XLSForm ({nombre_archivo})",
@@ -826,15 +789,15 @@ def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: 
     )
 
 # ------------------------------------------------------------------------------------------
-# Exportar / Vista previa XLSForm (P2 incluida)
+# Exportar / Vista previa XLSForm
 # ------------------------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("📦 Generar XLSForm (Excel) para Survey123")
 
 st.caption("""
 Incluye:
-- **survey** con tipos, `relevant`, `choice_filter`, `appearance`, `media::image` (portada),
-- **choices** (con columnas extra como `canton_key`/`distrito_key` para cascadas),
+- **survey** con tipos, `relevant`, `choice_filter`, `appearance`, `constraint`, `media::image`,
+- **choices** (con columnas extra como `canton_key`/`distrito_key` y `any` para placeholders),
 - **settings** con título, versión, idioma y **style = pages**.
 """)
 
@@ -847,7 +810,7 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             df_survey, df_choices, df_settings = construir_xlsform(
                 st.session_state.preguntas,
                 form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
-                idioma=st.session_state.get("idioma", "es") if False else "es",
+                idioma="es",
                 version=version.strip() or datetime.now().strftime("%Y%m%d%H%M"),
                 reglas_vis=st.session_state.reglas_visibilidad,
                 reglas_fin=st.session_state.reglas_finalizar
@@ -881,15 +844,13 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
 **Publicar en Survey123 (Connect)**
 1) Crea la encuesta **desde archivo** con el XLSForm exportado.
 2) Copia tu imagen de logo a la carpeta **media/** del proyecto con el **mismo nombre** que figura en `media::image`.
-3) Previsualiza: verás la página 1 **Introducción** y el encabezado **“Encuesta comunidad – …”**.
-4) Usa **Siguiente / Atrás** para navegar y publica.
+3) Previsualiza y publica. En P2 verás placeholders; el formulario **obliga** a elegir opciones válidas.
 """)
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
 
 # ------------------------------------------------------------------------------------------
-# Exportar Word y PDF — **SOLO Páginas 1, 3, 4, 5, 6 y 7**
-# (P2 se excluye intencionalmente del Word/PDF a petición tuya)
+# Exportar Word y PDF — SOLO Páginas 1, 3, 4, 5, 6 y 7
 # ------------------------------------------------------------------------------------------
 try:
     from docx import Document
@@ -935,9 +896,9 @@ def _get_logo_bytes_fallback() -> bytes | None:
 def _wrap_text_lines(text: str, font_name: str, font_size: float, max_width: float) -> List[str]:
     if not text:
         return []
-    from reportlab.pdfbase.pdfmetrics import stringWidth
     words = text.split()
     lines, current = [], ""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
     for w in words:
         test = (current + " " + w).strip()
         if stringWidth(test, font_name, font_size) <= max_width:
@@ -974,7 +935,7 @@ def _should_show_options(q: Dict) -> bool:
     opts = q.get("opciones") or []
     return bool(opts) and not _is_yes_no_options(opts)
 
-# --- DEFINICIÓN DE QUÉ PÁGINAS IMPRIME WORD/PDF (sin P2) ---
+# Páginas a imprimir en Word/PDF (sin P2)
 P3_NAMES = {"se_siente_seguro","motivo_inseguridad","comparacion_anual","motivo_comparacion"}
 P4_NAMES = {"lugar_entretenimiento","espacios_recreativos","lugar_residencia","paradas_estaciones",
             "puentes_peatonales","transporte_publico","zona_bancaria","zona_comercio",
@@ -989,9 +950,8 @@ P7_NAMES = {"info_grupo_delito","desc_info_grupo","victimizacion_12m",
             "fp_calificacion","fp_24m","conoce_policias","conversa_policias",
             "sugerencia_fp","sugerencia_muni","otra_info","contacto_voluntario"}
 
-# SOLO imprimimos P1, P3, P4, P5, P6, P7 en Word/PDF
 ALL_BY_PAGE_PRINT = [
-    ("Introducción (P1)", {"__INTRO__"}),  # marcador especial solo para manejar portada
+    ("Introducción (P1)", {"__INTRO__"}),
     ("Sentimiento de inseguridad en el barrio (P3)", P3_NAMES),
     ("Indique cómo se siente en los siguientes lugares de su barrio (P4)", P4_NAMES),
     ("Incidencia relacionada a delitos (P5)", P5_NAMES),
@@ -999,7 +959,7 @@ ALL_BY_PAGE_PRINT = [
     ("Información adicional (P7)", P7_NAMES),
 ]
 
-from docx import Document as _Doc  # alias interno para tipado
+from docx import Document as _Doc
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
@@ -1053,10 +1013,7 @@ def export_docx_form(preguntas: List[Dict], form_title: str, intro: str, reglas_
 
     doc = Document()
     p = doc.add_paragraph()
-    run = p.add_run(form_title)
-    run.bold = True
-    run.font.size = Pt(24)
-    run.font.color.rgb = BLACK
+    run = p.add_run(form_title); run.bold = True; run.font.size = Pt(24); run.font.color.rgb = BLACK
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     logo_b = _get_logo_bytes_fallback()
@@ -1069,16 +1026,13 @@ def export_docx_form(preguntas: List[Dict], form_title: str, intro: str, reglas_
             pass
 
     intro_p = doc.add_paragraph(intro)
-    intro_p.runs[0].font.size = Pt(12)
-    intro_p.runs[0].font.color.rgb = BLACK
+    intro_p.runs[0].font.size = Pt(12); intro_p.runs[0].font.color.rgb = BLACK
 
     i = 1
     color_idx = 0
     for section_title, names in ALL_BY_PAGE_PRINT:
         if "__INTRO__" in names:
-            # ya mostramos la introducción arriba
             continue
-
         sec = doc.add_paragraph(section_title)
         rs = sec.runs[0]; rs.bold = True; rs.font.size = Pt(14); rs.font.color.rgb = BLACK
 
@@ -1110,9 +1064,7 @@ def export_docx_form(preguntas: List[Dict], form_title: str, intro: str, reglas_
 
             i += 1
 
-    buf = BytesIO()
-    doc.save(buf)
-    buf.seek(0)
+    buf = BytesIO(); doc.save(buf); buf.seek(0)
     st.download_button(
         "📄 Descargar Word del formulario",
         data=buf,
@@ -1163,25 +1115,19 @@ def export_pdf_editable_form(preguntas: List[Dict], form_title: str, intro: str,
         except Exception:
             pass
 
+    from reportlab.lib.colors import black
     c.setFillColor(black)
-    # Título
     c.setFont(title_font, title_size)
-    c.drawCentredString(PAGE_W / 2, y, form_title)
-    y -= 26
+    c.drawCentredString(PAGE_W / 2, y, form_title); y -= 26
 
-    # Intro
     c.setFont(intro_font, intro_size)
     intro_lines = _wrap_text_lines(intro, intro_font, intro_size, max_text_w)
     for line in intro_lines:
         if y < margin + 80:
-            c.showPage(); y = PAGE_H - margin
-            c.setFillColor(black); c.setFont(intro_font, intro_size)
-        c.drawString(margin, y, line)
-        y -= intro_line_h
+            c.showPage(); y = PAGE_H - margin; c.setFillColor(black); c.setFont(intro_font, intro_size)
+        c.drawString(margin, y, line); y -= intro_line_h
 
-    c.showPage()
-    y = PAGE_H - margin
-    c.setFillColor(black)
+    c.showPage(); y = PAGE_H - margin; c.setFillColor(black)
 
     i = 1
     color_idx = 0
@@ -1189,10 +1135,8 @@ def export_pdf_editable_form(preguntas: List[Dict], form_title: str, intro: str,
         if "__INTRO__" in names:
             continue
 
-        c.setFont(sec_font, sec_size)
-        c.drawString(margin, y, section_title)
-        y -= (line_h + 6)
-        c.setFont(label_font, label_size)
+        c.setFont(sec_font, sec_size); c.drawString(margin, y, section_title)
+        y -= (line_h + 6); c.setFont(label_font, label_size)
 
         for q in st.session_state.preguntas:
             if q.get("name") not in names:
@@ -1252,14 +1196,12 @@ def export_pdf_editable_form(preguntas: List[Dict], form_title: str, intro: str,
             c.drawString(margin, y - field_h - 10, "Agregue sus observaciones sobre la pregunta.")
             c.setFont(label_font, label_size)
 
-            y -= (field_h + 26)
-            i += 1
+            y -= (field_h + 26); i += 1
 
         if y < margin + 120:
             c.showPage(); y = PAGE_H - margin; c.setFillColor(black)
 
-    c.showPage()
-    c.save()
+    c.showPage(); c.save()
     pdf_buf = c._filename
     data = pdf_buf.getvalue() if hasattr(pdf_buf, "getvalue") else pdf_buf
 
