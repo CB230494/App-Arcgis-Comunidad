@@ -1637,21 +1637,9 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 # ==========================================================================================
 # ============================== PARTE 10/10 ==============================================
 # ====== Catálogo por lotes actualizado: Cantón → Distrito (SIN Barrio) + placeholders ======
+# ====== FIX StreamlitDuplicateElementId: se agregan KEYS únicas a widgets =================
 # ==========================================================================================
-# NOTA: Esta parte REEMPLAZA COMPLETA la sección en tu código:
-#   # ------------------------------------------------------------------------------------------
-#   # Catálogo manual por lotes: Cantón → Distrito → (Barrios…)
-#   # ------------------------------------------------------------------------------------------
-# hasta la vista previa del catálogo (st.dataframe...).
-#
-# Cambios EXACTOS:
-# - Ya NO se pide Barrios.
-# - Ya NO existe list_barrio ni distrito_key.
-# - Se mantienen placeholders:
-#     list_canton:  __pick_canton__
-#     list_distrito: __pick_distrito__  (con any='1')
-# - list_distrito usa canton_key = slug_c para choice_filter en la pregunta Distrito
-# - Mantiene todo lo demás igual.
+# REEMPLAZA COMPLETA la sección del catálogo anterior por esta.
 
 # ------------------------------------------------------------------------------------------
 # Catálogo manual por lotes: Cantón → Distrito
@@ -1671,20 +1659,22 @@ def _append_choice_unique(row: Dict):
 st.markdown("### 📚 Catálogo Cantón → Distrito (por lotes)")
 with st.expander("Agrega un lote (un Cantón y un Distrito)", expanded=True):
     col_c1, col_c2 = st.columns(2)
-    canton_txt = col_c1.text_input("Cantón (una vez)", value="")
-    distrito_txt = col_c2.text_input("Distrito (una vez)", value="")
+
+    # KEYS únicas (esto evita StreamlitDuplicateElementId)
+    canton_txt = col_c1.text_input("Cantón (una vez)", value="", key="cat_canton_txt")
+    distrito_txt = col_c2.text_input("Distrito (una vez)", value="", key="cat_distrito_txt")
 
     col_b1, col_b2, col_b3 = st.columns([1, 1, 2])
-    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True)
-    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True)
+    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True, key="cat_add_lote_btn")
+    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True, key="cat_clear_all_btn")
 
     if clear_all:
         st.session_state.choices_ext_rows = []
         st.success("Catálogo limpiado.")
 
     if add_lote:
-        c = canton_txt.strip()
-        d = distrito_txt.strip()
+        c = (canton_txt or "").strip()
+        d = (distrito_txt or "").strip()
 
         if not c or not d:
             st.error("Debes indicar Cantón y Distrito.")
@@ -1708,14 +1698,14 @@ with st.expander("Agrega un lote (un Cantón y un Distrito)", expanded=True):
                 "any": "1"
             })
 
-            # Cantón (evita duplicados automáticamente)
+            # Cantón
             _append_choice_unique({
                 "list_name": "list_canton",
                 "name": slug_c,
                 "label": c
             })
 
-            # Distrito vinculado a Cantón (canton_key)
+            # Distrito vinculado a Cantón
             _append_choice_unique({
                 "list_name": "list_distrito",
                 "name": slug_d,
