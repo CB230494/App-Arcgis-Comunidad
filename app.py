@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 # ==========================================================================================
 # App: Encuesta Comunidad → XLSForm Survey123 (Páginas 1 a 4)
@@ -732,5 +731,3 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
 2) Copiar el logo dentro de la carpeta **media/** del proyecto, con el **mismo nombre** que pusiste en `media::image`.  
 3) Verás páginas con **Siguiente/Anterior** (porque `settings.style = pages`).  
 """)
-```
-
