@@ -1,16 +1,24 @@
 # -*- coding: utf-8 -*-
 # ==========================================================================================
-# App: Encuesta Comunidad → XLSForm Survey123 (Páginas 1 a 4)
-# - Página 1: Introducción con logo + texto (exacto)
-# - Página 2: Consentimiento Informado (mismo texto) + ¿Acepta participar? (Sí/No)
+# App: Encuesta Comunidad → XLSForm para ArcGIS Survey123 (Páginas 1 a 4) + Cantón→Distrito + Glosario por página
+#
+# - Página 1: Introducción (logo + texto EXACTO indicado por el usuario)
+# - Página 2: Consentimiento Informado (mismo texto de la app anterior) + ¿Acepta participar? (Sí/No)
 #            + Si responde "No" => finaliza (end)
-# - Página 3: Datos demográficos (Cantón/Distrito en cascada + edad + género + escolaridad + relación zona)
-# - Página 4: Percepción ciudadana de seguridad (preguntas 7, 7.1, 8, 8.1, 9 (matriz por filas), 10)
-# - Glosario por sección SOLO si hay coincidencias con el glosario proporcionado:
-#            + En esta versión, se detectan coincidencias en Página 4 (términos como Extorsión, Hurto, etc.)
-#            + Se agrega una página adicional "Glosario — <Sección>" a la que se accede de forma opcional
-# - Catálogo Cantón → Distrito (por lotes) para integrarlo al XLSForm (choices + choice_filter)
+# - Página 3: Datos demográficos (Cantón/Distrito + Edad + Género + Escolaridad + Relación con la zona)
+#            + Cantón→Distrito en cascada (choice_filter) con catálogo por lotes dentro de la app
+# - Página 4: Percepción ciudadana de seguridad en el distrito (Preguntas 7, 7.1, 8, 8.1, 9, 10, 11)
+#            + 7.1 relevante si 7 ∈ {"Muy inseguro","Inseguro"}
+#            + 8.1 relevante si 8 ∈ {1,2,3,4,5}
+#            + 9 con matriz (select_one_from_list_name) por fila
+#            + 11 relevante si 10="Otros"
+#
+# - Glosario: SOLO si hay similitudes con el glosario (en estas páginas, aplica a Página 4)
+#            + El glosario queda DENTRO de la misma página (no crea navegación hacia adelante)
+#            + Se muestra al final de la página si la persona elige "Sí" (NO obligatorio)
+#
 # - Exporta XLSForm (Excel) con hojas: survey / choices / settings
+# - Mejora importante: notas (note) NO crean columnas en la tabla (bind::esri:fieldType="null")
 # ==========================================================================================
 
 import re
@@ -23,16 +31,16 @@ import pandas as pd
 # ==========================================================================================
 # Configuración
 # ==========================================================================================
-st.set_page_config(page_title="Encuesta Comunidad — XLSForm Survey123 (P1 a P4)", layout="wide")
-st.title("Encuesta Comunidad — XLSForm Survey123 (Introducción + Consentimiento + Datos Demográficos + Percepción)")
+st.set_page_config(page_title="Encuesta Comunidad — XLSForm (P1 a P4)", layout="wide")
+st.title("🏘️ Encuesta Comunidad → XLSForm para ArcGIS Survey123 (Páginas 1 a 4)")
 
 st.markdown("""
 Genera un **XLSForm** listo para **ArcGIS Survey123** con páginas reales (Next/Back):
 - **Página 1**: Introducción (logo + texto).
-- **Página 2**: Consentimiento Informado (ordenado) + aceptación.
-- **Página 3**: Datos demográficos (Cantón/Distrito en cascada + demás preguntas).
-- **Página 4**: Percepción ciudadana de seguridad (preguntas 7 a 10, con condicionales y matriz).
-- **Glosario**: se agrega **solo** en secciones donde haya términos coincidentes (opcional).
+- **Página 2**: Consentimiento Informado (ordenado) + aceptación (Sí/No).
+- **Página 3**: Datos demográficos (Cantón/Distrito en cascada).
+- **Página 4**: Percepción ciudadana de seguridad en el distrito (7 a 11, con condicionales).
+- **Glosario por página**: solo se agrega cuando hay coincidencias con términos del glosario.
 """)
 
 # ==========================================================================================
@@ -51,6 +59,14 @@ def slugify_name(texto: str) -> str:
     t = re.sub(r"ñ", "n", t)
     t = re.sub(r"[^a-z0-9]+", "_", t).strip("_")
     return t or "campo"
+
+def asegurar_nombre_unico(base: str, usados: set) -> str:
+    if base not in usados:
+        return base
+    i = 2
+    while f"{base}_{i}" in usados:
+        i += 1
+    return f"{base}_{i}"
 
 def descargar_xlsform(df_survey, df_choices, df_settings, nombre_archivo: str):
     """Genera y descarga el XLSForm (Excel)."""
@@ -80,71 +96,16 @@ def descargar_xlsform(df_survey, df_choices, df_settings, nombre_archivo: str):
 
 def add_choice_list(choices_rows, list_name: str, labels: list[str]):
     """Agrega una lista de choices (list_name/name/label)."""
+    usados = set((r.get("list_name"), r.get("name")) for r in choices_rows)
     for lab in labels:
-        choices_rows.append({
-            "list_name": list_name,
-            "name": slugify_name(lab),
-            "label": lab
-        })
+        row = {"list_name": list_name, "name": slugify_name(lab), "label": lab}
+        key = (row["list_name"], row["name"])
+        if key not in usados:
+            choices_rows.append(row)
+            usados.add(key)
 
 # ==========================================================================================
-# Catálogo Cantón → Distrito (por lotes)
-# ==========================================================================================
-if "choices_cd_rows" not in st.session_state:
-    st.session_state.choices_cd_rows = []
-if "choices_cd_extra_cols" not in st.session_state:
-    st.session_state.choices_cd_extra_cols = set()
-
-def _append_choice_unique(row: dict):
-    """Inserta fila en choices evitando duplicados por (list_name,name)."""
-    key = (row.get("list_name"), row.get("name"))
-    exists = any((r.get("list_name"), r.get("name")) == key for r in st.session_state.choices_cd_rows)
-    if not exists:
-        st.session_state.choices_cd_rows.append(row)
-
-st.markdown("### 📚 Catálogo Cantón → Distrito (por lotes)")
-with st.expander("Agrega un lote (un Cantón, un Distrito)", expanded=True):
-    col_c1, col_c2 = st.columns(2)
-    canton_txt = col_c1.text_input("Cantón (una vez)", value="")
-    distrito_txt = col_c2.text_input("Distrito (una vez)", value="")
-
-    col_b1, col_b2, col_b3 = st.columns([1, 1, 2])
-    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True)
-    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True)
-
-    if clear_all:
-        st.session_state.choices_cd_rows = []
-        st.success("Catálogo limpiado.")
-
-    if add_lote:
-        c = canton_txt.strip()
-        d = distrito_txt.strip()
-        if not c or not d:
-            st.error("Debes indicar Cantón y Distrito.")
-        else:
-            slug_c = slugify_name(c)
-            slug_d = slugify_name(d)
-
-            # columnas extra usadas por filtros/placeholder
-            st.session_state.choices_cd_extra_cols.update({"canton_key", "any"})
-
-            # Placeholders (una sola vez por lista)
-            _append_choice_unique({"list_name": "list_canton",  "name": "__pick_canton__",  "label": "— escoja un cantón —"})
-            _append_choice_unique({"list_name": "list_distrito","name": "__pick_distrito__","label": "— escoja un cantón —", "any": "1"})
-
-            # Cantón
-            _append_choice_unique({"list_name": "list_canton", "name": slug_c, "label": c})
-
-            # Distrito con llave cantón
-            _append_choice_unique({"list_name": "list_distrito", "name": slug_d, "label": d, "canton_key": slug_c})
-
-            st.success(f"Lote agregado: {c} → {d}")
-
-if st.session_state.choices_cd_rows:
-    st.dataframe(pd.DataFrame(st.session_state.choices_cd_rows), use_container_width=True, hide_index=True, height=240)
-
-# ==========================================================================================
-# Inputs (logo + lugar/delegación)
+# Logo + Delegación
 # ==========================================================================================
 DEFAULT_LOGO_PATH = "001.png"
 
@@ -167,28 +128,31 @@ with col_logo:
             st.session_state["_logo_name"] = "logo.png"
 
 with col_txt:
-    lugar = st.text_input("Nombre del lugar / comunidad", value="San Carlos Oeste")
+    delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste")
     logo_media_name = st.text_input(
         "Nombre de archivo para `media::image`",
         value=st.session_state.get("_logo_name", "001.png"),
         help="Debe coincidir con el archivo dentro de la carpeta `media/` del proyecto Survey123 (Connect)."
     )
 
-form_title = f"Encuesta Comunidad – {lugar.strip()}" if lugar.strip() else "Encuesta Comunidad"
+form_title = f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"
 st.markdown(f"### {form_title}")
 
 # ==========================================================================================
-# Textos EXACTOS solicitados (P1 y P2)
+# Página 1: Introducción (EXACTO indicado)
 # ==========================================================================================
 INTRO_COMUNIDAD_EXACTA = (
     "Con el fin de hacer más segura nuestra comunidad, deseamos concentrarnos en los \n"
     "problemas de seguridad más importantes. Queremos trabajar en conjunto con el gobierno \n"
     "local, otras instituciones y la comunidad para reducir los delitos y riesgos que afectan a las \n"
-    "personas.\n"
+    "personas. \n"
     "Es importante recordarle que la información que usted nos proporcione es confidencial y se \n"
     "utilizará únicamente para mejorar la seguridad en nuestra área."
 )
 
+# ==========================================================================================
+# Página 2: Consentimiento (MISMO de la app anterior)
+# ==========================================================================================
 CONSENT_TITLE = "Consentimiento Informado para la Participación en la Encuesta"
 
 CONSENT_PARRAFOS = [
@@ -213,17 +177,80 @@ CONSENT_CIERRE = [
 ]
 
 # ==========================================================================================
-# Glosario (solo términos coincidentes con Página 4 en este bloque)
+# Glosario (solo términos que coinciden en las páginas actuales)
+# - Para estas páginas (1 a 4), la coincidencia real está en Página 4 (extorsión y daños/vandalismo).
 # ==========================================================================================
 GLOSARIO_DEFINICIONES = {
-    "Extorsión": "Quien, para procurar un lucro injusto, obligue a otra persona, mediante intimidación o amenaza, a realizar u omitir un acto con un perjuicio patrimonial para sí mismo o para un tercero.",
-    "Hurto": "Quien se apodere ilegítimamente de una cosa mueble, total o parcialmente ajena, aprovechándose del descuido o sin emplear fuerza sobre las cosas ni violencia o intimidación sobre las personas.",
-    "Receptación": "Quien adquiera, reciba u oculte dinero, cosas o bienes de origen ilícito, o intervenga en su adquisición, recepción u ocultación, con conocimiento de que provienen de un hecho delictivo.",
-    "Contrabando": "Quien introduzca o extraiga mercancías, o las transporte, almacene, adquiera o comercialice, eludiendo el control aduanero o incumpliendo las formalidades y controles exigidos por la normativa aplicable.",
-    "Delitos sexuales": "Conductas que atentan contra la libertad e integridad sexual de las personas; incluyen, entre otros, violación, abusos sexuales y acoso sexual.",
-    "Daños/Vandalismo": "Quien destruya, inutilice, haga desaparecer o deteriore bienes ajenos o de dominio público (bienes del Estado), contra persona física o jurídica.",
-    "Estafa o defraudación": "Quien, induciendo o manteniendo en error a otra persona, obtenga un provecho patrimonial indebido para sí o para un tercero, causando un perjuicio al patrimonio ajeno."
+    "Extorsión": (
+        "Extorsión: El que, para procurar un lucro injusto, obligare a otro, mediante intimidación o amenaza, "
+        "a realizar u omitir un acto o negocio en perjuicio de su patrimonio o del de un tercero."
+    ),
+    "Daños/vandalismo": (
+        "Daños/vandalismo: El que destruyere, inutilizare, hiciere desaparecer o deteriorare bienes, "
+        "sean de naturaleza pública o privada (incluidos bienes del Estado), en perjuicio de persona física o jurídica."
+    ),
 }
+
+# ==========================================================================================
+# Catálogo Cantón → Distrito (por lotes) — CORRECCIÓN: permitir múltiples distritos por cantón
+# (Se ingresa un cantón una vez y los distritos se pegan por líneas; botón agrega todos)
+# ==========================================================================================
+if "choices_ext_rows" not in st.session_state:
+    st.session_state.choices_ext_rows = []
+if "choices_extra_cols" not in st.session_state:
+    st.session_state.choices_extra_cols = set()
+
+def _append_choice_unique(row: dict):
+    key = (row.get("list_name"), row.get("name"))
+    exists = any((r.get("list_name"), r.get("name")) == key for r in st.session_state.choices_ext_rows)
+    if not exists:
+        st.session_state.choices_ext_rows.append(row)
+
+st.markdown("### 📚 Catálogo Cantón → Distrito (por lotes)")
+with st.expander("Agrega un lote (un Cantón y uno o varios Distritos)", expanded=True):
+    col_c1, col_c2 = st.columns([2, 3])
+    canton_txt = col_c1.text_input("Cantón (una vez)", value="")
+    distritos_txt = col_c2.text_area("Distritos del cantón (uno por línea)", value="", height=120)
+
+    col_b1, col_b2, col_b3 = st.columns([1, 1, 2])
+    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True)
+    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True)
+
+    if clear_all:
+        st.session_state.choices_ext_rows = []
+        st.success("Catálogo limpiado.")
+
+    if add_lote:
+        c = canton_txt.strip()
+        distritos = [d.strip() for d in distritos_txt.splitlines() if d.strip()]
+        if not c or not distritos:
+            st.error("Debes indicar Cantón y al menos un Distrito (uno por línea).")
+        else:
+            slug_c = slugify_name(c)
+
+            # columnas extra usadas por filtros/placeholder
+            st.session_state.choices_extra_cols.update({"canton_key", "any"})
+
+            # Placeholders (una sola vez por lista)
+            _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
+            _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "— escoja un cantón —", "any": "1"})
+
+            # Cantón
+            _append_choice_unique({"list_name": "list_canton", "name": slug_c, "label": c})
+
+            # Distritos (múltiples por líneas)
+            usados_d = set()
+            for d in distritos:
+                slug_d_base = slugify_name(d)
+                slug_d = asegurar_nombre_unico(slug_d_base, usados_d)
+                usados_d.add(slug_d)
+                _append_choice_unique({"list_name": "list_distrito", "name": slug_d, "label": d, "canton_key": slug_c})
+
+            st.success(f"Lote agregado: {c} → {len(distritos)} distrito(s).")
+
+if st.session_state.choices_ext_rows:
+    st.dataframe(pd.DataFrame(st.session_state.choices_ext_rows),
+                 use_container_width=True, hide_index=True, height=240)
 
 # ==========================================================================================
 # Construcción XLSForm
@@ -233,13 +260,14 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
     choices_rows = []
 
     # =========================
-    # Choices (listas)
+    # Choices base
     # =========================
     list_yesno = "yesno"
+    add_choice_list(choices_rows, list_yesno, ["Sí", "No"])
     v_si = slugify_name("Sí")
     v_no = slugify_name("No")
-    add_choice_list(choices_rows, list_yesno, ["Sí", "No"])
 
+    # Datos demográficos
     list_genero = "genero"
     add_choice_list(choices_rows, list_genero, ["Femenino", "Masculino", "Persona No Binaria", "Prefiero no decir"])
 
@@ -255,36 +283,16 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "Universitaria completa",
     ])
 
-    list_relacion = "relacion_zona"
-    add_choice_list(choices_rows, list_relacion, ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"])
+    list_relacion_zona = "relacion_zona"
+    add_choice_list(choices_rows, list_relacion_zona, ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"])
 
-    list_edad = "edad_rangos"
-    add_choice_list(choices_rows, list_edad, ["18 a 29 años", "30 a 44 años", "45 a 59 años", "60 años o más"])
+    # Página 4: Pregunta 7 (seguridad percibida)
+    list_seguridad_5 = "seguridad_5"
+    add_choice_list(choices_rows, list_seguridad_5, ["Muy inseguro", "Inseguro", "Ni seguro ni inseguro", "Seguro", "Muy seguro"])
 
-    # Página 4 - escala 1..5 + No aplica
-    list_escala_1_5_na = "escala_1_5_na"
-    add_choice_list(choices_rows, list_escala_1_5_na, [
-        "Muy inseguro (1)",
-        "Inseguro (2)",
-        "Ni seguro ni inseguro (3)",
-        "Seguro (4)",
-        "Muy seguro (5)",
-        "No aplica"
-    ])
-
-    # Página 4 - pregunta 7 (única)
-    list_perc_7 = "perc_seg_7"
-    add_choice_list(choices_rows, list_perc_7, [
-        "Muy inseguro",
-        "Inseguro",
-        "Ni seguro ni inseguro",
-        "Seguro",
-        "Muy seguro"
-    ])
-
-    # Página 4 - 7.1 (múltiple)
-    list_71 = "situaciones_71"
-    add_choice_list(choices_rows, list_71, [
+    # Página 4: Pregunta 7.1 (multi)
+    list_causas_inseguridad = "causas_inseguridad"
+    causas_71 = [
         "Venta o distribución de drogas",
         "Consumo de drogas en espacios públicos",
         "Consumo de alcohol en espacios públicos",
@@ -314,21 +322,33 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "Situaciones de violencia intrafamiliar",
         "Situaciones de violencia de género",
         "Otro problema que considere importante"
-    ])
+    ]
+    add_choice_list(choices_rows, list_causas_inseguridad, causas_71)
 
-    # Página 4 - 8 (ordinal)
-    list_8 = "comparacion_8"
-    add_choice_list(choices_rows, list_8, [
+    # Página 4: Pregunta 8 (escala 1-5)
+    list_escala_1_5 = "escala_1_5"
+    add_choice_list(choices_rows, list_escala_1_5, [
         "1 (Mucho Menos Seguro)",
         "2 (Menos Seguro)",
         "3 (Se mantiene igual)",
         "4 (Más Seguro)",
-        "5 (Mucho Más Seguro)"
+        "5 (Mucho Más Seguro)",
     ])
 
-    # Página 4 - 10 (única)
-    list_10 = "espacio_mas_inseguro_10"
-    add_choice_list(choices_rows, list_10, [
+    # Página 4: Pregunta 9 (matriz por fila)
+    list_matriz_1_5_na = "matriz_1_5_na"
+    add_choice_list(choices_rows, list_matriz_1_5_na, [
+        "Muy inseguro (1)",
+        "Inseguro (2)",
+        "Ni seguro ni inseguro (3)",
+        "Seguro (4)",
+        "Muy seguro (5)",
+        "No aplica",
+    ])
+
+    # Página 4: Pregunta 10 (tipo de espacio más inseguro)
+    list_tipo_espacio = "tipo_espacio"
+    tipos_10 = [
         "Discotecas, bares, sitios de entretenimiento",
         "Espacios recreativos (parques, play, plaza de deportes)",
         "Lugar de residencia (casa de habitación)",
@@ -343,48 +363,42 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "Centros educativos",
         "Zonas con deficiencia de iluminación",
         "Otros"
-    ])
+    ]
+    add_choice_list(choices_rows, list_tipo_espacio, tipos_10)
 
     # =========================
-    # Catálogo Cantón → Distrito (choices)
+    # Utilidad: notes sin campo (para que NO salgan columnas vacías en la tabla)
     # =========================
-    for r in st.session_state.choices_cd_rows:
-        choices_rows.append(dict(r))
-
-    # =========================
-    # Helpers internos para “no guardar columnas” en notas (reduce columnas vacías)
-    # =========================
-    def _note(name: str, label: str, relevant: str = ""):
-        return {
-            "type": "note",
-            "name": name,
-            "label": label,
-            "relevant": relevant,
-            "bind::esri:fieldType": "null"
-        }
+    def add_note(name: str, label: str, relevant: str | None = None, media_image: str | None = None):
+        row = {"type": "note", "name": name, "label": label, "bind::esri:fieldType": "null"}
+        if relevant:
+            row["relevant"] = relevant
+        if media_image:
+            row["media::image"] = media_image
+        survey_rows.append(row)
 
     # =========================
     # Página 1: Introducción
     # =========================
-    survey_rows.append({"type": "begin_group", "name": "p1_intro", "label": "Introducción", "appearance": "field-list", "bind::esri:fieldType": "null"})
-    survey_rows.append({"type": "note", "name": "p1_logo", "label": form_title, "media::image": logo_media_name, "bind::esri:fieldType": "null"})
-    survey_rows.append(_note("p1_texto", INTRO_COMUNIDAD_EXACTA))
-    survey_rows.append({"type": "end_group", "name": "p1_end", "bind::esri:fieldType": "null"})
+    survey_rows.append({"type": "begin_group", "name": "p1_intro", "label": "Introducción", "appearance": "field-list"})
+    add_note("p1_logo", form_title, media_image=logo_media_name)
+    add_note("p1_texto", INTRO_COMUNIDAD_EXACTA)
+    survey_rows.append({"type": "end_group", "name": "p1_end"})
 
     # =========================
     # Página 2: Consentimiento
     # =========================
-    survey_rows.append({"type": "begin_group", "name": "p2_consent", "label": "Consentimiento Informado", "appearance": "field-list", "bind::esri:fieldType": "null"})
-    survey_rows.append(_note("p2_titulo", CONSENT_TITLE))
+    survey_rows.append({"type": "begin_group", "name": "p2_consent", "label": "Consentimiento Informado", "appearance": "field-list"})
+    add_note("p2_titulo", CONSENT_TITLE)
 
     for i, p in enumerate(CONSENT_PARRAFOS, start=1):
-        survey_rows.append(_note(f"p2_p_{i}", p))
+        add_note(f"p2_p_{i}", p)
 
     for j, b in enumerate(CONSENT_BULLETS, start=1):
-        survey_rows.append(_note(f"p2_b_{j}", f"• {b}"))
+        add_note(f"p2_b_{j}", f"• {b}")
 
     for k, c in enumerate(CONSENT_CIERRE, start=1):
-        survey_rows.append(_note(f"p2_c_{k}", c))
+        add_note(f"p2_c_{k}", c)
 
     survey_rows.append({
         "type": f"select_one {list_yesno}",
@@ -393,56 +407,62 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "appearance": "minimal"
     })
-    survey_rows.append({"type": "end_group", "name": "p2_end", "bind::esri:fieldType": "null"})
+    survey_rows.append({"type": "end_group", "name": "p2_end"})
 
     # Finalizar si NO acepta
     survey_rows.append({
         "type": "end",
         "name": "fin_por_no",
         "label": "Gracias. Usted indicó que no acepta participar en esta encuesta.",
-        "relevant": f"${{acepta_participar}}='{v_no}'",
-        "bind::esri:fieldType": "null"
+        "relevant": f"${{acepta_participar}}='{v_no}'"
     })
 
-    # Base relevante: solo si acepta Sí
     rel_si = f"${{acepta_participar}}='{v_si}'"
 
     # =========================
     # Página 3: Datos demográficos
     # =========================
-    survey_rows.append({"type": "begin_group", "name": "p3_datos_demograficos", "label": "I. DATOS DEMOGRÁFICOS", "appearance": "field-list", "relevant": rel_si, "bind::esri:fieldType": "null"})
+    survey_rows.append({
+        "type": "begin_group",
+        "name": "p3_datos_demograficos",
+        "label": "Datos demográficos",
+        "appearance": "field-list",
+        "relevant": rel_si
+    })
 
-    # Cantón (select_one list_canton) + constraint para placeholder
+    # Cantón (list_canton) + constraint para placeholder
     survey_rows.append({
         "type": "select_one list_canton",
         "name": "canton",
         "label": "1. Cantón:",
         "required": "yes",
-        "appearance": "minimal",
         "constraint": ". != '__pick_canton__'",
         "constraint_message": "Seleccione un cantón válido.",
+        "appearance": "minimal",
         "relevant": rel_si
     })
 
-    # Distrito (select_one list_distrito) con filtro cascada + placeholder
+    # Distrito (list_distrito) en cascada + constraint para placeholder
     survey_rows.append({
         "type": "select_one list_distrito",
         "name": "distrito",
         "label": "2. Distrito:",
         "required": "yes",
-        "appearance": "minimal",
         "choice_filter": "canton_key=${canton} or any='1'",
         "constraint": ". != '__pick_distrito__'",
         "constraint_message": "Seleccione un distrito válido.",
+        "appearance": "minimal",
         "relevant": rel_si
     })
 
-    # Edad por rangos (como en el formato)
+    # Edad (en años cumplidos) – el formato de tu imagen lo hacía por rangos, pero aquí queda como años (editable)
     survey_rows.append({
-        "type": f"select_one {list_edad}",
-        "name": "edad_rango",
-        "label": "3. Edad (en años cumplidos): marque con una X la categoría que incluya su edad.",
+        "type": "integer",
+        "name": "edad_anos",
+        "label": "3. Edad (en años cumplidos):",
         "required": "yes",
+        "constraint": ". >= 18 and . <= 120",
+        "constraint_message": "Debe ser un número entre 18 y 120.",
         "relevant": rel_si
     })
 
@@ -464,64 +484,78 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": rel_si
     })
 
-    # Relación con la zona
+    # Relación con la zona (selección única según tu imagen: aquí lo dejo como única)
     survey_rows.append({
-        "type": f"select_one {list_relacion}",
+        "type": f"select_one {list_relacion_zona}",
         "name": "relacion_zona",
         "label": "6. ¿Cuál es su relación con la zona?",
         "required": "yes",
         "relevant": rel_si
     })
 
-    survey_rows.append({"type": "end_group", "name": "p3_end", "bind::esri:fieldType": "null"})
+    survey_rows.append({"type": "end_group", "name": "p3_end"})
 
     # =========================
-    # Página 4: Percepción ciudadana
+    # Página 4: Percepción ciudadana de seguridad en el distrito (7 a 11)
     # =========================
-    survey_rows.append({"type": "begin_group", "name": "p4_percepcion", "label": "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO", "appearance": "field-list", "relevant": rel_si, "bind::esri:fieldType": "null"})
+    survey_rows.append({
+        "type": "begin_group",
+        "name": "p4_percepcion_distrito",
+        "label": "Percepción ciudadana de seguridad en el distrito",
+        "appearance": "field-list",
+        "relevant": rel_si
+    })
 
     # 7
     survey_rows.append({
-        "type": f"select_one {list_perc_7}",
-        "name": "p7_percepcion_seguridad",
+        "type": f"select_one {list_seguridad_5}",
+        "name": "p7_seguridad_distrito",
         "label": "7. ¿Qué tan seguro percibe usted el distrito donde reside o transita?",
         "required": "yes",
         "appearance": "minimal",
         "relevant": rel_si
     })
 
-    rel_7_inseguro = f"({rel_si}) and (${{p7_percepcion_seguridad}}='{slugify_name('Muy inseguro')}' or ${{p7_percepcion_seguridad}}='{slugify_name('Inseguro')}')"
+    # 7.1 relevante si 7 = Muy inseguro o Inseguro
+    rel_71 = (
+        f"({rel_si}) and ("
+        f"${{p7_seguridad_distrito}}='{slugify_name('Muy inseguro')}' or "
+        f"${{p7_seguridad_distrito}}='{slugify_name('Inseguro')}'"
+        f")"
+    )
 
-    # 7.1
     survey_rows.append({
-        "type": f"select_multiple {list_71}",
-        "name": "p71_motivos_inseguridad",
+        "type": f"select_multiple {list_causas_inseguridad}",
+        "name": "p71_causas_inseguridad",
         "label": "7.1. Indique por qué considera el distrito inseguro (Marque todas las situaciones que usted percibe que ocurren con mayor frecuencia en su comunidad):",
         "required": "yes",
-        "relevant": rel_7_inseguro
+        "relevant": rel_71
     })
 
-    # 7.1 (otro) si selecciona “Otro problema…”
-    rel_71_otro = f"({rel_7_inseguro}) and selected(${{p71_motivos_inseguridad}}, '{slugify_name('Otro problema que considere importante')}')"
+    add_note(
+        "p71_nota_no_denuncia",
+        "Esta pregunta recoge percepción general y no constituye denuncia.",
+        relevant=rel_71
+    )
+
+    add_note(
+        "p71_nota_descriptores",
+        "Nota: Incluye descriptores (selección múltiple) además del espacio abierto. La respuesta abierta es para que la persona encuestada redacte su respuesta.",
+        relevant=rel_71
+    )
+
     survey_rows.append({
         "type": "text",
         "name": "p71_otro_detalle",
-        "label": "Indique el otro problema que considere importante:",
-        "required": "yes",
+        "label": "Otro problema que considere importante (detalle):",
+        "required": "no",
         "appearance": "multiline",
-        "relevant": rel_71_otro
+        "relevant": f"({rel_71}) and selected(${{p71_causas_inseguridad}}, '{slugify_name('Otro problema que considere importante')}')"
     })
-
-    # Nota (no constituye denuncia)
-    survey_rows.append(_note(
-        "p7_nota_no_denuncia",
-        "Esta pregunta recoge percepción general y no constituye denuncia.",
-        relevant=rel_si
-    ))
 
     # 8
     survey_rows.append({
-        "type": f"select_one {list_8}",
+        "type": f"select_one {list_escala_1_5}",
         "name": "p8_comparacion_anno",
         "label": "8. ¿Cómo se percibe la seguridad en este distrito este año en comparación con el año anterior?",
         "required": "yes",
@@ -529,150 +563,177 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": rel_si
     })
 
-    # 8.1 (siempre después de 8)
+    add_note(
+        "p8_nota_escala",
+        "Nota: Se utiliza una escala ordinal del 1 al 5.",
+        relevant=rel_si
+    )
+
+    # 8.1 relevante si p8 tiene cualquiera (1 a 5) -> en la práctica siempre, pero lo dejamos tal como pediste
+    rel_81 = (
+        f"({rel_si}) and ("
+        f"${{p8_comparacion_anno}}='{slugify_name('1 (Mucho Menos Seguro)')}' or "
+        f"${{p8_comparacion_anno}}='{slugify_name('2 (Menos Seguro)')}' or "
+        f"${{p8_comparacion_anno}}='{slugify_name('3 (Se mantiene igual)')}' or "
+        f"${{p8_comparacion_anno}}='{slugify_name('4 (Más Seguro)')}' or "
+        f"${{p8_comparacion_anno}}='{slugify_name('5 (Mucho Más Seguro)')}'"
+        f")"
+    )
+
     survey_rows.append({
         "type": "text",
-        "name": "p81_indique_porque",
+        "name": "p81_indique_por_que",
         "label": "8.1. Indique por qué:",
         "required": "yes",
         "appearance": "multiline",
-        "relevant": rel_si
+        "relevant": rel_81
     })
 
-    # 9 (matriz: selección única por fila con escala 1 a 5 + No aplica)
-    survey_rows.append(_note(
+    # 9: Matriz (select_one_from_list_name) por fila
+    add_note(
         "p9_instr",
-        "9. Indique qué tan seguros percibe, en términos de seguridad, en los siguientes espacios de su Distrito: (Usar matriz de selección única por fila con la escala 1 a 5.)",
+        "9. Indique qué tan seguros percibe, en términos de seguridad, en los siguientes espacios de su Distrito:\n(Usar matriz de selección única por fila con la escala 1 a 5.)",
         relevant=rel_si
-    ))
+    )
 
-    filas_p9 = [
+    # Filas de la matriz (cada fila es una pregunta select_one_from_list_name)
+    matriz_filas = [
         ("p9_discotecas", "Discotecas, bares, sitios de entretenimiento"),
-        ("p9_recreativos", "Espacios recreativos (parques, play, plaza de deportes)"),
+        ("p9_espacios_recreativos", "Espacios recreativos (parques, play, plaza de deportes)"),
         ("p9_residencia", "Lugar de residencia (casa de habitación)"),
         ("p9_paradas", "Paradas y/o estaciones de buses, taxis, trenes"),
         ("p9_puentes", "Puentes peatonales"),
         ("p9_transporte", "Transporte público"),
         ("p9_bancaria", "Zona bancaria"),
         ("p9_comercio", "Zona de comercio"),
-        ("p9_residenciales", "Zonas residenciales (calles y barrios, distinto a su casa)"),
+        ("p9_zonas_residenciales", "Zonas residenciales (calles y barrios, distinto a su casa)"),
         ("p9_zonas_francas", "Zonas francas"),
         ("p9_turisticos", "Lugares de interés turístico"),
-        ("p9_centros_educ", "Centros educativos"),
+        ("p9_centros_educativos", "Centros educativos"),
         ("p9_iluminacion", "Zonas con deficiencia de iluminación"),
     ]
 
-    for nm, lab in filas_p9:
+    for name, label in matriz_filas:
         survey_rows.append({
-            "type": f"select_one {list_escala_1_5_na}",
-            "name": nm,
-            "label": lab,
+            "type": f"select_one {list_matriz_1_5_na}",
+            "name": name,
+            "label": label,
             "required": "yes",
             "appearance": "minimal",
             "relevant": rel_si
         })
 
-    survey_rows.append(_note(
-        "p9_nota_filas",
+    add_note(
+        "p9_nota",
         "Nota: La persona encuestada podrá seleccionar una de las opciones por cada línea de zona.",
         relevant=rel_si
-    ))
+    )
 
     # 10
     survey_rows.append({
-        "type": f"select_one {list_10}",
-        "name": "p10_tipo_mas_inseguro",
+        "type": f"select_one {list_tipo_espacio}",
+        "name": "p10_tipo_espacio_mas_inseguro",
         "label": "10. Según su percepción, ¿cuál de los siguientes tipos de espacios del distrito considera más inseguro?",
         "required": "yes",
         "appearance": "minimal",
         "relevant": rel_si
     })
 
-    rel_10_otros = f"({rel_si}) and (${{p10_tipo_mas_inseguro}}='{slugify_name('Otros')}')"
+    add_note(
+        "p10_nota",
+        "Nota: Seleccione una única opción que, según su percepción, represente el tipo de espacio más inseguro del distrito.",
+        relevant=rel_si
+    )
+
+    # 10 Otros (detalle)
     survey_rows.append({
         "type": "text",
-        "name": "p10_otro_especifique",
-        "label": "Especifique cuál otro:",
-        "required": "yes",
+        "name": "p10_otros_detalle",
+        "label": "Otros (detalle):",
+        "required": "no",
         "appearance": "multiline",
-        "relevant": rel_10_otros
+        "relevant": f"({rel_si}) and (${{p10_tipo_espacio_mas_inseguro}}='{slugify_name('Otros')}')"
     })
 
-    # =========================
-    # Glosario opcional SOLO si hay coincidencias (aquí: Página 4)
-    # =========================
-    # Términos que coinciden con texto/opciones de P4:
-    glosario_p4_terminos = [
-        "Extorsión",
-        "Hurto",
-        "Receptación",
-        "Contrabando",
-        "Delitos sexuales",
-        "Daños/Vandalismo",
-        "Estafa o defraudación",
-    ]
+    # 11 (abierta) – relevante si 10="Otros"
+    rel_11 = f"({rel_si}) and (${{p10_tipo_espacio_mas_inseguro}}='{slugify_name('Otros')}')"
+    survey_rows.append({
+        "type": "text",
+        "name": "p11_por_que_inseguro_tipo_espacio",
+        "label": "11. Según su percepción, describa brevemente por qué considera inseguro el tipo de espacio seleccionado en la pregunta anterior.",
+        "required": "yes",
+        "appearance": "multiline",
+        "relevant": rel_11
+    })
+    add_note(
+        "p11_nota",
+        "Nota: La respuesta es de espacio abierto para detallar.",
+        relevant=rel_11
+    )
 
-    # Acceso opcional (no requerido)
+    # =========================
+    # Glosario (Página 4) – solo si hay coincidencias (aquí: extorsión y daños/vandalismo)
+    # DENTRO de la misma página (no obliga a avanzar).
+    # =========================
+    # ¿Desea acceder al glosario? (NO obligatorio)
     survey_rows.append({
         "type": f"select_one {list_yesno}",
-        "name": "p4_ir_glosario",
+        "name": "p4_accede_glosario",
         "label": "¿Desea acceder al glosario de esta sección?",
-        "required": "",
+        "required": "no",
         "appearance": "minimal",
         "relevant": rel_si
     })
 
-    rel_p4_glos = f"({rel_si}) and (${{p4_ir_glosario}}='{v_si}')"
+    rel_glos = f"({rel_si}) and (${{p4_accede_glosario}}='{v_si}')"
 
-    # Página “Glosario — Sección”
-    survey_rows.append({"type": "end_group", "name": "p4_end", "bind::esri:fieldType": "null"})
-
+    # Grupo interno (no crea página nueva; queda dentro de la página 4)
     survey_rows.append({
         "type": "begin_group",
         "name": "p4_glosario",
-        "label": "Glosario — II. Percepción ciudadana de seguridad",
-        "appearance": "field-list",
-        "relevant": rel_p4_glos,
-        "bind::esri:fieldType": "null"
+        "label": "Glosario",
+        "relevant": rel_glos
     })
 
-    survey_rows.append(_note(
-        "p4_glosario_nota",
-        "A continuación se muestran definiciones de términos utilizados en esta sección.",
-        relevant=rel_p4_glos
-    ))
+    add_note("p4_glosario_intro", "A continuación, se muestran definiciones de términos que aparecen en esta sección.", relevant=rel_glos)
 
-    for i, termino in enumerate(glosario_p4_terminos, start=1):
-        definicion = GLOSARIO_DEFINICIONES.get(termino, "")
-        survey_rows.append(_note(
-            f"p4_glos_{i}",
-            f"{termino}: {definicion}",
-            relevant=rel_p4_glos
-        ))
+    # Solo los términos que coinciden en Página 4 (no se agregan otros)
+    add_note("p4_glos_extorsion", GLOSARIO_DEFINICIONES["Extorsión"], relevant=rel_glos)
+    add_note("p4_glos_danos_vandalismo", GLOSARIO_DEFINICIONES["Daños/vandalismo"], relevant=rel_glos)
 
-    survey_rows.append(_note(
-        "p4_glosario_volver",
-        "Para regresar, utilice el botón «Atrás» y continúe con la encuesta.",
-        relevant=rel_p4_glos
-    ))
+    add_note("p4_glosario_cierre", "Para continuar con la encuesta, desplácese hacia arriba y continúe con normalidad.", relevant=rel_glos)
 
-    survey_rows.append({"type": "end_group", "name": "p4_glosario_end", "bind::esri:fieldType": "null"})
+    survey_rows.append({"type": "end_group", "name": "p4_glosario_end"})
+
+    survey_rows.append({"type": "end_group", "name": "p4_end"})
+
+    # =========================
+    # Integrar catálogo Cantón→Distrito en choices
+    # =========================
+    for r in st.session_state.choices_ext_rows:
+        choices_rows.append(dict(r))
 
     # =========================
     # DataFrames
     # =========================
     survey_cols = [
         "type", "name", "label", "required", "appearance",
-        "relevant", "choice_filter", "media::image",
-        "constraint", "constraint_message", "hint",
+        "relevant", "choice_filter",
+        "constraint", "constraint_message",
+        "media::image",
         "bind::esri:fieldType"
     ]
     df_survey = pd.DataFrame(survey_rows, columns=survey_cols).fillna("")
 
-    # choices: incluir columnas extra si existen
-    choices_cols_base = ["list_name", "name", "label"]
-    extra_cols = sorted(set().union(*[set(r.keys()) for r in choices_rows]) - set(choices_cols_base)) if choices_rows else []
-    df_choices = pd.DataFrame(choices_rows, columns=choices_cols_base + extra_cols).fillna("")
+    # choices: incluir columnas extra si existen (canton_key, any)
+    choices_cols_all = set()
+    for r in choices_rows:
+        choices_cols_all.update(r.keys())
+    base_choice_cols = ["list_name", "name", "label"]
+    for extra in sorted(choices_cols_all):
+        if extra not in base_choice_cols:
+            base_choice_cols.append(extra)
+    df_choices = pd.DataFrame(choices_rows, columns=base_choice_cols).fillna("")
 
     df_settings = pd.DataFrame([{
         "form_title": form_title,
@@ -694,6 +755,14 @@ version_auto = datetime.now().strftime("%Y%m%d%H%M")
 version = st.text_input("Versión (settings.version)", value=version_auto)
 
 if st.button("🧮 Construir XLSForm", use_container_width=True):
+    # Validación mínima: que exista al menos un cantón y un distrito (para que el usuario no publique sin catálogo)
+    has_canton = any(r.get("list_name") == "list_canton" and r.get("name") not in ("__pick_canton__",) for r in st.session_state.choices_ext_rows)
+    has_distrito = any(r.get("list_name") == "list_distrito" and r.get("name") not in ("__pick_distrito__",) for r in st.session_state.choices_ext_rows)
+
+    if not has_canton or not has_distrito:
+        st.warning("Aún no has cargado catálogo Cantón→Distrito. Puedes construir igual, pero en Survey123 verás solo placeholders.")
+        # No bloqueamos porque a veces quieren probar estructura.
+
     df_survey, df_choices, df_settings = construir_xlsform(
         form_title=form_title,
         logo_media_name=logo_media_name,
@@ -718,7 +787,7 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
 
     if st.session_state.get("_logo_bytes"):
         st.download_button(
-            "📥 Descargar logo para carpeta media/ (Survey123 Connect)",
+            "📥 Descargar logo para carpeta media/",
             data=st.session_state["_logo_bytes"],
             file_name=logo_media_name,
             mime="image/png",
@@ -730,4 +799,6 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
 1) Crear encuesta **desde archivo** y seleccionar el XLSForm descargado.  
 2) Copiar el logo dentro de la carpeta **media/** del proyecto, con el **mismo nombre** que pusiste en `media::image`.  
 3) Verás páginas con **Siguiente/Anterior** (porque `settings.style = pages`).  
+4) En **Página 4**, el glosario aparece solo si la persona marca **Sí** (no es obligatorio).  
+5) Las **notas** no generarán columnas vacías en la tabla (porque usan `bind::esri:fieldType = null`).  
 """)
