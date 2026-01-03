@@ -1,4 +1,4 @@
-```python
+
 # -*- coding: utf-8 -*-
 # ==========================================================================================
 # App: Encuesta Comunidad → XLSForm Survey123 (Páginas 1 a 4)
@@ -733,3 +733,4 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
 3) Verás páginas con **Siguiente/Anterior** (porque `settings.style = pages`).  
 """)
 ```
+
