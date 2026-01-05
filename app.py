@@ -839,7 +839,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
 
     add_note("p71_nota_no_denuncia", "Esta pregunta recoge percepción general y no constituye denuncia.", relevant=rel_71)
     add_note("p71_nota_descriptores",
-             "Nota: Incluye descriptores (selección múltiple) además del espacio abierto. La respuesta abierta es para que la persona encuestada redacte su respuesta.",
+             "",
              relevant=rel_71)
 
     survey_rows.append({
@@ -859,7 +859,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p8_nota_escala", "Nota: Se utiliza una escala ordinal del 1 al 5.", relevant=rel_si)
+    add_note("p8_nota_escala", "", relevant=rel_si)
 
     rel_81 = (
         f"({rel_si}) and ("
@@ -881,7 +881,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
     })
 
     add_note("p9_instr",
-             "9. Indique qué tan seguros percibe, en términos de seguridad, en los siguientes espacios de su Distrito:\n(Usar matriz de selección única por fila con la escala 1 a 5.)",
+             "9. Indique qué tan seguros percibe, en términos de seguridad, en los siguientes espacios de su Distrito:",
              relevant=rel_si)
 
     matriz_filas = [
@@ -908,7 +908,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
             "appearance": "minimal",
             "relevant": rel_si
         })
-    add_note("p9_nota", "Nota: La persona encuestada podrá seleccionar una de las opciones por cada línea de zona.", relevant=rel_si)
+    add_note("p9_nota", "", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_one tipo_espacio",
@@ -919,7 +919,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": rel_si
     })
     add_note("p10_nota",
-             "Nota: Seleccione una única opción que, según su percepción, represente el tipo de espacio más inseguro del distrito.",
+             "",
              relevant=rel_si)
 
     survey_rows.append({
@@ -940,7 +940,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "multiline",
         "relevant": rel_si
     })
-    add_note("p11_nota", "Nota: La respuesta es de espacio abierto para detallar", relevant=rel_si)
+    add_note("p11_nota", "", relevant=rel_si)
 
     add_glosario_por_pagina("p4", rel_si, ["Extorsión", "Daños/vandalismo"])
     survey_rows.append({"type": "end_group", "name": "p4_end"})
@@ -1753,6 +1753,7 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
 4) El glosario aparece solo si la persona marca **Sí** (no es obligatorio).  
 5) Las **notas** no generan columnas vacías en la tabla (porque usan `bind::esri:fieldType = null`).  
 """)
+
 
 
 
