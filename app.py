@@ -837,9 +837,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": rel_71
     })
 
-    add_note("p71_nota_no_denuncia", "Esta pregunta recoge percepción general y no constituye denuncia.", relevant=rel_71)
-    add_note("p71_nota_descriptores",
-             "",
+    add_note("p71_nota_no_denuncia", "Esta pregunta recoge percepción general y no constituye denuncia.", relevant=rel_71),
              relevant=rel_71)
 
     survey_rows.append({
@@ -908,7 +906,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
             "appearance": "minimal",
             "relevant": rel_si
         })
-    add_note("p9_nota", "", relevant=rel_si)
+    
 
     survey_rows.append({
         "type": "select_one tipo_espacio",
@@ -918,9 +916,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p10_nota",
-             "",
-             relevant=rel_si)
+
 
     survey_rows.append({
         "type": "text",
@@ -940,7 +936,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "multiline",
         "relevant": rel_si
     })
-    add_note("p11_nota", "", relevant=rel_si)
+    
 
     add_glosario_por_pagina("p4", rel_si, ["Extorsión", "Daños/vandalismo"])
     survey_rows.append({"type": "end_group", "name": "p4_end"})
@@ -968,9 +964,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p12_nota",
-             "Nota: esta pregunta es de selección múltiple, se engloba estas problemáticas en una sola pregunta ya que ninguno de ellas se subdivide.",
-             relevant=rel_si)
+
 
     survey_rows.append({
         "type": "text",
@@ -1753,6 +1747,7 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
 4) El glosario aparece solo si la persona marca **Sí** (no es obligatorio).  
 5) Las **notas** no generan columnas vacías en la tabla (porque usan `bind::esri:fieldType = null`).  
 """)
+
 
 
 
