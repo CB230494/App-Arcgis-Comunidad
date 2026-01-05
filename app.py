@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 # ==========================================================================================
-# ============================== PARTE 1/4 ================================================
 # ====== App: Encuesta Comunidad → XLSForm Survey123 (Páginas 1 a 8) + Cantón→Distrito =====
 # ==========================================================================================
 #
@@ -19,6 +18,10 @@
 # - Notas NO crean columnas: bind::esri:fieldType="null"
 # - Glosario por página: aparece solo si la persona marca "Sí" (NO obligatorio) y queda DENTRO de la página
 # - Catálogo Cantón→Distrito: por lotes, con placeholders y choice_filter
+#
+# Ajustes solicitados:
+# - Eliminadas notas tipo “La respuesta es abierta…” y similares.
+# - Eliminada la nota relacionada a 7.1 (no se agrega nota adicional para 7.1).
 # ==========================================================================================
 
 import re
@@ -115,7 +118,7 @@ DEFAULT_LOGO_PATH = "001.png"
 col_logo, col_txt = st.columns([1, 3], vertical_alignment="center")
 
 with col_logo:
-    up_logo = st.file_uploader("Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
+    up_logo = st.file_uploader("Logo (PNG/JPG)", type=["png", "jpg", "jpeg"], key="uploader_logo")
     if up_logo:
         st.image(up_logo, caption="Logo cargado", use_container_width=True)
         st.session_state["_logo_bytes"] = up_logo.getvalue()
@@ -131,11 +134,12 @@ with col_logo:
             st.session_state["_logo_name"] = "logo.png"
 
 with col_txt:
-    delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste")
+    delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste", key="txt_delegacion")
     logo_media_name = st.text_input(
         "Nombre de archivo para `media::image`",
         value=st.session_state.get("_logo_name", "001.png"),
-        help="Debe coincidir con el archivo dentro de la carpeta `media/` del proyecto Survey123 (Connect)."
+        help="Debe coincidir con el archivo dentro de la carpeta `media/` del proyecto Survey123 (Connect).",
+        key="txt_logo_media_name"
     )
 
 form_title = f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"
@@ -181,10 +185,8 @@ CONSENT_CIERRE = [
 
 # ==========================================================================================
 # Glosario (se alimenta por página SOLO si hay términos definidos)
-# - Aquí dejamos definiciones base (puedes luego ampliarlo con tu Word).
 # ==========================================================================================
 GLOSARIO_DEFINICIONES = {
-    # Ya veníamos usando
     "Extorsión": (
         "Extorsión: El que, para procurar un lucro injusto, obligare a otro, mediante intimidación o amenaza, "
         "a realizar u omitir un acto o negocio en perjuicio de su patrimonio o del de un tercero."
@@ -194,7 +196,6 @@ GLOSARIO_DEFINICIONES = {
         "sean de naturaleza pública o privada (incluidos bienes del Estado), en perjuicio de persona física o jurídica."
     ),
 
-    # Riesgos / comunidad
     "Búnkeres": "Búnkeres: Punto fijo o inmueble utilizado para la venta o distribución de drogas.",
     "Receptación": "Receptación: Comprar, recibir u ocultar bienes de procedencia ilícita, con conocimiento de su origen.",
     "Contrabando": "Contrabando: Ingreso, egreso o comercialización de mercancías evadiendo controles o tributos establecidos.",
@@ -205,12 +206,10 @@ GLOSARIO_DEFINICIONES = {
     "Estafa": "Estafa: Obtención de un beneficio patrimonial mediante engaño.",
     "Tacha": "Tacha: Ingreso o acceso ilegítimo a inmueble/estructura para sustraer bienes (forzamiento, fractura o apertura indebida).",
 
-    # Victimización / modalidades
     "Ganzúa (pata de chancho)": "Ganzúa (pata de chancho): Herramienta usada para forzar cerraduras o accesos (barra/palanca).",
     "Boquete": "Boquete: Apertura intencional (hueco) en pared/techo/piso para ingresar a un inmueble.",
     "Arrebato": "Arrebato: Sustracción rápida de un objeto a una persona (por ejemplo, arrancar bolso o celular).",
 
-    # Confianza / acciones
     "Coordinación interinstitucional": "Coordinación interinstitucional: Trabajo articulado entre instituciones para atender un problema común y mejorar resultados.",
     "Integridad y credibilidad policial": "Integridad y credibilidad policial: Percepción de honestidad, apego a la ley y confianza en el actuar del cuerpo policial.",
     "Acciones disuasivas": "Acciones disuasivas: Presencia y acciones preventivas orientadas a reducir oportunidades del delito y aumentar percepción de control.",
@@ -232,12 +231,12 @@ def _append_choice_unique(row: dict):
 st.markdown("### 📚 Catálogo Cantón → Distrito (por lotes)")
 with st.expander("Agrega un lote (un Cantón y uno o varios Distritos)", expanded=True):
     col_c1, col_c2 = st.columns([2, 3])
-    canton_txt = col_c1.text_input("Cantón (una vez)", value="")
-    distritos_txt = col_c2.text_area("Distritos del cantón (uno por línea)", value="", height=120)
+    canton_txt = col_c1.text_input("Cantón (una vez)", value="", key="txt_canton_lote")
+    distritos_txt = col_c2.text_area("Distritos del cantón (uno por línea)", value="", height=120, key="txt_distritos_lote")
 
     col_b1, col_b2, col_b3 = st.columns([1, 1, 2])
-    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True)
-    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True)
+    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True, key="btn_add_lote")
+    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True, key="btn_clear_catalogo")
 
     if clear_all:
         st.session_state.choices_ext_rows = []
@@ -271,12 +270,10 @@ with st.expander("Agrega un lote (un Cantón y uno o varios Distritos)", expande
 if st.session_state.choices_ext_rows:
     st.dataframe(pd.DataFrame(st.session_state.choices_ext_rows),
                  use_container_width=True, hide_index=True, height=240)
-# -*- coding: utf-8 -*-
-# ==========================================================================================
-# ============================== PARTE 2/4 ================================================
-# ====== Choices base (todas las listas) + función _construir_choices_y_base ===============
-# ==========================================================================================
 
+# ==========================================================================================
+# ============================== CHOICES BASE =============================================
+# ==========================================================================================
 def _construir_choices_y_base(form_title: str, logo_media_name: str):
     """
     Retorna:
@@ -285,16 +282,12 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     survey_rows = []
     choices_rows = []
 
-    # ------------------------------------------------------------------
     # Yes/No (base)
-    # ------------------------------------------------------------------
     add_choice_list(choices_rows, "yesno", ["Sí", "No"])
     v_si = slugify_name("Sí")
     v_no = slugify_name("No")
 
-    # ------------------------------------------------------------------
     # Demográficos
-    # ------------------------------------------------------------------
     add_choice_list(choices_rows, "genero", ["Femenino", "Masculino", "Persona No Binaria", "Prefiero no decir"])
     add_choice_list(choices_rows, "escolaridad", [
         "Ninguna",
@@ -308,9 +301,7 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     ])
     add_choice_list(choices_rows, "relacion_zona", ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"])
 
-    # ------------------------------------------------------------------
     # Página 4: Percepción
-    # ------------------------------------------------------------------
     add_choice_list(choices_rows, "seguridad_5", ["Muy inseguro", "Inseguro", "Ni seguro ni inseguro", "Seguro", "Muy seguro"])
 
     causas_71 = [
@@ -381,9 +372,7 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     ]
     add_choice_list(choices_rows, "tipo_espacio", tipos_10)
 
-    # ------------------------------------------------------------------
     # Página 5: Riesgos / factores situacionales
-    # ------------------------------------------------------------------
     p12 = [
         "Problemas vecinales o conflictos entre vecinos",
         "Personas en situación de ocio",
@@ -427,9 +416,7 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     p18 = ["Falta de presencia policial", "Presencia policial insuficiente", "Presencia policial solo en ciertos horarios", "No observa presencia policial"]
     add_choice_list(choices_rows, "p18_presencia_policial", p18)
 
-    # ------------------------------------------------------------------
     # Página 6: Delitos
-    # ------------------------------------------------------------------
     p19 = [
         "Disturbios en vía pública. (Riñas o Agresión)",
         "Daños a la propiedad. (Destruir, inutilizar o desaparecer).",
@@ -490,9 +477,7 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     p29 = ["Con fines laborales", "Con fines sexuales"]
     add_choice_list(choices_rows, "p29_trata", p29)
 
-    # ------------------------------------------------------------------
     # Página 7: Victimización
-    # ------------------------------------------------------------------
     add_choice_list(choices_rows, "p30_vif", ["Sí", "No"])
 
     p301 = [
@@ -572,9 +557,7 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     ]
     add_choice_list(choices_rows, "p314_modo", p314)
 
-    # ------------------------------------------------------------------
     # Página 8: Confianza Policial + Acciones + Info adicional y cierre
-    # ------------------------------------------------------------------
     add_choice_list(choices_rows, "p32_identifica_policias", ["Sí", "No"])
 
     p321 = [
@@ -588,21 +571,15 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     ]
     add_choice_list(choices_rows, "p321_interacciones", p321)
 
-    # Escala 1-10
     escala_1_10 = [str(i) for i in range(1, 11)]
     add_choice_list(choices_rows, "escala_1_10", escala_1_10)
 
-    # P38 frecuencia
     p38 = ["Todos los días", "Varias veces por semana", "Una vez por semana", "Casi nunca", "Nunca"]
     add_choice_list(choices_rows, "p38_frecuencia", p38)
 
-    # P39/40/42 (Sí/No/A veces)
     add_choice_list(choices_rows, "p39_si_no_aveces", ["Sí", "No", "A veces"])
-
-    # P41 (Sí/No/No estoy seguro(a))
     add_choice_list(choices_rows, "p41_opciones", ["Sí", "No", "No estoy seguro(a)"])
 
-    # P43 acciones FP (multi) + Otro + No indica
     p43 = [
         "Mayor presencia policial y patrullaje",
         "Acciones disuasivas en puntos conflictivos",
@@ -617,7 +594,6 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     ]
     add_choice_list(choices_rows, "p43_acciones_fp", p43)
 
-    # P44 acciones muni (multi) + Otro + No indica
     p44 = [
         "Mantenimiento e iluminación del espacio público",
         "Limpieza y ordenamiento urbano",
@@ -632,16 +608,13 @@ def _construir_choices_y_base(form_title: str, logo_media_name: str):
     ]
     add_choice_list(choices_rows, "p44_acciones_muni", p44)
 
-    # P45 información sobre delito (Sí/No)
     add_choice_list(choices_rows, "p45_info_delito", ["Sí", "No"])
 
     return survey_rows, choices_rows, v_si, v_no
-# -*- coding: utf-8 -*-
-# ==========================================================================================
-# ============================== PARTE 3/4 ================================================
-# ====== construir_xlsform: Páginas 1 a 7 (Intro a Victimización) + Glosario por página =====
-# ==========================================================================================
 
+# ==========================================================================================
+# ============================== CONSTRUIR XLSFORM ========================================
+# ==========================================================================================
 def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, version: str):
     # Base + choices
     survey_rows, choices_rows, v_si, v_no = _construir_choices_y_base(form_title, logo_media_name)
@@ -837,8 +810,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": rel_71
     })
 
-
-
     survey_rows.append({
         "type": "text",
         "name": "p71_otro_detalle",
@@ -856,17 +827,8 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p8_nota_escala", "", relevant=rel_si)
 
-    rel_81 = (
-        f"({rel_si}) and ("
-        f"${{p8_comparacion_anno}}='{slugify_name('1 (Mucho Menos Seguro)')}' or "
-        f"${{p8_comparacion_anno}}='{slugify_name('2 (Menos Seguro)')}' or "
-        f"${{p8_comparacion_anno}}='{slugify_name('3 (Se mantiene igual)')}' or "
-        f"${{p8_comparacion_anno}}='{slugify_name('4 (Más Seguro)')}' or "
-        f"${{p8_comparacion_anno}}='{slugify_name('5 (Mucho Más Seguro)')}'"
-        f")"
-    )
+    rel_81 = f"({rel_si})"
 
     survey_rows.append({
         "type": "text",
@@ -905,7 +867,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
             "appearance": "minimal",
             "relevant": rel_si
         })
-    
 
     survey_rows.append({
         "type": "select_one tipo_espacio",
@@ -916,7 +877,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": rel_si
     })
 
-
     survey_rows.append({
         "type": "text",
         "name": "p10_otros_detalle",
@@ -926,7 +886,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": f"({rel_si}) and (${{p10_tipo_espacio_mas_inseguro}}='{slugify_name('Otros')}')"
     })
 
-    # Pregunta 11 (abierta) — SIEMPRE visible en P4
     survey_rows.append({
         "type": "text",
         "name": "p11_por_que_inseguro_tipo_espacio",
@@ -935,7 +894,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "multiline",
         "relevant": rel_si
     })
-    
 
     add_glosario_por_pagina("p4", rel_si, ["Extorsión", "Daños/vandalismo"])
     survey_rows.append({"type": "end_group", "name": "p4_end"})
@@ -964,7 +922,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": rel_si
     })
 
-
     survey_rows.append({
         "type": "text",
         "name": "p12_otro_detalle",
@@ -981,7 +938,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p13_nota", "Nota: esta pregunta es de selección múltiple", relevant=rel_si)
 
     n_no_obs = slugify_name("No se observa consumo")
     n_priv = slugify_name("Área privada")
@@ -997,7 +953,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "constraint_message": "Si selecciona “No se observa consumo”, no puede seleccionar “Área privada” ni “Área pública”.",
         "relevant": rel_si
     })
-    add_note("p14_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p15_def_infra_vial",
@@ -1006,7 +961,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p15_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p16_bunkeres_espacios",
@@ -1015,7 +969,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p16_nota", "Nota: esta pregunta es de selección múltiple", relevant=rel_si)
 
     survey_rows.append({
         "type": "text",
@@ -1033,7 +986,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p17_nota", "Nota: esta pregunta es de selección múltiple", relevant=rel_si)
 
     n_no_pres = slugify_name("No observa presencia policial")
     n_falta = slugify_name("Falta de presencia policial")
@@ -1050,7 +1002,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "constraint_message": "Si selecciona “No observa presencia policial”, no seleccione otras opciones simultáneamente.",
         "relevant": rel_si
     })
-    add_note("p18_nota", "Nota: Selección múltiple.", relevant=rel_si)
 
     add_glosario_por_pagina("p5", rel_si, [
         "Cuarterías",
@@ -1093,6 +1044,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "Nota: esta pregunta es de selección múltiple, se engloba estos delitos en una sola pregunta ya que ninguno de ellos se subdivide.",
         relevant=rel_si
     )
+
     survey_rows.append({
         "type": "text",
         "name": "p19_otro_detalle",
@@ -1118,7 +1070,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "constraint_message": "Si selecciona “No se percibe consumo o venta”, no seleccione otras opciones simultáneamente.",
         "relevant": rel_si
     })
-    add_note("p20_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
+
     survey_rows.append({
         "type": "text",
         "name": "p20_otro_detalle",
@@ -1135,7 +1087,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p21_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p22_sexuales",
@@ -1144,7 +1095,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p22_nota", "Nota: esta pregunta es de selección múltiple", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p23_asaltos",
@@ -1153,7 +1103,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p23_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p24_estafas",
@@ -1162,7 +1111,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p24_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p25_robo_fuerza",
@@ -1171,7 +1119,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p25_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p26_abandono",
@@ -1180,7 +1127,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p26_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p27_explotacion_infantil",
@@ -1189,7 +1135,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p27_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p28_ambientales",
@@ -1198,7 +1143,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p28_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p29_trata",
@@ -1222,7 +1166,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "Tacha",
         "Trata de personas",
         "Explotación infantil",
-        "Delitos ambientales",
         "Extorsión",
         "Búnkeres"
     ])
@@ -1254,11 +1197,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note(
-        "p30_nota_condicional",
-        "Nota Lógica Condicional: En caso de seleccionar “Sí”, se habilita la pregunta 30.1, 30.2 y 30.3. En caso de contestar “No” se pasa a la pregunta 31.",
-        relevant=rel_si
-    )
 
     rel_30_si = f"({rel_si}) and (${{p30_vif}}='{slugify_name('Sí')}')"
 
@@ -1269,11 +1207,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_30_si
     })
-    add_note(
-        "p301_nota",
-        "Nota: esta pregunta es de selección múltiple. Lógica condicional: En caso de seleccionar “Sí” en la pregunta 30, se habilita esta pregunta.",
-        relevant=rel_30_si
-    )
 
     survey_rows.append({
         "type": "select_one p302_medidas",
@@ -1292,7 +1225,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "minimal",
         "relevant": rel_30_si
     })
-    add_note("p303_nota", "Nota: Se añade la opción “Muy malo”. La respuesta es de selección única.", relevant=rel_30_si)
 
     # 31
     survey_rows.append({
@@ -1322,7 +1254,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_31_si
     })
-    add_note("p311_nota", "Nota: Esta es una pregunta de selección múltiple.", relevant=rel_31_si)
 
     survey_rows.append({
         "type": "select_multiple p312_motivos_no_denuncia",
@@ -1331,7 +1262,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_31_si_no_den
     })
-    add_note("p312_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_31_si_no_den)
 
     survey_rows.append({
         "type": "select_one p313_horario",
@@ -1341,7 +1271,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "minimal",
         "relevant": rel_31_si
     })
-    add_note("p313_nota", "Nota: esta pregunta es de selección única.", relevant=rel_31_si)
 
     survey_rows.append({
         "type": "select_multiple p314_modo",
@@ -1350,7 +1279,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_31_si
     })
-    add_note("p314_nota", "Nota: esta pregunta es de selección múltiple.", relevant=rel_31_si)
 
     survey_rows.append({
         "type": "text",
@@ -1362,12 +1290,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
     })
 
     add_glosario_por_pagina("p7", rel_si, [
-        "Violencia intrafamiliar (violencia doméstica)",
-        "Violencia psicológica",
-        "Violencia física",
-        "Violencia patrimonial",
-        "Violencia vicaria",
-        "Medidas de protección",
         "Ganzúa (pata de chancho)",
         "Boquete",
         "Arrebato",
@@ -1377,17 +1299,11 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
 
     survey_rows.append({"type": "end_group", "name": "p7_end"})
 
-    # ======================================================================================
-    # (P8 y export se agregan en PARTE 4/4)
-    # ======================================================================================
-
     return survey_rows, choices_rows, v_si, v_no, add_note, add_glosario_por_pagina, rel_si
-# -*- coding: utf-8 -*-
-# ==========================================================================================
-# ============================== PARTE 4/4 ================================================
-# ====== P8 (Confianza Policial 32-47) + Integración choices + DataFrames + Export UI ======
-# ==========================================================================================
 
+# ==========================================================================================
+# ============================== P8 + EXPORT ==============================================
+# ==========================================================================================
 def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, version: str):
     # Construye P1-P7 y trae helpers internos
     survey_rows, choices_rows, v_si, v_no, add_note, add_glosario_por_pagina, rel_si = construir_xlsform(
@@ -1433,7 +1349,6 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "required": "yes",
         "relevant": rel_321
     })
-    add_note("p321_nota", "Nota: La respuesta es de selección múltiple.", relevant=rel_321)
 
     survey_rows.append({
         "type": "text",
@@ -1453,9 +1368,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p33_nota", "Nota: Se utiliza una escala ordinal de 1 a 10 para medir la confianza.", relevant=rel_si)
 
-    # 34 escala 1-10
+    # 34
     survey_rows.append({
         "type": "select_one escala_1_10",
         "name": "p34_profesionalidad",
@@ -1464,9 +1378,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p34_nota", "Nota: Se utiliza una escala ordinal de 1 a 10 para medir la profesionalidad.", relevant=rel_si)
 
-    # 35 escala 1-10
+    # 35
     survey_rows.append({
         "type": "select_one escala_1_10",
         "name": "p35_calidad_servicio",
@@ -1475,9 +1388,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p35_nota", "Nota: Se utiliza una escala ordinal de 1 a 10 para medir la calidad del servicio policial.", relevant=rel_si)
 
-    # 36 escala 1-10
+    # 36
     survey_rows.append({
         "type": "select_one escala_1_10",
         "name": "p36_satisfaccion_preventivo",
@@ -1486,9 +1398,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p36_nota", "Nota: Se utiliza una escala ordinal de 1 a 10 para medir la satisfacción con el trabajo preventivo.", relevant=rel_si)
 
-    # 37 escala 1-10
+    # 37
     survey_rows.append({
         "type": "select_one escala_1_10",
         "name": "p37_contribucion_reduccion_crimen",
@@ -1497,9 +1408,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p37_nota", "Nota: Se utiliza una escala ordinal de 1 a 10 para medir la contribución de la presencia policial.", relevant=rel_si)
 
-    # 38 selección única
+    # 38
     survey_rows.append({
         "type": "select_one p38_frecuencia",
         "name": "p38_frecuencia_presencia",
@@ -1508,9 +1418,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p38_nota", "Nota: Respuesta de selección única con el propósito de medir la visibilidad de la presencia.", relevant=rel_si)
 
-    # 39 selección única
+    # 39
     survey_rows.append({
         "type": "select_one p39_si_no_aveces",
         "name": "p39_presencia_consistente",
@@ -1519,9 +1428,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p39_nota", "Nota: Respuesta de selección única con el propósito de medir la constancia operativa por horario.", relevant=rel_si)
 
-    # 40 selección única
+    # 40
     survey_rows.append({
         "type": "select_one p39_si_no_aveces",
         "name": "p40_trato_justo",
@@ -1530,9 +1438,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p40_nota", "Nota: Respuesta de selección única con el propósito de medir el trato justo e imparcialidad.", relevant=rel_si)
 
-    # 41 selección única
+    # 41
     survey_rows.append({
         "type": "select_one p41_opciones",
         "name": "p41_quejas_sin_temor",
@@ -1541,9 +1448,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p41_nota", "Nota: Respuesta de selección única con el propósito de medir la expresión sin preocupaciones o temor.", relevant=rel_si)
 
-    # 42 selección única
+    # 42
     survey_rows.append({
         "type": "select_one p39_si_no_aveces",
         "name": "p42_info_veraz_clara",
@@ -1552,7 +1458,6 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p42_nota", "Nota: Respuesta de selección única con el propósito de medir la información veraz y oportuna.", relevant=rel_si)
 
     # 43 multiselect + Otro (detalle)
     survey_rows.append({
@@ -1562,7 +1467,6 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p43_nota", "Nota: Se añaden descriptores y la opción Otro (selección múltiple y abierta).", relevant=rel_si)
 
     survey_rows.append({
         "type": "text",
@@ -1581,7 +1485,6 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "required": "yes",
         "relevant": rel_si
     })
-    add_note("p44_nota", "Nota: Se añaden descriptores y la opción Otro (selección múltiple y abierta).", relevant=rel_si)
 
     survey_rows.append({
         "type": "text",
@@ -1604,7 +1507,6 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "minimal",
         "relevant": rel_si
     })
-    add_note("p45_nota", "Nota: Pregunta reubicada al final. Lógica Condicional: Si se selecciona “Sí”, habilita la pregunta 45.1.", relevant=rel_si)
 
     # 45.1 texto si 45=Sí
     rel_451 = f"({rel_si}) and (${{p45_info_delito}}='{slugify_name('Sí')}')"
@@ -1616,9 +1518,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "multiline",
         "relevant": rel_451
     })
-    add_note("p451_nota", "Nota: La respuesta es abierta para que la persona encuestada agregue la información que considere pertinente.", relevant=rel_451)
 
-    # 46 contacto voluntario (abierta)
+    # 46 contacto voluntario (abierta) — SIN nota “respuesta abierta”
     survey_rows.append({
         "type": "text",
         "name": "p46_contacto_voluntario",
@@ -1627,9 +1528,8 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "multiline",
         "relevant": rel_si
     })
-    add_note("p46_nota", "Nota: La respuesta es abierta para que la persona encuestada agregue la información que considere pertinente.", relevant=rel_si)
 
-    # 47 otra info (abierta)
+    # 47 otra info (abierta) — SIN nota “respuesta abierta”
     survey_rows.append({
         "type": "text",
         "name": "p47_info_adicional",
@@ -1638,7 +1538,6 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
         "appearance": "multiline",
         "relevant": rel_si
     })
-    add_note("p47_nota", "Nota: La respuesta es abierta", relevant=rel_si)
 
     # Cierre (nota)
     add_note("p8_fin", "---------------------------------- Fin de la Encuesta ----------------------------------", relevant=rel_si)
@@ -1689,20 +1588,25 @@ def construir_xlsform_final(form_title: str, logo_media_name: str, idioma: str, 
 
     return df_survey, df_choices, df_settings
 
-
 # ==========================================================================================
 # Exportar (UI)
 # ==========================================================================================
 st.markdown("---")
 st.subheader("📦 Generar XLSForm (Survey123)")
 
-idioma = st.selectbox("Idioma (default_language)", options=["es", "en"], index=0)
+idioma = st.selectbox("Idioma (default_language)", options=["es", "en"], index=0, key="sel_idioma")
 version_auto = datetime.now().strftime("%Y%m%d%H%M")
-version = st.text_input("Versión (settings.version)", value=version_auto)
+version = st.text_input("Versión (settings.version)", value=version_auto, key="txt_version")
 
-if st.button("🧮 Construir XLSForm", use_container_width=True):
-    has_canton = any(r.get("list_name") == "list_canton" and r.get("name") not in ("__pick_canton__",) for r in st.session_state.choices_ext_rows)
-    has_distrito = any(r.get("list_name") == "list_distrito" and r.get("name") not in ("__pick_distrito__",) for r in st.session_state.choices_ext_rows)
+if st.button("🧮 Construir XLSForm", use_container_width=True, key="btn_build_xlsform"):
+    has_canton = any(
+        r.get("list_name") == "list_canton" and r.get("name") not in ("__pick_canton__",)
+        for r in st.session_state.choices_ext_rows
+    )
+    has_distrito = any(
+        r.get("list_name") == "list_distrito" and r.get("name") not in ("__pick_distrito__",)
+        for r in st.session_state.choices_ext_rows
+    )
 
     if not has_canton or not has_distrito:
         st.warning("Aún no has cargado catálogo Cantón→Distrito. Puedes construir igual, pero en Survey123 verás solo placeholders.")
@@ -1735,7 +1639,8 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
             data=st.session_state["_logo_bytes"],
             file_name=logo_media_name,
             mime="image/png",
-            use_container_width=True
+            use_container_width=True,
+            key="btn_download_logo"
         )
 
     st.info("""
@@ -1746,7 +1651,6 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
 4) El glosario aparece solo si la persona marca **Sí** (no es obligatorio).  
 5) Las **notas** no generan columnas vacías en la tabla (porque usan `bind::esri:fieldType = null`).  
 """)
-
 
 
 
