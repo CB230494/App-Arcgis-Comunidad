@@ -837,8 +837,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "relevant": rel_71
     })
 
-    add_note("p71_nota_no_denuncia", "Esta pregunta recoge percepción general y no constituye denuncia.", relevant=rel_71),
-             relevant=rel_71)
+
 
     survey_rows.append({
         "type": "text",
@@ -1747,6 +1746,7 @@ if st.button("🧮 Construir XLSForm", use_container_width=True):
 4) El glosario aparece solo si la persona marca **Sí** (no es obligatorio).  
 5) Las **notas** no generan columnas vacías en la tabla (porque usan `bind::esri:fieldType = null`).  
 """)
+
 
 
 
