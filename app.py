@@ -15,16 +15,16 @@
 # - P7 Victimización (30 a 31.4) + Glosario por página (si aplica)
 # - P8 Confianza policial + Acciones + Info adicional y cierre (32 a 47) + Glosario por página (si aplica)
 #
-# AJUSTES SOLICITADOS:
-# - Eliminar textos visibles tipo "Nota: ..." (guías internas).
-# - En Cantón/Distrito: NO placeholders "— escoja un cantón —".
-# - En Edad: solo "Edad".
-# - Arreglo del “error al llegar a una página”: en cascadas, NO validar “Distrito” requerido
-#   mientras el Cantón aún no esté seleccionado (relevant adicional).
+# AJUSTES CONFIRMADOS:
+# - Mantener SOLO “introducciones informativas” por página (visibles al usuario).
+# - Eliminar “Notas internas” innecesarias (las que no son guía real).
+# - Cantón/Distrito sin placeholders.
+# - Edad solo “Edad”.
+# - FIX “error al entrar a página”: Distrito requerido solo cuando Cantón ya fue seleccionado.
 #
 # IMPORTANTE:
-# - Notas informativas reales para el encuestado se dejan (sin prefijo "Nota:").
-# - Todas las notas que no deben crear columnas usan bind::esri:fieldType="null"
+# - Las introducciones informativas visibles se agregan como "note" (bind::esri:fieldType="null")
+#   para NO crear columnas en la capa.
 # ==========================================================================================
 
 import re
@@ -132,6 +132,33 @@ CONSENT_CIERRE = [
     "Las respuestas brindadas no constituyen denuncias formales, ni sustituyen los mecanismos legales correspondientes.",
     "Al continuar con la encuesta, usted manifiesta haber leído y comprendido la información anterior y otorga su consentimiento informado para participar."
 ]
+
+# Introducciones informativas por página (VISIBLES AL USUARIO)
+INTRO_P4 = (
+    "En esta sección se consultará su percepción general de seguridad en el distrito, "
+    "así como algunas situaciones que usted percibe que ocurren con mayor frecuencia en su comunidad. "
+    "Esta información no constituye denuncia formal ni confirmación de hechos."
+)
+INTRO_P5 = (
+    "A continuación se presentará una lista de problemáticas que se catalogan como factores situacionales. "
+    "Seleccione aquellas que, según su percepción u observación, se presentan en su comunidad. "
+    "Esta información no constituye denuncia formal ni confirmación de hechos."
+)
+INTRO_P6 = (
+    "A continuación, se presentará una lista de delitos y situaciones delictivas para que seleccione aquellos que, "
+    "según su percepción u observación, considera que se presentan en su comunidad. "
+    "Esta información no constituye denuncia formal ni confirmación de hechos delictivos."
+)
+INTRO_P7 = (
+    "En esta sección se consultará sobre experiencias de victimización. "
+    "Sus respuestas se utilizan con fines preventivos y estadísticos. "
+    "Esta información no constituye denuncia formal ni confirmación de hechos."
+)
+INTRO_P8 = (
+    "En esta sección se consultará sobre confianza, presencia y atención policial, así como acciones prioritarias "
+    "para mejorar la seguridad en la comunidad. "
+    "Esta información se utiliza con fines preventivos y estadísticos."
+)
 
 GLOSARIO_DEFINICIONES = {
     "Extorsión": (
@@ -642,7 +669,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
     })
 
     # FIX: Distrito solo se vuelve relevante cuando canton NO está vacío.
-    # Esto evita que Survey123 “valide requerido” apenas llegas a la página sin haber seleccionado cantón.
     rel_distrito = f"({rel_si}) and string-length(${{canton}}) > 0"
 
     survey_rows.append({
@@ -701,6 +727,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "field-list",
         "relevant": rel_si
     })
+    add_note("p4_intro_info", INTRO_P4, relevant=rel_si)
 
     survey_rows.append({
         "type": "select_one seguridad_5",
@@ -725,8 +752,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "required": "yes",
         "relevant": rel_71
     })
-
-    add_note("p71_info", "Esta pregunta recoge percepción general y no constituye denuncia.", relevant=rel_71)
 
     survey_rows.append({
         "type": "text",
@@ -824,11 +849,12 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "field-list",
         "relevant": rel_si
     })
+    add_note("p5_intro_info", INTRO_P5, relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p12_prob_situacionales",
         "name": "p12_problemas_situacionales",
-        "label": "12. A continuación, se presentará una lista de problemáticas que se catalogan como factores situacionales. Marque todas las opciones que considere presentes en su comunidad:",
+        "label": "12. Marque todas las opciones que considere presentes en su comunidad:",
         "required": "yes",
         "relevant": rel_si
     })
@@ -898,6 +924,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "field-list",
         "relevant": rel_si
     })
+    add_note("p6_intro_info", INTRO_P6, relevant=rel_si)
 
     survey_rows.append({
         "type": "select_multiple p19_delitos_general",
@@ -1007,6 +1034,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "field-list",
         "relevant": rel_si
     })
+    add_note("p7_intro_info", INTRO_P7, relevant=rel_si)
 
     survey_rows.append({
         "type": "select_one p30_vif",
@@ -1104,6 +1132,7 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
         "appearance": "field-list",
         "relevant": rel_si
     })
+    add_note("p8_intro_info", INTRO_P8, relevant=rel_si)
 
     survey_rows.append({
         "type": "select_one p32_identifica_policias",
@@ -1289,7 +1318,6 @@ def construir_xlsform(form_title: str, logo_media_name: str, idioma: str, versio
     # ===========================
     # DataFrames finales
     # ===========================
-    # choices: normalizar columnas
     df_choices = pd.DataFrame(choices_rows)
     for col in ["list_name", "name", "label", "canton_key"]:
         if col not in df_choices.columns:
@@ -1319,7 +1347,7 @@ col_g1, col_g2 = st.columns([1, 2])
 with col_g1:
     generar = st.button("Generar XLSForm", type="primary", use_container_width=True)
 with col_g2:
-    st.caption("Si el distrito te daba error apenas entrabas, ya quedó corregido con un `relevant` adicional.")
+    st.caption("Listo con: introducciones informativas por página + fix de validación al entrar a páginas (cascada).")
 
 if generar:
     df_survey, df_choices, df_settings = construir_xlsform(
@@ -1335,11 +1363,11 @@ if generar:
     with st.expander("Vista previa — settings", expanded=False):
         st.dataframe(df_settings, use_container_width=True, hide_index=True)
 
-    with st.expander("Vista previa — survey (primeras 60 filas)", expanded=False):
-        st.dataframe(df_survey.head(60), use_container_width=True, hide_index=True, height=420)
+    with st.expander("Vista previa — survey (primeras 70 filas)", expanded=False):
+        st.dataframe(df_survey.head(70), use_container_width=True, hide_index=True, height=420)
 
-    with st.expander("Vista previa — choices (primeras 80 filas)", expanded=False):
-        st.dataframe(df_choices.head(80), use_container_width=True, hide_index=True, height=420)
+    with st.expander("Vista previa — choices (primeras 90 filas)", expanded=False):
+        st.dataframe(df_choices.head(90), use_container_width=True, hide_index=True, height=420)
 
     nombre_archivo = f"{slugify_name(form_title)}_{version}.xlsx"
     descargar_xlsform(df_survey, df_choices, df_settings, nombre_archivo)
