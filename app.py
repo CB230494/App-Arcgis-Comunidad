@@ -1264,7 +1264,7 @@ def seed_questions_bank_if_missing(form_title: str, logo_media_name: str):
     add_row("p8", 30, {"type": "select_one p32_identifica_policias", "name": "p32_identifica_policias", "label": "32. ¿Identifica usted a los policías de la Fuerza Pública de Costa Rica en su comunidad?", "required": "yes", "appearance": "minimal", "relevant": rel_si})
 
     rel_321 = f"({rel_si}) and (${{p32_identifica_policias}}='{v_si}')"
- addictions = ""
+    addictions = ""
 
     add_row("p8", 40, {"type": "select_multiple p321_interacciones", "name": "p321_tipos_atencion", "label": "32.1 ¿Cuáles de los siguientes tipos de atención ha tenido?", "required": "yes", "relevant": rel_321})
 
@@ -3310,4 +3310,5 @@ if mode == "Vista rápida":
 #
 # Con esto, la app queda “cableada” para funcionar end-to-end.
 # ==========================================================================================
+
 
