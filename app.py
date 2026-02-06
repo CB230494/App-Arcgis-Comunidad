@@ -1305,12 +1305,14 @@ seed_questions_bank_if_missing(form_title=form_title, logo_media_name=logo_media
 
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (5/10) ====================================
-# ====== PARTE 5: EDITOR FÁCIL de preguntas (SIN EXCEL, SIN KEYS DUPLICADAS) ===============
+# ====== PARTE 5: EDITOR FÁCIL de preguntas (VISTA TIPO SURVEY123 + EDICIÓN SIMPLE) ========
 # ==========================================================================================
 #
-# ✔ Editor visual y sencillo
-# ✔ Mover / Editar / Eliminar / Duplicar / Agregar preguntas
-# ✔ Cada widget tiene key ÚNICA (prefijo q_)
+# ✔ Las preguntas se ven como en ArcGIS Survey123 (texto grande + radios/checkbox/campos)
+# ✔ Edición simple “para cualquiera” (texto, tipo, lista, obligatorio)
+# ✔ Edición avanzada (type/relevant/constraint...) para el técnico
+# ✔ Mover / Eliminar / Duplicar / Agregar
+# ✔ SIN keys duplicadas (prefijo q_)
 #
 # ==========================================================================================
 
@@ -1344,6 +1346,7 @@ def _duplicate_q(qid):
     src = _get_q_by_id(qid)
     if not src:
         return
+
     used_names = {q.get("row",{}).get("name","") for q in qb}
     row = dict(src.get("row",{}))
     if row.get("name"):
@@ -1398,13 +1401,38 @@ def _add_question(page, qtype, label):
     })
     st.session_state["questions_bank"] = qb
 
+# =========================
+# Helpers para vista tipo Survey123
+# =========================
+def _extract_list_name(tp: str) -> str:
+    tp = (tp or "").strip()
+    if tp.startswith("select_one "):
+        return tp.replace("select_one ", "").strip()
+    if tp.startswith("select_multiple "):
+        return tp.replace("select_multiple ", "").strip()
+    return ""
+
+def _choice_labels_for_list(list_name: str):
+    if not list_name:
+        return []
+    rows_c = st.session_state.get("choices_bank", [])
+    out = []
+    for r in rows_c:
+        if str(r.get("list_name","")).strip() == list_name:
+            out.append(str(r.get("label","")).strip() or str(r.get("name","")).strip())
+    return out
+
+def _all_choice_lists():
+    rows_c = st.session_state.get("choices_bank", [])
+    return sorted({str(r.get("list_name","")).strip() for r in rows_c if str(r.get("list_name","")).strip()})
+
 # ==========================================================================================
 # UI — Editor de preguntas
 # ==========================================================================================
 if st.session_state.get("ui_mode") == "Editor":
 
     st.markdown("---")
-    st.subheader("🧩 Editor de preguntas (fácil y visual)")
+    st.subheader("🧩 Editor de preguntas (vista tipo Survey123 + edición fácil)")
 
     pages_labels = {
         "p1":"P1 Introducción","p2":"P2 Consentimiento","p3":"P3 Demográficos",
@@ -1415,7 +1443,7 @@ if st.session_state.get("ui_mode") == "Editor":
     colL, colR = st.columns([1.2, 2.2])
 
     # --------------------------------------------------------------------------------------
-    # LISTA DE PREGUNTAS
+    # LISTA DE PREGUNTAS (izquierda)
     # --------------------------------------------------------------------------------------
     with colL:
         page_sel = st.selectbox(
@@ -1429,14 +1457,16 @@ if st.session_state.get("ui_mode") == "Editor":
 
         qs = [q for q in _qb_sorted() if q.get("page")==page_sel]
         if search:
-            s = search.lower()
+            s = search.lower().strip()
             qs = [q for q in qs if s in str(q.get("row",{}).get("label","")).lower()]
 
         labels = []
         map_q = {}
         for q in qs:
             r = q.get("row",{})
-            txt = f"[{r.get('type')}] {r.get('label','(sin texto)')}"
+            txt = f"{r.get('label','(sin texto)')}"
+            if str(r.get("type","")).strip() in ("begin_group","end_group","note","end"):
+                txt = f"[{r.get('type')}] {txt}"
             labels.append(txt)
             map_q[txt] = q.get("qid")
 
@@ -1462,68 +1492,209 @@ if st.session_state.get("ui_mode") == "Editor":
             key="q_new_type"
         )
         new_label = st.text_input("Texto", key="q_new_label")
-        if st.button("Agregar", key="q_add"):
+        if st.button("Agregar", key="q_add", use_container_width=True):
             _add_question(page_sel, new_type, new_label)
             st.rerun()
 
     # --------------------------------------------------------------------------------------
-    # EDITOR DE LA PREGUNTA
+    # VISTA LEGIBLE + EDICIÓN (derecha)
     # --------------------------------------------------------------------------------------
     with colR:
         qid = st.session_state.get("selected_qid")
         q = _get_q_by_id(qid)
 
         if not q:
-            st.info("Selecciona una pregunta para editar.")
+            st.info("Selecciona una pregunta para ver y editar.")
         else:
-            row = dict(q.get("row",{}))
-            with st.form("q_edit_form"):
-                row["type"] = st.text_input("type", row.get("type",""), key="q_edit_type")
-                row["name"] = st.text_input("name", row.get("name",""), key="q_edit_name")
-                row["label"] = st.text_area("label", row.get("label",""), height=120, key="q_edit_label")
-                row["required"] = st.selectbox("required", ["","yes","no"], index=0, key="q_edit_req")
-                row["appearance"] = st.text_input("appearance", row.get("appearance",""), key="q_edit_app")
-                row["relevant"] = st.text_area("relevant", row.get("relevant",""), height=80, key="q_edit_rel")
-                row["constraint"] = st.text_area("constraint", row.get("constraint",""), height=80, key="q_edit_con")
-                row["constraint_message"] = st.text_area("constraint_message", row.get("constraint_message",""), height=80, key="q_edit_con_msg")
+            row = dict(q.get("row", {}) or {})
+            qtype = str(row.get("type","")).strip()
+            qlabel = str(row.get("label","")).strip()
+            qname = str(row.get("name","")).strip()
+            list_name = _extract_list_name(qtype)
+            options_labels = _choice_labels_for_list(list_name)
 
-                if st.form_submit_button("💾 Guardar"):
+            st.markdown("### 👁️ Vista legible (como Survey123)")
+            st.caption(f"Nombre interno: `{qname}`  |  Tipo: `{qtype}`")
+
+            preview_box = st.container(border=True)
+            with preview_box:
+                st.markdown(f"#### {qlabel if qlabel else '(Pregunta sin texto)'}")
+
+                if qtype.startswith("select_one "):
+                    if options_labels:
+                        st.radio(
+                            " ",
+                            options_labels,
+                            index=None,
+                            key=f"q_preview_radio_{qid}",
+                            label_visibility="collapsed"
+                        )
+                    else:
+                        st.info("Esta pregunta es select_one pero su lista no tiene opciones (edítalas en Choices).")
+
+                elif qtype.startswith("select_multiple "):
+                    if options_labels:
+                        for i, opt in enumerate(options_labels):
+                            st.checkbox(opt, value=False, key=f"q_preview_chk_{qid}_{i}")
+                    else:
+                        st.info("Esta pregunta es select_multiple pero su lista no tiene opciones (edítalas en Choices).")
+
+                elif qtype == "integer":
+                    st.number_input(" ", value=None, step=1, key=f"q_preview_int_{qid}", label_visibility="collapsed")
+
+                elif qtype == "text":
+                    st.text_area(" ", value="", key=f"q_preview_text_{qid}", label_visibility="collapsed", height=90)
+
+                elif qtype == "note":
+                    st.info("ℹ️ Nota/Texto informativo (no genera columna).")
+
+                elif qtype == "begin_group":
+                    st.warning("📌 Inicio de sección (begin_group).")
+
+                elif qtype == "end_group":
+                    st.warning("📌 Fin de sección (end_group).")
+
+                elif qtype == "end":
+                    st.warning("🏁 Fin del formulario (end).")
+
+                else:
+                    st.info("Tipo no previsualizado. Se exporta igual.")
+
+            st.markdown("---")
+
+            modo_edicion = st.radio(
+                "Modo de edición",
+                ["Edición simple (para cualquiera)", "Edición avanzada (XLSForm)"],
+                horizontal=True,
+                key="q_edit_mode"
+            )
+
+            # =========================
+            # EDICIÓN SIMPLE
+            # =========================
+            if modo_edicion.startswith("Edición simple"):
+                st.markdown("### ✏️ Editar (simple)")
+
+                with st.form("q_simple_edit_form"):
+                    new_label = st.text_area(
+                        "Texto de la pregunta",
+                        value=qlabel,
+                        height=120,
+                        key="q_simple_label"
+                    )
+
+                    tipo_simple = st.selectbox(
+                        "Tipo de pregunta",
+                        ["select_one", "select_multiple", "text", "integer", "note"],
+                        index=0 if qtype.startswith("select_one ") else
+                              1 if qtype.startswith("select_multiple ") else
+                              2 if qtype=="text" else
+                              3 if qtype=="integer" else
+                              4,
+                        key="q_simple_type"
+                    )
+
+                    new_list = list_name
+                    if tipo_simple in ("select_one", "select_multiple"):
+                        listas = _all_choice_lists()
+                        if not listas:
+                            st.warning("No hay listas de opciones aún. Ve a Choices y crea una lista.")
+                            listas = ["yesno"]
+                        new_list = st.selectbox(
+                            "Lista de opciones",
+                            options=listas,
+                            index=listas.index(list_name) if list_name in listas else 0,
+                            key="q_simple_list"
+                        )
+                        opts = _choice_labels_for_list(new_list)
+                        st.caption("Opciones de esa lista:")
+                        if opts:
+                            st.write(opts)
+                        else:
+                            st.warning("Esa lista no tiene opciones todavía (edítalas en Choices).")
+
+                    req_simple = st.checkbox(
+                        "Obligatoria (required)",
+                        value=(str(row.get("required","")).strip()=="yes"),
+                        key="q_simple_required"
+                    )
+
+                    guardar = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+
+                if guardar:
+                    row["label"] = new_label.strip()
+
+                    if tipo_simple == "select_one":
+                        row["type"] = f"select_one {new_list}".strip()
+                    elif tipo_simple == "select_multiple":
+                        row["type"] = f"select_multiple {new_list}".strip()
+                    else:
+                        row["type"] = tipo_simple
+
+                    row["required"] = "yes" if req_simple else "no"
+
+                    if row["type"] == "note":
+                        row["bind::esri:fieldType"] = "null"
+
                     q["row"] = row
                     _update_q(qid, q)
-                    st.success("Pregunta actualizada.")
+                    st.success("Actualizado.")
                     st.rerun()
+
+            # =========================
+            # EDICIÓN AVANZADA
+            # =========================
+            else:
+                st.markdown("### 🧠 Edición avanzada (XLSForm)")
+                with st.form("q_adv_edit_form"):
+                    row["type"] = st.text_input("type", row.get("type",""), key="q_adv_type")
+                    row["name"] = st.text_input("name", row.get("name",""), key="q_adv_name")
+                    row["label"] = st.text_area("label", row.get("label",""), height=120, key="q_adv_label")
+
+                    row["required"] = st.selectbox(
+                        "required",
+                        ["", "yes", "no"],
+                        index=1 if str(row.get("required","")).strip()=="yes" else (2 if str(row.get("required","")).strip()=="no" else 0),
+                        key="q_adv_req"
+                    )
+
+                    row["appearance"] = st.text_input("appearance", row.get("appearance",""), key="q_adv_app")
+                    row["relevant"] = st.text_area("relevant", row.get("relevant",""), height=80, key="q_adv_rel")
+                    row["choice_filter"] = st.text_input("choice_filter", row.get("choice_filter",""), key="q_adv_cf")
+                    row["constraint"] = st.text_area("constraint", row.get("constraint",""), height=80, key="q_adv_con")
+                    row["constraint_message"] = st.text_area("constraint_message", row.get("constraint_message",""), height=80, key="q_adv_con_msg")
+                    row["media::image"] = st.text_input("media::image", row.get("media::image",""), key="q_adv_img")
+                    row["bind::esri:fieldType"] = st.text_input("bind::esri:fieldType", row.get("bind::esri:fieldType",""), key="q_adv_bind")
+
+                    if st.form_submit_button("💾 Guardar (avanzado)", use_container_width=True):
+                        q["row"] = row
+                        _update_q(qid, q)
+                        st.success("Pregunta actualizada (avanzado).")
+                        st.rerun()
+
 
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (6/10) ====================================
-# ====== PARTE 6: EDITOR FÁCIL de CHOICES (opciones) + listas nuevas + cantón/distrito =====
+# ====== PARTE 6: EDITOR FÁCIL de CHOICES (opciones) “PARA CUALQUIERA” =====================
 # ==========================================================================================
 #
-# ✅ Permite que cualquier persona:
-# - Edite opciones de una lista (list_name)
-# - Agregue/elimine/reordene opciones
-# - Cree una lista nueva (por ejemplo "p99_nueva_lista")
-# - Edite catálogo cantón/distrito sin tocar Excel
-#
-# Nota:
-# - choices_bank vive en st.session_state["choices_bank"]
-# - list_name + name deben ser únicos por lista
-# - label es lo que ve la persona encuestada
+# ✔ Editar opciones de una lista sin Excel
+# ✔ Reordenar (subir/bajar)
+# ✔ Agregar / Eliminar
+# ✔ Editar “canton_key” cuando la lista es list_distrito
+# ✔ SIN keys duplicadas (prefijo c_)
 #
 # ==========================================================================================
 
-# ==========================================================================================
-# Helpers para CHOICES editor
-# ==========================================================================================
 def _get_choices_bank():
     return st.session_state.get("choices_bank", [])
 
 def _set_choices_bank(rows):
     st.session_state["choices_bank"] = rows
 
-def _list_names():
+def _choices_list_names():
     rows = _get_choices_bank()
-    names = sorted({str(r.get("list_name","")).strip() for r in rows if str(r.get("list_name","")).strip()})
-    return names
+    return sorted({str(r.get("list_name","")).strip() for r in rows if str(r.get("list_name","")).strip()})
 
 def _choices_for_list(list_name: str):
     rows = _get_choices_bank()
@@ -1531,11 +1702,12 @@ def _choices_for_list(list_name: str):
 
 def _delete_choice(list_name: str, name_value: str):
     rows = _get_choices_bank()
-    rows = [r for r in rows if not (str(r.get("list_name","")).strip()==list_name and str(r.get("name","")).strip()==name_value)]
+    rows = [r for r in rows if not (
+        str(r.get("list_name","")).strip()==list_name and str(r.get("name","")).strip()==name_value
+    )]
     _set_choices_bank(rows)
 
 def _upsert_choice(row: dict):
-    """Inserta o actualiza (list_name,name)."""
     rows = _get_choices_bank()
     ln = str(row.get("list_name","")).strip()
     nm = str(row.get("name","")).strip()
@@ -1549,159 +1721,136 @@ def _upsert_choice(row: dict):
         rows.append(row)
     _set_choices_bank(rows)
 
-def _create_list_if_missing(list_name: str):
-    if list_name not in _list_names():
-        # crear placeholder mínimo para que aparezca
-        _upsert_choice({"list_name": list_name, "name": "opcion_1", "label": "Opción 1"})
-
 def _unique_name_in_list(list_name: str, desired: str):
     desired = slugify_name(desired) if desired else "opcion"
     rows = _choices_for_list(list_name)
     used = {str(r.get("name","")).strip() for r in rows}
     return asegurar_nombre_unico(desired, used)
 
-def _reorder_choices_in_list(list_name: str, names_in_order: list[str]):
-    """
-    En XLSForm el orden es el orden de filas en choices.
-    Aquí reordenamos el bank para que quede exactamente como names_in_order,
-    y preservamos otras listas.
-    """
-    rows = _get_choices_bank()
-    this = [r for r in rows if str(r.get("list_name","")).strip()==list_name]
-    other = [r for r in rows if str(r.get("list_name","")).strip()!=list_name]
+def _reorder_choice(list_name: str, name_value: str, direction: str):
+    all_rows = _choices_for_list(list_name)
+    names = [str(r.get("name","")).strip() for r in all_rows]
+    if name_value not in names:
+        return
+    i = names.index(name_value)
+    if direction=="up" and i>0:
+        names[i], names[i-1] = names[i-1], names[i]
+    if direction=="down" and i < len(names)-1:
+        names[i], names[i+1] = names[i+1], names[i]
 
-    m = {str(r.get("name","")).strip(): r for r in this}
-    new_this = []
-    for nm in names_in_order:
-        if nm in m:
-            new_this.append(m[nm])
-    # agregar los que no estaban (por si acaso)
-    for nm, r in m.items():
-        if nm not in names_in_order:
-            new_this.append(r)
+    # reconstruir bank con orden nuevo solo de esa lista
+    bank = _get_choices_bank()
+    other = [r for r in bank if str(r.get("list_name","")).strip()!=list_name]
+    m = {str(r.get("name","")).strip(): r for r in all_rows}
+    new_list_rows = [m[n] for n in names if n in m]
+    _set_choices_bank(other + new_list_rows)
 
-    _set_choices_bank(other + new_this)
+    # mantener compatibilidad catálogo
+    if "sync_canton_distrito_to_choices_ext_rows" in globals():
+        sync_canton_distrito_to_choices_ext_rows()
 
-# ==========================================================================================
-# UI — Editor Fácil de CHOICES
-# ==========================================================================================
-if st.session_state["ui_mode"] == "Editor":
+def _create_list_if_missing(list_name: str):
+    if list_name not in _choices_list_names():
+        _upsert_choice({"list_name": list_name, "name": "opcion_1", "label": "Opción 1"})
+
+if st.session_state.get("ui_mode") == "Editor":
     st.markdown("---")
-    st.subheader("🧾 Editor fácil de opciones (choices)")
+    st.subheader("🧾 Editor de opciones (choices) — fácil")
 
     colL, colR = st.columns([1.2, 2.2])
 
     with colL:
-        st.markdown("### Listas disponibles")
+        st.markdown("### Listas de opciones")
 
-        # Crear lista nueva
-        new_list = st.text_input("➕ Crear lista nueva (list_name)", value="", placeholder="ej: p99_nueva_lista")
-        if st.button("Crear lista", use_container_width=True):
+        new_list = st.text_input("➕ Crear lista nueva (list_name)", value="", key="c_new_list")
+        if st.button("Crear lista", use_container_width=True, key="c_btn_create_list"):
             if not new_list.strip():
                 st.warning("Escribe un list_name.")
             else:
                 ln = slugify_name(new_list.strip())
                 _create_list_if_missing(ln)
-                st.session_state["selected_list_name"] = ln
+                st.session_state["c_selected_list"] = ln
                 st.success(f"Lista creada: {ln}")
                 st.rerun()
 
-        lists = _list_names()
+        lists = _choices_list_names()
         if not lists:
-            st.info("Aún no hay listas en choices_bank.")
+            st.info("Aún no hay listas.")
         else:
-            selected_list = st.selectbox("Selecciona una lista", options=lists, key="selected_list_name")
-            st.caption("Tip: list_canton y list_distrito también se editan aquí.")
+            selected_list = st.selectbox("Selecciona una lista", options=lists, key="c_selected_list")
 
-            # Búsqueda dentro de lista
-            s2 = st.text_input("Buscar opción (label/name)", value="", key="search_choice")
-
+            search = st.text_input("Buscar opción", value="", key="c_search_opt")
             rows_list = _choices_for_list(selected_list)
-            # filtrar
-            if s2.strip():
-                ss = s2.strip().lower()
+
+            if search.strip():
+                ss = search.strip().lower()
                 rows_list = [
-                    remember for remember in rows_list
-                    if ss in str(remember.get("label","")).lower()
-                    or ss in str(remember.get("name","")).lower()
+                    r for r in rows_list
+                    if ss in str(r.get("label","")).lower() or ss in str(r.get("name","")).lower()
                 ]
 
-            # mostrar opciones como lista
-            opt_labels = []
+            # Mostrar opciones legibles
+            opt_display = []
             for r in rows_list:
-                opt_labels.append(f"{r.get('label','(sin label)')}  —  ({r.get('name','')})")
+                opt_display.append(f"{r.get('label','(sin label)')}  —  ({r.get('name','')})")
 
-            if not opt_labels:
-                st.info("No hay opciones con ese filtro.")
-            else:
-                selected_opt_display = st.selectbox("Opciones", options=opt_labels, key="selected_choice_display")
-
-                # extraer name del display
-                # display termina con "(name)"
-                name_value = selected_opt_display.split("(")[-1].replace(")", "").strip()
-                st.session_state["selected_choice_name"] = name_value
+            if opt_display:
+                picked = st.selectbox("Opciones", options=opt_display, key="c_pick_opt")
+                name_value = picked.split("(")[-1].replace(")","").strip()
+                st.session_state["c_selected_name"] = name_value
 
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    if st.button("⬆ Subir", use_container_width=True):
-                        # reordenar
-                        all_rows = _choices_for_list(selected_list)
-                        all_names = [str(r.get("name","")).strip() for r in all_rows]
-                        i = all_names.index(name_value) if name_value in all_names else -1
-                        if i > 0:
-                            all_names[i], all_names[i-1] = all_names[i-1], all_names[i]
-                            _reorder_choices_in_list(selected_list, all_names)
-                            st.rerun()
+                    if st.button("⬆ Subir", use_container_width=True, key="c_up"):
+                        _reorder_choice(selected_list, name_value, "up")
+                        st.rerun()
                 with c2:
-                    if st.button("⬇ Bajar", use_container_width=True):
-                        all_rows = _choices_for_list(selected_list)
-                        all_names = [str(r.get("name","")).strip() for r in all_rows]
-                        i = all_names.index(name_value) if name_value in all_names else -1
-                        if 0 <= i < len(all_names)-1:
-                            all_names[i], all_names[i+1] = all_names[i+1], all_names[i]
-                            _reorder_choices_in_list(selected_list, all_names)
-                            st.rerun()
+                    if st.button("⬇ Bajar", use_container_width=True, key="c_down"):
+                        _reorder_choice(selected_list, name_value, "down")
+                        st.rerun()
                 with c3:
-                    if st.button("🗑 Eliminar", use_container_width=True):
+                    if st.button("🗑 Eliminar", use_container_width=True, key="c_del"):
                         _delete_choice(selected_list, name_value)
-                        st.session_state.pop("selected_choice_name", None)
+                        st.session_state.pop("c_selected_name", None)
+                        if "sync_canton_distrito_to_choices_ext_rows" in globals():
+                            sync_canton_distrito_to_choices_ext_rows()
                         st.rerun()
 
-        # Agregar opción nueva a lista seleccionada
-        if lists:
             st.markdown("### ➕ Agregar opción")
-            add_label = st.text_input("Label (lo que ve la persona)", value="", key="add_choice_label")
-            add_name_hint = st.text_input("Name (opcional, se autogenera si lo dejas vacío)", value="", key="add_choice_name")
-            extra_col_key = st.text_input("Extra columna (opcional) ej: canton_key", value="", key="add_choice_extra_key")
-            extra_col_val = st.text_input("Valor extra (opcional)", value="", key="add_choice_extra_val")
+            add_label = st.text_input("Texto de opción (label)", value="", key="c_add_label")
+            add_name_hint = st.text_input("Name (opcional)", value="", key="c_add_name_hint")
 
-            if st.button("Agregar opción", type="primary", use_container_width=True):
+            extra_key = ""
+            extra_val = ""
+            if selected_list == "list_distrito":
+                st.caption("Para list_distrito se necesita canton_key (para el choice_filter).")
+                extra_key = "canton_key"
+                extra_val = st.text_input("canton_key (slug del cantón)", value="", key="c_add_canton_key")
+
+            if st.button("Agregar", type="primary", use_container_width=True, key="c_btn_add"):
                 if not add_label.strip():
-                    st.warning("Debes escribir el label.")
+                    st.warning("Escribe el label.")
                 else:
-                    ln = st.session_state.get("selected_list_name")
-                    if not ln:
-                        st.warning("Selecciona una lista.")
-                    else:
-                        nm = add_name_hint.strip() or add_label.strip()
-                        nm = _unique_name_in_list(ln, nm)
-                        row = {"list_name": ln, "name": nm, "label": add_label.strip()}
-                        if extra_col_key.strip():
-                            row[extra_col_key.strip()] = extra_col_val.strip()
-                        _upsert_choice(row)
-                        st.success("Opción agregada.")
-                        st.rerun()
+                    nm = add_name_hint.strip() or add_label.strip()
+                    nm = _unique_name_in_list(selected_list, nm)
+                    row = {"list_name": selected_list, "name": nm, "label": add_label.strip()}
+                    if extra_key:
+                        row[extra_key] = extra_val.strip()
+                    _upsert_choice(row)
+                    if "sync_canton_distrito_to_choices_ext_rows" in globals():
+                        sync_canton_distrito_to_choices_ext_rows()
+                    st.success("Opción agregada.")
+                    st.rerun()
 
     with colR:
-        st.markdown("### ✏️ Editor de la opción seleccionada")
+        st.markdown("### ✏️ Editar opción seleccionada (simple)")
 
-        ln = st.session_state.get("selected_list_name")
-        nm = st.session_state.get("selected_choice_name")
+        ln = st.session_state.get("c_selected_list")
+        nm = st.session_state.get("c_selected_name")
 
         if not ln or not nm:
             st.info("Selecciona una lista y una opción para editar.")
         else:
-            # buscar row exacta
             rows = _choices_for_list(ln)
             row = next((r for r in rows if str(r.get("name","")).strip()==nm), None)
             if not row:
@@ -1709,51 +1858,44 @@ if st.session_state["ui_mode"] == "Editor":
             else:
                 row = dict(row)
 
-                # detectar columnas extra existentes en la lista (ej canton_key)
-                extra_keys = [k for k in row.keys() if k not in ("list_name","name","label")]
-                extra_key = extra_keys[0] if extra_keys else ""
+                with st.form("c_edit_form"):
+                    st.text_input("list_name", value=ln, disabled=True, key="c_edit_listname")
+                    new_name = st.text_input("name", value=str(row.get("name","")), key="c_edit_name")
+                    new_label = st.text_input("label", value=str(row.get("label","")), key="c_edit_label")
 
-                with st.form("edit_choice_form"):
-                    list_name = st.text_input("list_name", value=str(row.get("list_name","")).strip(), disabled=True)
-                    name_val = st.text_input("name", value=str(row.get("name","")).strip())
-                    label_val = st.text_input("label", value=str(row.get("label","")).strip())
+                    if ln == "list_distrito":
+                        new_ck = st.text_input("canton_key", value=str(row.get("canton_key","")), key="c_edit_ck")
+                    else:
+                        new_ck = ""
 
-                    st.caption("Columnas extra (si las necesita, ej: canton_key para list_distrito)")
-                    extra_k = st.text_input("extra key", value=extra_key)
-                    extra_v = st.text_input("extra value", value=str(row.get(extra_key,"")) if extra_key else "")
-
-                    save = st.form_submit_button("💾 Guardar opción", use_container_width=True)
+                    save = st.form_submit_button("💾 Guardar", use_container_width=True)
 
                 if save:
-                    # si cambiaron name: validar unicidad
-                    new_name = name_val.strip()
-                    if not new_name:
-                        st.warning("El 'name' no puede quedar vacío.")
-                    else:
-                        # si name cambió: asegurar no duplicar
-                        if new_name != nm:
-                            used = {str(r.get("name","")).strip() for r in rows}
-                            if new_name in used:
-                                st.warning("Ya existe una opción con ese 'name' en esta lista.")
-                                st.stop()
-                            # borrar la vieja
-                            _delete_choice(ln, nm)
+                    if not new_name.strip():
+                        st.warning("El name no puede quedar vacío.")
+                        st.stop()
 
-                        # construir row nueva
-                        new_row = {"list_name": ln, "name": new_name, "label": label_val.strip()}
+                    # Si cambia name, verificar duplicado
+                    if new_name.strip() != nm:
+                        used = {str(r.get("name","")).strip() for r in rows}
+                        if new_name.strip() in used:
+                            st.warning("Ya existe una opción con ese name en esta lista.")
+                            st.stop()
+                        _delete_choice(ln, nm)
 
-                        # extra
-                        if extra_k.strip():
-                            new_row[extra_k.strip()] = extra_v.strip()
+                    new_row = {"list_name": ln, "name": new_name.strip(), "label": new_label.strip()}
+                    if ln == "list_distrito":
+                        new_row["canton_key"] = new_ck.strip()
 
-                        _upsert_choice(new_row)
+                    _upsert_choice(new_row)
+                    st.session_state["c_selected_name"] = new_name.strip()
 
-                        # si list_distrito/list_canton, sincronizar hacia choices_ext_rows (compatibilidad)
+                    if "sync_canton_distrito_to_choices_ext_rows" in globals():
                         sync_canton_distrito_to_choices_ext_rows()
 
-                        st.success("Opción actualizada.")
-                        st.session_state["selected_choice_name"] = new_name
-                        st.rerun()
+                    st.success("Opción actualizada.")
+                    st.rerun()
+
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (7/10) ====================================
 # ====== PARTE 7: EDITOR FÁCIL de GLOSARIOS (términos + definiciones por página) ============
@@ -2657,6 +2799,7 @@ if mode == "Vista rápida":
 #
 # Con esto, la app queda “cableada” para funcionar end-to-end.
 # ==========================================================================================
+
 
 
 
