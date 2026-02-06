@@ -1305,19 +1305,13 @@ seed_questions_bank_if_missing(form_title=form_title, logo_media_name=logo_media
 
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (5/10) ====================================
-# ====== PARTE 5: EDITOR FÁCIL de preguntas (lista + mover + editar + borrar + duplicar) ===
+# ====== PARTE 5: EDITOR FÁCIL de preguntas (SIN EXCEL, SIN KEYS DUPLICADAS) ===============
 # ==========================================================================================
 #
-# ✅ Esto reemplaza el estilo "Excel".
-# ✅ UX simple:
-#   - Izquierda: lista de preguntas (por página) + buscador
-#   - Derecha: editor de la pregunta seleccionada (formulario)
-#   - Botones: ⬆ Subir ⬇ Bajar 🗑 Eliminar 📄 Duplicar
-#   - Agregar pregunta nueva con plantillas simples
+# ✔ Editor visual y sencillo
+# ✔ Mover / Editar / Eliminar / Duplicar / Agregar preguntas
+# ✔ Cada widget tiene key ÚNICA (prefijo q_)
 #
-# Importante:
-# - El "order" controla el orden dentro de su página.
-# - No cambia la lógica del export: el export toma questions_bank y lo convierte a XLSForm.
 # ==========================================================================================
 
 # ==========================================================================================
@@ -1329,53 +1323,41 @@ def _qb_sorted():
     rank = {p:i for i,p in enumerate(page_order)}
     return sorted(qb, key=lambda x: (rank.get(x.get("page",""), 999), int(x.get("order", 0))))
 
-def _get_q_by_id(qid: str):
-    qb = st.session_state.get("questions_bank", [])
-    return next((q for q in qb if q.get("qid")==qid), None)
+def _get_q_by_id(qid):
+    return next((q for q in st.session_state.get("questions_bank", []) if q.get("qid")==qid), None)
 
-def _update_q(qid: str, new_q: dict):
+def _update_q(qid, new_q):
     qb = st.session_state.get("questions_bank", [])
     for i, q in enumerate(qb):
         if q.get("qid")==qid:
             qb[i] = new_q
-            st.session_state["questions_bank"] = qb
-            return
+            break
+    st.session_state["questions_bank"] = qb
 
-def _delete_qid(qid: str):
-    qb = st.session_state.get("questions_bank", [])
-    st.session_state["questions_bank"] = [q for q in qb if q.get("qid") != qid]
+def _delete_q(qid):
+    st.session_state["questions_bank"] = [
+        q for q in st.session_state.get("questions_bank", []) if q.get("qid")!=qid
+    ]
 
-def _duplicate_qid(qid: str):
+def _duplicate_q(qid):
     qb = st.session_state.get("questions_bank", [])
-    src = next((q for q in qb if q.get("qid")==qid), None)
+    src = _get_q_by_id(qid)
     if not src:
         return
-    used_names = {str(q.get("row",{}).get("name","")).strip() for q in qb}
-    new = {
+    used_names = {q.get("row",{}).get("name","") for q in qb}
+    row = dict(src.get("row",{}))
+    if row.get("name"):
+        row["name"] = asegurar_nombre_unico(row["name"], used_names)
+
+    qb.append({
         "qid": f"q_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
-        "page": src.get("page","p4"),
-        "order": int(src.get("order",0)) + 1,
-        "row": dict(src.get("row", {}) or {})
-    }
-    if new["row"].get("name"):
-        new["row"]["name"] = asegurar_nombre_unico(new["row"]["name"], used_names)
-    qb.append(new)
+        "page": src.get("page"),
+        "order": int(src.get("order",0)) + 10,
+        "row": row
+    })
     st.session_state["questions_bank"] = qb
 
-def _reorder_within_page(page: str):
-    """Normaliza order 10,20,30.. dentro de página."""
-    qb = st.session_state.get("questions_bank", [])
-    items = [q for q in qb if q.get("page")==page]
-    items_sorted = sorted(items, key=lambda x: int(x.get("order",0)))
-    o = 10
-    for q in items_sorted:
-        q["order"] = o
-        o += 10
-    # reinsert
-    others = [q for q in qb if q.get("page")!=page]
-    st.session_state["questions_bank"] = others + items_sorted
-
-def _move_up(qid: str):
+def _move(qid, direction):
     qb = st.session_state.get("questions_bank", [])
     q = _get_q_by_id(qid)
     if not q:
@@ -1383,348 +1365,134 @@ def _move_up(qid: str):
     page = q.get("page")
     items = sorted([x for x in qb if x.get("page")==page], key=lambda x: int(x.get("order",0)))
     idx = next((i for i,x in enumerate(items) if x.get("qid")==qid), None)
-    if idx is None or idx == 0:
+    if idx is None:
         return
-    # swap orders
-    items[idx]["order"], items[idx-1]["order"] = items[idx-1]["order"], items[idx]["order"]
-    # write back
+    if direction=="up" and idx>0:
+        items[idx]["order"], items[idx-1]["order"] = items[idx-1]["order"], items[idx]["order"]
+    if direction=="down" and idx<len(items)-1:
+        items[idx]["order"], items[idx+1]["order"] = items[idx+1]["order"], items[idx]["order"]
     others = [x for x in qb if x.get("page")!=page]
     st.session_state["questions_bank"] = others + items
-    _reorder_within_page(page)
 
-def _move_down(qid: str):
+def _add_question(page, qtype, label):
     qb = st.session_state.get("questions_bank", [])
-    q = _get_q_by_id(qid)
-    if not q:
-        return
-    page = q.get("page")
-    items = sorted([x for x in qb if x.get("page")==page], key=lambda x: int(x.get("order",0)))
-    idx = next((i for i,x in enumerate(items) if x.get("qid")==qid), None)
-    if idx is None or idx == len(items)-1:
-        return
-    items[idx]["order"], items[idx+1]["order"] = items[idx+1]["order"], items[idx]["order"]
-    others = [x for x in qb if x.get("page")!=page]
-    st.session_state["questions_bank"] = others + items
-    _reorder_within_page(page)
-
-def _add_new_question(page: str, qtype: str, label: str):
-    qb = st.session_state.get("questions_bank", [])
-    max_order = max([int(q.get("order",0)) for q in qb if q.get("page")==page] + [0])
-    qid = f"q_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-    base_name = slugify_name(label) if label else "pregunta"
-    used_names = {str(q.get("row",{}).get("name","")).strip() for q in qb}
-    name = asegurar_nombre_unico(base_name, used_names)
-
-    row = {
-        "type": qtype,
-        "name": name,
-        "label": label,
-        "required": "no",
-        "appearance": "",
-        "relevant": "",
-        "choice_filter": "",
-        "constraint": "",
-        "constraint_message": "",
-        "media::image": "",
-        "bind::esri:fieldType": ""
-    }
-
-    # Si es note, que no cree columna por defecto
-    if qtype == "note":
-        row["bind::esri:fieldType"] = "null"
-
-    qb.append({"qid": qid, "page": page, "order": max_order + 10, "row": row})
+    used = {q.get("row",{}).get("name","") for q in qb}
+    name = asegurar_nombre_unico(slugify_name(label or "pregunta"), used)
+    qb.append({
+        "qid": f"q_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+        "page": page,
+        "order": max([int(q.get("order",0)) for q in qb if q.get("page")==page] + [0]) + 10,
+        "row": {
+            "type": qtype,
+            "name": name,
+            "label": label,
+            "required": "no",
+            "appearance": "",
+            "relevant": "",
+            "choice_filter": "",
+            "constraint": "",
+            "constraint_message": "",
+            "media::image": "",
+            "bind::esri:fieldType": "null" if qtype=="note" else ""
+        }
+    })
     st.session_state["questions_bank"] = qb
-    _reorder_within_page(page)
-    st.session_state["selected_qid"] = qid
 
 # ==========================================================================================
-# UI — Editor Fácil (solo si modo Editor)
+# UI — Editor de preguntas
 # ==========================================================================================
-if st.session_state["ui_mode"] == "Editor":
+if st.session_state.get("ui_mode") == "Editor":
+
     st.markdown("---")
-    st.subheader("🧩 Editor fácil de preguntas (mover / editar / borrar / duplicar / agregar)")
+    st.subheader("🧩 Editor de preguntas (fácil y visual)")
 
-    # Selector de página
     pages_labels = {
-        "p1": "P1 Introducción",
-        "p2": "P2 Consentimiento",
-        "p3": "P3 Demográficos",
-        "p4": "P4 Percepción",
-        "p5": "P5 Riesgos",
-        "p6": "P6 Delitos",
-        "p7": "P7 Victimización",
-        "p8": "P8 Confianza",
+        "p1":"P1 Introducción","p2":"P2 Consentimiento","p3":"P3 Demográficos",
+        "p4":"P4 Percepción","p5":"P5 Riesgos","p6":"P6 Delitos",
+        "p7":"P7 Victimización","p8":"P8 Confianza"
     }
 
-    colA, colB = st.columns([1.2, 2.2])
+    colL, colR = st.columns([1.2, 2.2])
 
-    with colA:
+    # --------------------------------------------------------------------------------------
+    # LISTA DE PREGUNTAS
+    # --------------------------------------------------------------------------------------
+    with colL:
         page_sel = st.selectbox(
             "Página",
-            options=st.session_state.get("page_order", ["p1","p2","p3","p4","p5","p6","p7","p8"]),
-            format_func=lambda x: pages_labels.get(x, x),
-            key="page_sel_editor"
+            options=st.session_state["page_order"],
+            format_func=lambda x: pages_labels.get(x,x),
+            key="q_page_selector"
         )
 
-        search = st.text_input("Buscar (por label o name)", value="", key="search_q")
+        search = st.text_input("Buscar", key="q_search")
 
-        # Lista de preguntas filtradas por página
-        qb_page = [q for q in _qb_sorted() if q.get("page")==page_sel]
-        if search.strip():
-            s = search.strip().lower()
-            qb_page = [
-                q for q in qb_page
-                if s in str(q.get("row",{}).get("label","")).lower()
-                or s in str(q.get("row",{}).get("name","")).lower()
-                or s in str(q.get("row",{}).get("type","")).lower()
-            ]
+        qs = [q for q in _qb_sorted() if q.get("page")==page_sel]
+        if search:
+            s = search.lower()
+            qs = [q for q in qs if s in str(q.get("row",{}).get("label","")).lower()]
 
-        # Mostrar lista (simple)
-        options = []
-        qid_map = {}
-        for q in qb_page:
-            r = q.get("row", {})
-            txt = f"[{r.get('type','')}] {r.get('label','(sin label)')}"
-            if r.get("name"):
-                txt += f"  —  ({r.get('name')})"
-            options.append(txt)
-            qid_map[txt] = q.get("qid")
+        labels = []
+        map_q = {}
+        for q in qs:
+            r = q.get("row",{})
+            txt = f"[{r.get('type')}] {r.get('label','(sin texto)')}"
+            labels.append(txt)
+            map_q[txt] = q.get("qid")
 
-        if not options:
-            st.info("No hay preguntas en esta página con ese filtro.")
-            # UI para agregar pregunta igual
-            st.markdown("### ➕ Agregar pregunta")
-            new_type = st.selectbox("Tipo", options=[
-                "note",
-                "text",
-                "integer",
-                "select_one yesno",
-                "select_one genero",
-                "select_one escolaridad",
-                "select_one relacion_zona",
-                "select_one seguridad_5",
-                "select_one escala_1_5",
-                "select_one matriz_1_5_na",
-                "select_one tipo_espacio",
-                "select_multiple causas_inseguridad",
-                "select_multiple p12_prob_situacionales",
-                "select_multiple p13_carencias_inversion",
-                "select_multiple p14_consumo_drogas_donde",
-                "select_multiple p15_def_infra_vial",
-                "select_multiple p16_bunkeres_espacios",
-                "select_multiple p17_transporte_afect",
-                "select_multiple p18_presencia_policial",
-                "select_multiple p19_delitos_general",
-                "select_multiple p20_bunker_percepcion",
-                "select_multiple p21_vida",
-                "select_multiple p22_sexuales",
-                "select_multiple p23_asaltos",
-                "select_multiple p24_estafas",
-                "select_multiple p25_robo_fuerza",
-                "select_multiple p26_abandono",
-                "select_multiple p27_explotacion_infantil",
-                "select_multiple p28_ambientales",
-                "select_multiple p29_trata",
-                "select_one p30_vif",
-                "select_multiple p301_tipos_vif",
-                "select_one p302_medidas",
-                "select_one p303_valoracion_fp",
-                "select_one p31_delito_12m",
-                "select_multiple p311_situaciones",
-                "select_multiple p312_motivos_no_denuncia",
-                "select_one p313_horario",
-                "select_multiple p314_modo",
-                "select_one p32_identifica_policias",
-                "select_multiple p321_interacciones",
-                "select_one escala_1_10",
-                "select_one p38_frecuencia",
-                "select_one p39_si_no_aveces",
-                "select_one p41_opciones",
-                "select_multiple p43_acciones_fp",
-                "select_multiple p44_acciones_muni",
-                "select_one p45_info_delito",
-                "begin_group",
-                "end_group",
-                "end"
-            ], key="new_q_type_empty")
-            new_label = st.text_input("Texto / Label", value="", key="new_q_label_empty")
-            if st.button("Agregar", type="primary", use_container_width=True, key="btn_add_empty"):
-                _add_new_question(page_sel, new_type, new_label)
-                st.success("Pregunta agregada.")
-                st.rerun()
-        else:
-            selected_label = st.selectbox("Preguntas", options=options, key="q_list_select")
-            selected_qid = qid_map.get(selected_label)
-            st.session_state["selected_qid"] = selected_qid
+        if labels:
+            sel = st.selectbox("Preguntas", labels, key="q_question_list")
+            qid = map_q.get(sel)
+            st.session_state["selected_qid"] = qid
 
-            # Botones acciones rápidas
-            c1, c2, c3, c4 = st.columns(4)
+            c1,c2,c3,c4 = st.columns(4)
             with c1:
-                if st.button("⬆ Subir", use_container_width=True):
-                    _move_up(selected_qid); st.rerun()
+                st.button("⬆", on_click=_move, args=(qid,"up"), key="q_up")
             with c2:
-                if st.button("⬇ Bajar", use_container_width=True):
-                    _move_down(selected_qid); st.rerun()
+                st.button("⬇", on_click=_move, args=(qid,"down"), key="q_down")
             with c3:
-                if st.button("📄 Duplicar", use_container_width=True):
-                    _duplicate_qid(selected_qid); st.rerun()
+                st.button("📄", on_click=_duplicate_q, args=(qid,), key="q_dup")
             with c4:
-                if st.button("🗑 Eliminar", use_container_width=True):
-                    _delete_qid(selected_qid)
-                    st.session_state.pop("selected_qid", None)
+                st.button("🗑", on_click=_delete_q, args=(qid,), key="q_del")
+
+        st.markdown("### ➕ Agregar pregunta")
+        new_type = st.selectbox(
+            "Tipo",
+            ["note","text","integer","select_one yesno","select_multiple causas_inseguridad"],
+            key="q_new_type"
+        )
+        new_label = st.text_input("Texto", key="q_new_label")
+        if st.button("Agregar", key="q_add"):
+            _add_question(page_sel, new_type, new_label)
+            st.rerun()
+
+    # --------------------------------------------------------------------------------------
+    # EDITOR DE LA PREGUNTA
+    # --------------------------------------------------------------------------------------
+    with colR:
+        qid = st.session_state.get("selected_qid")
+        q = _get_q_by_id(qid)
+
+        if not q:
+            st.info("Selecciona una pregunta para editar.")
+        else:
+            row = dict(q.get("row",{}))
+            with st.form("q_edit_form"):
+                row["type"] = st.text_input("type", row.get("type",""), key="q_edit_type")
+                row["name"] = st.text_input("name", row.get("name",""), key="q_edit_name")
+                row["label"] = st.text_area("label", row.get("label",""), height=120, key="q_edit_label")
+                row["required"] = st.selectbox("required", ["","yes","no"], index=0, key="q_edit_req")
+                row["appearance"] = st.text_input("appearance", row.get("appearance",""), key="q_edit_app")
+                row["relevant"] = st.text_area("relevant", row.get("relevant",""), height=80, key="q_edit_rel")
+                row["constraint"] = st.text_area("constraint", row.get("constraint",""), height=80, key="q_edit_con")
+                row["constraint_message"] = st.text_area("constraint_message", row.get("constraint_message",""), height=80, key="q_edit_con_msg")
+
+                if st.form_submit_button("💾 Guardar"):
+                    q["row"] = row
+                    _update_q(qid, q)
+                    st.success("Pregunta actualizada.")
                     st.rerun()
 
-            st.markdown("### ➕ Agregar pregunta")
-            new_type = st.selectbox("Tipo", options=[
-                "note",
-                "text",
-                "integer",
-                "select_one yesno",
-                "select_one list_canton",
-                "select_one list_distrito",
-                "select_one genero",
-                "select_one escolaridad",
-                "select_one relacion_zona",
-                "select_one seguridad_5",
-                "select_one escala_1_5",
-                "select_one matriz_1_5_na",
-                "select_one tipo_espacio",
-                "select_multiple causas_inseguridad",
-                "select_multiple p12_prob_situacionales",
-                "select_multiple p13_carencias_inversion",
-                "select_multiple p14_consumo_drogas_donde",
-                "select_multiple p15_def_infra_vial",
-                "select_multiple p16_bunkeres_espacios",
-                "select_multiple p17_transporte_afect",
-                "select_multiple p18_presencia_policial",
-                "select_multiple p19_delitos_general",
-                "select_multiple p20_bunker_percepcion",
-                "select_multiple p21_vida",
-                "select_multiple p22_sexuales",
-                "select_multiple p23_asaltos",
-                "select_multiple p24_estafas",
-                "select_multiple p25_robo_fuerza",
-                "select_multiple p26_abandono",
-                "select_multiple p27_explotacion_infantil",
-                "select_multiple p28_ambientales",
-                "select_multiple p29_trata",
-                "select_one p30_vif",
-                "select_multiple p301_tipos_vif",
-                "select_one p302_medidas",
-                "select_one p303_valoracion_fp",
-                "select_one p31_delito_12m",
-                "select_multiple p311_situaciones",
-                "select_multiple p312_motivos_no_denuncia",
-                "select_one p313_horario",
-                "select_multiple p314_modo",
-                "select_one p32_identifica_policias",
-                "select_multiple p321_interacciones",
-                "select_one escala_1_10",
-                "select_one p38_frecuencia",
-                "select_one p39_si_no_aveces",
-                "select_one p41_opciones",
-                "select_multiple p43_acciones_fp",
-                "select_multiple p44_acciones_muni",
-                "select_one p45_info_delito",
-                "begin_group",
-                "end_group",
-                "end"
-            ], key="new_q_type")
-            new_label = st.text_input("Texto / Label", value="", key="new_q_label")
-            if st.button("Agregar nueva", type="primary", use_container_width=True):
-                _add_new_question(page_sel, new_type, new_label)
-                st.success("Pregunta agregada.")
-                st.rerun()
-
-    with colB:
-        st.markdown("### ✏️ Editor de la pregunta seleccionada")
-
-        qid = st.session_state.get("selected_qid")
-        qobj = _get_q_by_id(qid) if qid else None
-
-        if not qobj:
-            st.info("Selecciona una pregunta de la lista para editarla.")
-        else:
-            row = dict(qobj.get("row", {}) or {})
-
-            with st.form("edit_question_form"):
-                st.caption("Edita los campos principales del XLSForm (survey).")
-
-                row_type = st.text_input("type", value=str(row.get("type","")).strip())
-                row_name = st.text_input("name", value=str(row.get("name","")).strip())
-                row_label = st.text_area("label", value=str(row.get("label","")).strip(), height=120)
-
-                c_req, c_app = st.columns([1, 1.2])
-                with c_req:
-                    req = st.selectbox("required", options=["", "yes", "no"], index=0, help="Deja vacío si no aplica.")
-                    if row.get("required") in ("yes","no"):
-                        req = row.get("required")
-                with c_app:
-                    app = st.text_input("appearance", value=str(row.get("appearance","")).strip())
-
-                relevant = st.text_area("relevant (condición)", value=str(row.get("relevant","")).strip(), height=80)
-                choice_filter = st.text_input("choice_filter", value=str(row.get("choice_filter","")).strip())
-
-                constraint = st.text_area("constraint", value=str(row.get("constraint","")).strip(), height=80)
-                constraint_message = st.text_area("constraint_message", value=str(row.get("constraint_message","")).strip(), height=80)
-
-                media_image = st.text_input("media::image", value=str(row.get("media::image","")).strip())
-                bind_esri = st.text_input("bind::esri:fieldType", value=str(row.get("bind::esri:fieldType","")).strip())
-
-                submitted = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
-
-            if submitted:
-                # Guardar
-                row["type"] = row_type.strip()
-                row["name"] = row_name.strip()
-                row["label"] = row_label
-                row["appearance"] = app.strip()
-
-                # required
-                if req.strip():
-                    row["required"] = req.strip()
-                else:
-                    row.pop("required", None)
-
-                # relevant/choice_filter/constraint
-                if relevant.strip():
-                    row["relevant"] = relevant.strip()
-                else:
-                    row.pop("relevant", None)
-
-                if choice_filter.strip():
-                    row["choice_filter"] = choice_filter.strip()
-                else:
-                    row.pop("choice_filter", None)
-
-                if constraint.strip():
-                    row["constraint"] = constraint.strip()
-                else:
-                    row.pop("constraint", None)
-
-                if constraint_message.strip():
-                    row["constraint_message"] = constraint_message.strip()
-                else:
-                    row.pop("constraint_message", None)
-
-                if media_image.strip():
-                    row["media::image"] = media_image.strip()
-                else:
-                    row.pop("media::image", None)
-
-                if bind_esri.strip():
-                    row["bind::esri:fieldType"] = bind_esri.strip()
-                else:
-                    row.pop("bind::esri:fieldType", None)
-
-                # aplicar
-                new_q = dict(qobj)
-                new_q["row"] = row
-                _update_q(qid, new_q)
-
-                st.success("Cambios guardados.")
-                st.rerun()
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (6/10) ====================================
 # ====== PARTE 6: EDITOR FÁCIL de CHOICES (opciones) + listas nuevas + cantón/distrito =====
@@ -2889,6 +2657,7 @@ if mode == "Vista rápida":
 #
 # Con esto, la app queda “cableada” para funcionar end-to-end.
 # ==========================================================================================
+
 
 
 
