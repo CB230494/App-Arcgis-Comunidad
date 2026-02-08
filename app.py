@@ -1,450 +1,372 @@
 # -*- coding: utf-8 -*-
 """
-Word (.docx) -> XLSForm (Survey123) + Glosario
-- Genera Excel con hojas: survey, choices, settings (+ glossary extra)
-- Extrae preguntas numeradas, opciones ( ) y ☐, notas y definiciones tipo: "Extorsión (...)"
+App: Word (.docx) -> XLSForm (Survey123) + control de nombres únicos
+- Genera XLSX con hojas: survey, choices, settings (+ glosario opcional)
+- Detecta preguntas numeradas y opciones tipo "( )", "☐", "-", "•"
+- Crea grupos/páginas cuando detecta encabezados (Heading o líneas tipo "Página X")
+- Evita duplicados en la columna "name" (case-insensitive) para que Survey123 no falle
 """
 
-import io
 import re
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+import io
+import unicodedata
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
 
-import pandas as pd
 import streamlit as st
+import pandas as pd
 from docx import Document
 
 
-# =========================
+# -----------------------------
 # Utilidades
-# =========================
+# -----------------------------
 
-def slugify(s: str) -> str:
-    s = s.strip().lower()
-    s = re.sub(r"[áàäâ]", "a", s)
-    s = re.sub(r"[éèëê]", "e", s)
-    s = re.sub(r"[íìïî]", "i", s)
-    s = re.sub(r"[óòöô]", "o", s)
-    s = re.sub(r"[úùüû]", "u", s)
-    s = re.sub(r"ñ", "n", s)
-    s = re.sub(r"[^a-z0-9]+", "_", s)
-    s = re.sub(r"_+", "_", s).strip("_")
-    return s or "x"
-
-
-def safe_name(prefix: str, n: int) -> str:
-    return f"{prefix}{n:02d}"
+def slugify(text: str, max_len: int = 50) -> str:
+    """Convierte texto a un name válido: sin tildes, minúsculas, _ en vez de espacios, alfanumérico/_."""
+    text = (text or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join([c for c in text if not unicodedata.combining(c)])
+    text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE)
+    text = re.sub(r"[\s-]+", "_", text).strip("_")
+    if not text:
+        text = "item"
+    return text[:max_len]
 
 
-def is_blank(p: str) -> bool:
-    return not p or not p.strip()
+def is_heading(paragraph) -> bool:
+    """Detecta encabezado por estilo Word."""
+    try:
+        style = (paragraph.style.name or "").lower()
+        return style.startswith("heading")
+    except Exception:
+        return False
 
 
-def clean_text(t: str) -> str:
-    t = t.replace("\u00a0", " ").strip()
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
+def looks_like_page_title(text: str) -> bool:
+    """Detecta encabezados tipo 'Página 5 ...' o 'P5 Riesgos'."""
+    t = (text or "").strip()
+    return bool(re.match(r"^(p(ágina)?\s*\d+|p\d+)\b", t, flags=re.IGNORECASE))
 
 
-# =========================
-# Modelos
-# =========================
-
-@dataclass
-class ChoiceItem:
-    list_name: str
-    name: str
-    label: str
-
-
-@dataclass
-class SurveyRow:
-    type: str
-    name: str
-    label: str
-    hint: str = ""
-    relevant: str = ""
-    constraint: str = ""
-    constraint_message: str = ""
-
-
-@dataclass
-class ParseContext:
-    current_section: str = "general"
-    current_intro_buffer: List[str] = field(default_factory=list)
-    survey_rows: List[SurveyRow] = field(default_factory=list)
-    choices: List[ChoiceItem] = field(default_factory=list)
-    glossary: Dict[str, str] = field(default_factory=dict)
-    list_registry: Dict[Tuple[str, str], str] = field(default_factory=dict)  # (list_name, label)->choice_name
-
-
-# =========================
-# Parsing
-# =========================
-
-QNUM_RE = re.compile(r"^\s*(\d+)\s*[\.\-]\s*(.+?)\s*$")
-SUBQ_RE = re.compile(r"^\s*(\d+)\.(\d+)\s*[\.\-]?\s*(.+?)\s*$")
-
-# Opciones:
-# ( ) opción
-RADIO_OPT_RE = re.compile(r"^\s*\(\s*\)\s*(.+?)\s*$")
-# ☐ opción
-CHECK_OPT_RE = re.compile(r"^\s*[☐■▪▫\[\]]\s*(.+?)\s*$")
-
-# Definición: Término (definición)
-DEF_RE = re.compile(r"^\s*([A-Za-zÁÉÍÓÚÑáéíóúñ0-9\/\-\s]+?)\s*\(([^)]+)\)\s*$")
-
-
-def detect_section_title(text: str) -> Optional[str]:
+def extract_numbered_question(text: str) -> Optional[Tuple[str, str]]:
     """
-    Detecta títulos de sección/página según tu estructura típica.
-    Devuelve un slug estable.
+    Detecta '12. ¿Texto?' o '12- Texto' o '12) Texto'
+    Devuelve (qnum, qtext) o None
     """
-    t = text.strip()
-
-    # Portada / intro general
-    if re.search(r"\bFORMATO\b.*\bENCUESTA\b.*\bCOMUNIDAD\b", t, flags=re.I):
-        return "p1_intro"
-
-    if re.search(r"\bConsentimiento Informado\b", t, flags=re.I):
-        return "p2_consentimiento"
-
-    if re.match(r"^I\.\s*DATOS DEMOGRÁFICOS", t, flags=re.I):
-        return "p3_datos_demograficos"
-
-    if re.match(r"^II\.\s*PERCEPCIÓN CIUDADANA", t, flags=re.I):
-        return "p4_percepcion"
-
-    if re.match(r"^III\.\s*RIESGOS", t, flags=re.I):
-        # Este es el gran bloque; luego vienen subtítulos “Riesgos…”, “Delitos…”, etc.
-        return "p5_riesgos_sociales"
-
-    if re.match(r"^Riesgos sociales y situacionales", t, flags=re.I):
-        return "p5_riesgos_sociales"
-
-    if re.match(r"^Delitos\s*$", t, flags=re.I):
-        return "p6_delitos"
-
-    if re.match(r"^Victimización\s*$", t, flags=re.I):
-        return "p7_vif"
-
-    if re.match(r"^Apartado A:\s*Violencia intrafamiliar", t, flags=re.I):
-        return "p7_vif"
-
-    if re.match(r"^Apartado B:\s*Victimización por otros delitos", t, flags=re.I):
-        return "p8_victimizacion_otros"
-
-    if re.match(r"^Confianza Policial", t, flags=re.I):
-        return "p9_confianza_policial"
-
-    if re.match(r"^Propuestas ciudadanas", t, flags=re.I):
-        return "p10_propuestas"
-
-    # Cierre / contacto
-    if re.match(r"^Información Adicional y Contacto", t, flags=re.I):
-        return "p10_propuestas"
-
-    return None
-
-
-def ensure_choice(ctx: ParseContext, list_name: str, label: str) -> str:
-    """
-    Registra una opción en choices si no existe; devuelve el name interno.
-    """
-    label_clean = clean_text(label)
-    key = (list_name, label_clean.lower())
-
-    if key in ctx.list_registry:
-        return ctx.list_registry[key]
-
-    base = slugify(label_clean)
-    # Evitar colisiones dentro del list_name
-    existing = {c.name for c in ctx.choices if c.list_name == list_name}
-    choice_name = base
-    i = 2
-    while choice_name in existing:
-        choice_name = f"{base}_{i}"
-        i += 1
-
-    ctx.choices.append(ChoiceItem(list_name=list_name, name=choice_name, label=label_clean))
-    ctx.list_registry[key] = choice_name
-    return choice_name
-
-
-def harvest_definition(ctx: ParseContext, text: str) -> None:
-    """
-    Si el texto luce como "Término (definición)", lo agrega al glosario.
-    """
-    m = DEF_RE.match(text.strip())
+    t = (text or "").strip()
+    m = re.match(r"^(\d{1,3})\s*[\.\-\)]\s*(.+)$", t)
     if not m:
-        return
-    term = clean_text(m.group(1))
-    definition = clean_text(m.group(2))
-    if len(term) >= 3 and len(definition) >= 5:
-        ctx.glossary.setdefault(term, definition)
+        return None
+    return m.group(1), m.group(2).strip()
 
 
-def flush_intro_as_note(ctx: ParseContext, page_id: str) -> None:
+def is_option_line(text: str) -> bool:
+    """Detecta líneas que parecen opción: '( ) Sí', '☐ ...', '-', '•' etc."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.match(r"^\(\s*\)\s*\S+", t):  # ( ) Opción
+        return True
+    if re.match(r"^[☐□]\s*\S+", t):
+        return True
+    if re.match(r"^[-•·]\s+\S+", t):
+        return True
+    return False
+
+
+def clean_option_text(text: str) -> str:
+    t = (text or "").strip()
+    t = re.sub(r"^\(\s*\)\s*", "", t)
+    t = re.sub(r"^[☐□]\s*", "", t)
+    t = re.sub(r"^[-•·]\s+", "", t)
+    return t.strip()
+
+
+def make_survey_names_unique(survey_rows: List[Dict]):
     """
-    Si hay texto acumulado (párrafos sin pregunta), se agrega como 'note' al inicio de la página.
+    Garantiza que cada 'name' en la hoja survey sea único (case-insensitive),
+    agregando sufijos _2, _3... si se repite.
     """
-    if not ctx.current_intro_buffer:
-        return
-    label = clean_text(" ".join(ctx.current_intro_buffer))
-    if label:
-        ctx.survey_rows.append(SurveyRow(type="note", name=f"{page_id}_intro", label=label))
-    ctx.current_intro_buffer = []
+    seen: Dict[str, int] = {}
+    for r in survey_rows:
+        base = (r.get("name") or "").strip()
+        if not base:
+            continue
+        key = base.lower()
+        if key not in seen:
+            seen[key] = 1
+            continue
+        seen[key] += 1
+        r["name"] = f"{base}_{seen[key]}"
 
 
-def begin_page_group(ctx: ParseContext, page_id: str, page_title: str) -> None:
-    ctx.survey_rows.append(SurveyRow(type="begin_group", name=page_id, label=page_title))
+def make_choice_names_unique(choices_rows: List[Dict]):
+    """
+    Garantiza que dentro de un mismo list_name no se repita 'name' (case-insensitive).
+    """
+    seen: Dict[Tuple[str, str], int] = {}
+    for r in choices_rows:
+        ln = (r.get("list_name") or "").strip()
+        nm = (r.get("name") or "").strip()
+        if not ln or not nm:
+            continue
+        key = (ln.lower(), nm.lower())
+        if key not in seen:
+            seen[key] = 1
+            continue
+        seen[key] += 1
+        r["name"] = f"{nm}_{seen[key]}"
 
 
-def end_page_group(ctx: ParseContext, page_id: str) -> None:
-    ctx.survey_rows.append(SurveyRow(type="end_group", name=page_id, label=""))
+# -----------------------------
+# Parser DOCX -> XLSForm
+# -----------------------------
+
+@dataclass
+class PendingQuestion:
+    qnum: str
+    qtext: str
+    options: List[str]
+    multi: bool = False
 
 
-def parse_docx_to_xlsform(doc_bytes: bytes, form_title: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    doc = Document(io.BytesIO(doc_bytes))
-    ctx = ParseContext()
+def parse_docx_to_xlsform(docx_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Devuelve: survey_df, choices_df, settings_df, glossary_df
+    """
+    doc = Document(io.BytesIO(docx_bytes))
 
-    # settings
+    survey_rows: List[Dict] = []
+    choices_rows: List[Dict] = []
+    glossary_rows: List[Dict] = []
+
+    # settings mínimos recomendados para Survey123
     settings_df = pd.DataFrame([{
-        "form_title": form_title,
-        "form_id": slugify(form_title),
-        "version": "1",
-        "default_language": "es",
+        "form_title": "Encuesta Comunidad",
+        "form_id": "encuesta_comunidad",
+        "version": "1"
     }])
 
-    # Seed yesno
-    ensure_choice(ctx, "yesno", "Sí")
-    ensure_choice(ctx, "yesno", "No")
+    current_group_name = None
+    current_group_label = None
 
-    # Páginas: creamos al menos las 10, aunque el Word tenga títulos mezclados
-    pages_order = [
-        ("p1_intro", "Página 1 — Introducción"),
-        ("p2_consentimiento", "Página 2 — Consentimiento informado"),
-        ("p3_datos_demograficos", "Página 3 — I. Datos demográficos"),
-        ("p4_percepcion", "Página 4 — II. Percepción ciudadana de seguridad en el distrito"),
-        ("p5_riesgos_sociales", "Página 5 — III. Riesgos sociales y situacionales en el distrito"),
-        ("p6_delitos", "Página 6 — Delitos"),
-        ("p7_vif", "Página 7 — Victimización A: Violencia intrafamiliar"),
-        ("p8_victimizacion_otros", "Página 8 — Victimización B: Otros delitos"),
-        ("p9_confianza_policial", "Página 9 — Confianza policial"),
-        ("p10_propuestas", "Página 10 — Propuestas ciudadanas / Contacto"),
-    ]
-    page_titles = dict(pages_order)
+    pending: Optional[PendingQuestion] = None
 
-    # Abrimos la primera página
-    current_page = "p1_intro"
-    begin_page_group(ctx, current_page, page_titles[current_page])
-
-    q_counter = 1
-
-    # Aux: estado para capturar opciones luego de una pregunta
-    pending_q: Optional[SurveyRow] = None
-    pending_opts: List[Tuple[str, str]] = []  # (kind, label) where kind in {"radio","check"}
-    pending_notes: List[str] = []
-
-    def commit_pending_question():
-        nonlocal pending_q, pending_opts, pending_notes
-        if pending_q is None:
+    def flush_pending():
+        nonlocal pending
+        if not pending:
             return
 
-        # Hint con notas (si hay)
-        if pending_notes:
-            pending_q.hint = clean_text(" ".join(pending_notes))
+        # Crear list_name para choices si hay opciones
+        if pending.options:
+            list_name = f"q{pending.qnum}_opts"
+            # Registrar choices
+            for idx, opt in enumerate(pending.options, start=1):
+                choices_rows.append({
+                    "list_name": list_name,
+                    "name": slugify(opt, 40) or f"opt_{idx}",
+                    "label": opt
+                })
 
-        # Si hay opciones → convertimos a select_one / select_multiple
-        if pending_opts:
-            is_multi = any(k == "check" for k, _ in pending_opts)
-            # Si mezclaron radio y check, priorizamos múltiple
-            list_name = f"{pending_q.name}_list"
+            qtype = "select_multiple" if pending.multi else "select_one"
+            survey_rows.append({
+                "type": f"{qtype} {list_name}",
+                "name": f"q{pending.qnum}_{slugify(pending.qtext, 30)}",
+                "label": pending.qtext
+            })
+        else:
+            # Sin opciones: default a texto
+            survey_rows.append({
+                "type": "text",
+                "name": f"q{pending.qnum}_{slugify(pending.qtext, 30)}",
+                "label": pending.qtext
+            })
 
-            for kind, lab in pending_opts:
-                harvest_definition(ctx, lab)
-                # si viene "Término (definición)" dejamos label completo igual
-                ensure_choice(ctx, list_name, lab)
+        pending = None
 
-            if is_multi:
-                pending_q.type = f"select_multiple {list_name}"
-            else:
-                pending_q.type = f"select_one {list_name}"
+    def open_group(label: str):
+        nonlocal current_group_name, current_group_label
+        # Cerrar grupo previo si está abierto
+        if current_group_name:
+            survey_rows.append({"type": "end_group", "name": "", "label": ""})
 
-        ctx.survey_rows.append(pending_q)
-        pending_q = None
-        pending_opts = []
-        pending_notes = []
+        current_group_label = (label or "").strip()
+        current_group_name = slugify(current_group_label, 40)
+        survey_rows.append({"type": "begin_group", "name": current_group_name, "label": current_group_label})
 
+    # Heurística para glosario: "Término: Definición"
+    def try_parse_glossary_line(text: str):
+        t = (text or "").strip()
+        m = re.match(r"^([^:]{3,80})\s*:\s*(.{5,})$", t)
+        if not m:
+            return
+        term = m.group(1).strip()
+        definition = m.group(2).strip()
+        # Evitar capturar "Objetivo: ..." etc (muy común) -> lo filtramos un poco
+        if term.lower() in {"objetivo", "finalidad", "datos", "responsable"}:
+            return
+        glossary_rows.append({"termino": term, "definicion": definition, "pagina": current_group_label or ""})
+
+    # Recorremos párrafos del doc
     for p in doc.paragraphs:
-        text = clean_text(p.text)
-        if is_blank(text):
+        raw = p.text or ""
+        text = raw.strip()
+        if not text:
             continue
 
-        # Detectar cambio de página/sección
-        maybe_page = detect_section_title(text)
-        if maybe_page and maybe_page != current_page:
-            # cerrar pendiente
-            commit_pending_question()
-            flush_intro_as_note(ctx, current_page)
-            end_page_group(ctx, current_page)
-
-            current_page = maybe_page
-            begin_page_group(ctx, current_page, page_titles.get(current_page, text))
+        # Encabezados / páginas
+        if is_heading(p) or looks_like_page_title(text):
+            flush_pending()
+            open_group(text)
             continue
 
-        # Detectar “Nota: …” como texto auxiliar
-        if text.lower().startswith("nota"):
-            # si hay pregunta pendiente: su nota es hint
-            if pending_q is not None:
-                pending_notes.append(text)
-            else:
-                ctx.current_intro_buffer.append(text)
+        # Capturar glosario si viene en formato "Termino: definicion"
+        try_parse_glossary_line(text)
+
+        # ¿Nueva pregunta numerada?
+        nq = extract_numbered_question(text)
+        if nq:
+            flush_pending()
+            qnum, qtext = nq
+            pending = PendingQuestion(qnum=qnum, qtext=qtext, options=[], multi=False)
             continue
 
-        # ¿Es subpregunta 7.1, 29.1 etc?
-        msub = SUBQ_RE.match(text)
-        if msub:
-            commit_pending_question()
-            qnum = f"{msub.group(1)}_{msub.group(2)}"
-            qlabel = clean_text(msub.group(3))
-            pending_q = SurveyRow(type="text", name=f"q{qnum}", label=qlabel)
+        # ¿Es línea de opción para la pregunta en curso?
+        if pending and is_option_line(text):
+            opt = clean_option_text(text)
+            if opt:
+                pending.options.append(opt)
+            # Si aparece checkbox "☐" asumimos múltiple
+            if re.match(r"^[☐□]", (raw or "").strip()):
+                pending.multi = True
             continue
 
-        # ¿Es pregunta 7., 10., 44. etc?
-        mq = QNUM_RE.match(text)
-        if mq:
-            commit_pending_question()
-            qnum = mq.group(1)
-            qlabel = clean_text(mq.group(2))
-            pending_q = SurveyRow(type="text", name=f"q{int(qnum):02d}", label=qlabel)
-            q_counter += 1
-            continue
-
-        # Opciones radio/check
-        mr = RADIO_OPT_RE.match(text)
-        if mr and pending_q is not None:
-            pending_opts.append(("radio", clean_text(mr.group(1))))
-            continue
-
-        mc = CHECK_OPT_RE.match(text)
-        if mc and pending_q is not None:
-            pending_opts.append(("check", clean_text(mc.group(1))))
-            continue
-
-        # Caso especial: línea con "¿Acepta participar... ( ) Sí ( ) No"
-        if "¿Acepta participar" in text and pending_q is None:
-            commit_pending_question()
-            pending_q = SurveyRow(type="select_one yesno", name="consent", label=text)
-            continue
-
-        # Si hay pregunta pendiente y el texto parece parte del enunciado (continuación)
-        if pending_q is not None and not pending_opts:
-            # concatenamos al label si es continuación evidente
-            pending_q.label = clean_text(pending_q.label + " " + text)
-            continue
-
-        # Si no calza en nada, lo tratamos como intro/nota de la página
-        ctx.current_intro_buffer.append(text)
+        # Si hay texto suelto dentro de un grupo y NO es opción:
+        # lo metemos como "note" (información debajo del título, editable en Survey123)
+        flush_pending()
+        note_name = f"note_{slugify(text, 30)}"
+        survey_rows.append({
+            "type": "note",
+            "name": note_name,
+            "label": text
+        })
 
     # Final
-    commit_pending_question()
-    flush_intro_as_note(ctx, current_page)
-    end_page_group(ctx, current_page)
+    flush_pending()
+    if current_group_name:
+        survey_rows.append({"type": "end_group", "name": "", "label": ""})
 
-    # Ajustes rápidos: si el consentimiento quedó como text por no detectar, lo convertimos si aplica
-    for r in ctx.survey_rows:
-        if r.name == "consent" and not r.type.startswith("select_one"):
-            r.type = "select_one yesno"
+    # Normalizaciones críticas para evitar errores Survey123
+    # 1) names únicos (survey)
+    make_survey_names_unique(survey_rows)
+    # 2) choices únicos dentro de list_name
+    make_choice_names_unique(choices_rows)
 
     # DataFrames
-    survey_df = pd.DataFrame([{
-        "type": r.type,
-        "name": r.name,
-        "label::es": r.label,
-        "hint::es": r.hint,
-        "relevant": r.relevant,
-        "constraint": r.constraint,
-        "constraint_message::es": r.constraint_message,
-    } for r in ctx.survey_rows])
+    survey_df = pd.DataFrame(survey_rows)
+    choices_df = pd.DataFrame(choices_rows)
+    glossary_df = pd.DataFrame(glossary_rows)
 
-    choices_df = pd.DataFrame([{
-        "list_name": c.list_name,
-        "name": c.name,
-        "label::es": c.label,
-    } for c in ctx.choices])
+    # Asegurar columnas mínimas (XLSForm tolera más, pero mejor fijas)
+    for col in ["type", "name", "label", "hint", "required", "relevant", "calculation", "constraint", "constraint_message"]:
+        if col not in survey_df.columns:
+            survey_df[col] = ""
 
-    glossary_df = pd.DataFrame([{
-        "term": k,
-        "definition": v,
-    } for k, v in sorted(ctx.glossary.items(), key=lambda x: x[0].lower())])
+    for col in ["list_name", "name", "label"]:
+        if col not in choices_df.columns:
+            choices_df[col] = ""
+
+    # Orden de columnas
+    survey_df = survey_df[["type", "name", "label", "hint", "required", "relevant", "calculation", "constraint", "constraint_message"]]
+    choices_df = choices_df[["list_name", "name", "label"]]
 
     return survey_df, choices_df, settings_df, glossary_df
 
 
-def build_xlsx_bytes(survey_df: pd.DataFrame, choices_df: pd.DataFrame, settings_df: pd.DataFrame, glossary_df: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        survey_df.to_excel(writer, sheet_name="survey", index=False)
-        choices_df.to_excel(writer, sheet_name="choices", index=False)
-        settings_df.to_excel(writer, sheet_name="settings", index=False)
-        # hoja extra (no rompe XLSForm)
-        glossary_df.to_excel(writer, sheet_name="glossary", index=False)
-    return output.getvalue()
+def build_xlsform_xlsx_bytes(survey_df: pd.DataFrame, choices_df: pd.DataFrame, settings_df: pd.DataFrame, glossary_df: pd.DataFrame) -> bytes:
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        survey_df.to_excel(writer, index=False, sheet_name="survey")
+        choices_df.to_excel(writer, index=False, sheet_name="choices")
+        settings_df.to_excel(writer, index=False, sheet_name="settings")
+        # hoja extra (no afecta Survey123)
+        glossary_df.to_excel(writer, index=False, sheet_name="glosario")
+    return out.getvalue()
 
 
-# =========================
+# -----------------------------
 # UI Streamlit
-# =========================
+# -----------------------------
 
-st.set_page_config(page_title="Word → XLSForm (Survey123) + Glosario", layout="wide")
-st.title("📄➡️📊 Word → XLSForm (Survey123) + Glosario")
+st.set_page_config(page_title="Word -> XLSForm (Survey123)", layout="wide")
 
-st.write("Subí tu archivo **.docx** y la app genera un **XLSForm (.xlsx)** con `survey`, `choices`, `settings` y una hoja extra `glossary`.")
-
-form_title = st.text_input("Título del formulario (form_title)", value="Encuesta Comunidad 2026")
-
-docx_file = st.file_uploader("Subir Word (.docx)", type=["docx"])
+st.title("🧩 Convertidor Word (.docx) → XLSForm (Survey123)")
+st.caption("Genera un XLSX con survey/choices/settings y corrige automáticamente nombres duplicados (ej: p2_consentimiento).")
 
 col1, col2 = st.columns([1, 1], gap="large")
 
-if docx_file is not None:
-    doc_bytes = docx_file.read()
+with col1:
+    st.subheader("1) Subí tu Word")
+    docx_file = st.file_uploader("Documento Word (.docx)", type=["docx"])
 
+    st.markdown("---")
+    st.subheader("2) Opciones")
+    form_title = st.text_input("Título del formulario (settings.form_title)", value="Encuesta Comunidad 2026")
+    form_id = st.text_input("ID del formulario (settings.form_id)", value="encuesta_comunidad_2026")
+    version = st.text_input("Versión (settings.version)", value="1")
+
+with col2:
+    st.subheader("Vista rápida (qué hace)")
+    st.markdown(
+        """
+- Detecta **páginas/grupos** por estilos *Heading* o textos tipo **“Página 5 … / P5 …”**
+- Detecta **preguntas numeradas**: `12. texto` / `12- texto` / `12) texto`
+- Detecta **opciones**: `( )`, `☐`, `-`, `•`
+- Texto bajo títulos -> lo convierte a **note** (editable)
+- Corrige automáticamente:
+  - **Duplicados en survey.name** (case-insensitive)
+  - **Duplicados en choices.name** dentro de cada list_name
+        """
+    )
+
+if docx_file:
     try:
-        survey_df, choices_df, settings_df, glossary_df = parse_docx_to_xlsform(doc_bytes, form_title=form_title)
+        survey_df, choices_df, settings_df, glossary_df = parse_docx_to_xlsform(docx_file.read())
 
-        with col1:
-            st.subheader("✅ Vista previa — survey")
+        # Aplicar settings ingresados por el usuario
+        settings_df.loc[0, "form_title"] = form_title.strip() or "Encuesta Comunidad"
+        settings_df.loc[0, "form_id"] = form_id.strip() or "encuesta_comunidad"
+        settings_df.loc[0, "version"] = version.strip() or "1"
+
+        st.success("✅ Documento procesado. Abajo podés revisar y descargar el XLSForm.")
+
+        tabs = st.tabs(["survey", "choices", "settings", "glosario (extra)"])
+
+        with tabs[0]:
             st.dataframe(survey_df, use_container_width=True, height=450)
 
-            st.subheader("✅ Vista previa — settings")
-            st.dataframe(settings_df, use_container_width=True)
-
-        with col2:
-            st.subheader("✅ Vista previa — choices")
+        with tabs[1]:
             st.dataframe(choices_df, use_container_width=True, height=450)
 
-            st.subheader("✅ Vista previa — glossary (extra)")
-            if glossary_df.empty:
-                st.info("No se detectaron definiciones tipo “Término (definición)” en el texto. (Podés agregarlas manualmente luego).")
-            else:
-                st.dataframe(glossary_df, use_container_width=True, height=220)
+        with tabs[2]:
+            st.dataframe(settings_df, use_container_width=True, height=120)
 
-        xlsx_bytes = build_xlsx_bytes(survey_df, choices_df, settings_df, glossary_df)
+        with tabs[3]:
+            st.dataframe(glossary_df, use_container_width=True, height=300)
 
+        xlsx_bytes = build_xlsform_xlsx_bytes(survey_df, choices_df, settings_df, glossary_df)
         st.download_button(
-            "⬇️ Descargar XLSForm (.xlsx)",
+            label="⬇️ Descargar XLSForm (.xlsx)",
             data=xlsx_bytes,
-            file_name=f"{slugify(form_title)}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            file_name=f"{form_id.strip() or 'encuesta_comunidad'}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        st.success("Listo: XLSForm generado. Si querés, luego te lo adapto para *cascada Cantón→Distrito* y lógica condicional exacta (relevant).")
+        st.info("Tip: Si Survey123 te vuelve a dar error, revisá primero la columna 'name' en la hoja 'survey'. Pero esta app ya evita duplicados automáticamente.")
 
     except Exception as e:
-        st.error("Ocurrió un error procesando el Word. Mostrame este error y lo ajusto:")
+        st.error("❌ Ocurrió un error procesando el Word.")
         st.exception(e)
 else:
-    st.info("Subí un .docx para empezar.")
+    st.warning("Subí un archivo .docx para generar el XLSForm.")
