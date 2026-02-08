@@ -1,95 +1,56 @@
 # -*- coding: utf-8 -*-
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 1/10) ==============================
-# = App: Editor XLSForm — Encuesta Comunidad 2026 (Páginas) + Banco completo precargado
+# ===================== Encuesta Comunidad — Editor XLSForm (Base/Estado) ==================
 # ==========================================================================================
+# Objetivo de esta parte:
+# - Imports
+# - Config Streamlit
+# - Utilidades (slugify, ids)
+# - Estructura base en session_state
+# - Seed inicial: páginas + preguntas (vacías/placeholder) para que la app NO quede en blanco
 #
-# OBJETIVO (100% como lo pediste):
-# - Editor fácil en Streamlit para ver/editar/reordenar/eliminar preguntas (survey).
-# - Editor fácil de choices (listas y opciones).
-# - Glosario editable + glosario por página.
-# - Catálogo Cantón→Distrito (choice_filter).
-# - Exportación XLSForm (survey/choices/settings) listo para Survey123.
-#
-# REGLAS CRÍTICAS (sin suposiciones):
-# - NO se pide subir el DOCX en la UI.
-# - El banco completo se precarga leyendo AUTOMÁTICAMENTE el DOCX desde disco (Parte 2).
-# - Si el DOCX no existe, la app se detiene con error claro (no queda a medias).
-#
-# ESTA PARTE 1/10 INCLUYE:
-# 1) Imports (únicos, sin duplicados)
-# 2) Configuración UI + estilo
-# 3) Constantes: páginas P1–P10 (títulos oficiales)
-# 4) Helpers base: slugify, nombres únicos, excel export, helpers choices
-#
+# Nota:
+# - NO se carga ningún Word.
+# - Las preguntas reales se irán cargando en partes posteriores (o pegándolas tú).
+# - Desde YA dejamos la estructura lista para: label, info/hint, required, type, choices.
 # ==========================================================================================
 
 import re
 import json
-from io import BytesIO
-from datetime import datetime
-
+import uuid
+from copy import deepcopy
 import streamlit as st
-import pandas as pd
 
-# ==========================================================================================
-# Configuración UI (mantiene look limpio similar a tu screenshot)
-# ==========================================================================================
-st.set_page_config(page_title="Editor XLSForm — Encuesta Comunidad 2026", layout="wide")
-st.title("🏘️ Editor XLSForm — Encuesta Comunidad 2026 (Páginas)")
+# ------------------------------------------------------------------------------------------
+# Config general
+# ------------------------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Encuesta Comunidad — Editor XLSForm",
+    page_icon="🧩",
+    layout="wide"
+)
 
-st.markdown("""
-Este editor permite construir y mantener un XLSForm (Survey123) de manera **amigable**:
-- Preguntas (survey) editables, reordenables, duplicables y eliminables.
-- Choices (opciones) fáciles de administrar (listas + opciones).
-- Glosario editable (global y por página).
-- Catálogo Cantón→Distrito con cascada (choice_filter).
-- Exportación final a Excel con hojas: **survey**, **choices**, **settings**.
-""")
+# ------------------------------------------------------------------------------------------
+# Utilidades
+# ------------------------------------------------------------------------------------------
+def slugify_name(text: str) -> str:
+    """Convierte a slug simple para 'name' interno."""
+    text = (text or "").strip().lower()
+    text = re.sub(r"[áàäâ]", "a", text)
+    text = re.sub(r"[éèëê]", "e", text)
+    text = re.sub(r"[íìïî]", "i", text)
+    text = re.sub(r"[óòöô]", "o", text)
+    text = re.sub(r"[úùüû]", "u", text)
+    text = re.sub(r"ñ", "n", text)
+    text = re.sub(r"[^a-z0-9_]+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    text = text.strip("_")
+    return text or "item"
 
-st.markdown("---")
-
-# ==========================================================================================
-# Páginas oficiales (P1–P10) — EXACTAS según tu instrucción
-# ==========================================================================================
-PAGES = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]
-
-PAGES_LABELS = {
-    "p1": "P1 Introducción",
-    "p2": "P2 Consentimiento Informado",
-    "p3": "P3 I. DATOS DEMOGRÁFICOS",
-    "p4": "P4 II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO",
-    "p5": "P5 III. Riesgos sociales y situacionales en el distrito",
-    "p6": "P6 III. Delitos",
-    "p7": "P7 III. Victimización A: Violencia intrafamiliar",
-    "p8": "P8 III. Victimización B: Victimización por otros delitos",
-    "p9": "P9 Confianza Policial",
-    "p10": "P10 Propuestas ciudadanas para la mejora de la seguridad",
-}
-
-# ==========================================================================================
-# Helpers generales
-# ==========================================================================================
-def slugify_name(texto: str) -> str:
-    """Convierte texto a un slug válido para XLSForm (name)."""
-    if not texto:
-        return "campo"
-    t = texto.lower()
-    t = re.sub(r"[áàäâ]", "a", t)
-    t = re.sub(r"[éèëê]", "e", t)
-    t = re.sub(r"[íìïî]", "i", t)
-    t = re.sub(r"[óòöô]", "o", t)
-    t = re.sub(r"[úùüû]", "u", t)
-    t = re.sub(r"ñ", "n", t)
-    t = re.sub(r"[^a-z0-9]+", "_", t).strip("_")
-    return t or "campo"
-
-
-def asegurar_nombre_unico(base: str, usados: set) -> str:
-    """
-    Asegura que un name sea único (para no duplicar name en survey).
-    Si base ya existe, agrega sufijos _2, _3, etc.
-    """
+def asegurar_nombre_unico(base: str, usados: set[str]) -> str:
+    """Devuelve un name único dentro de 'usados'."""
+    base = slugify_name(base)
     if base not in usados:
         return base
     i = 2
@@ -97,1215 +58,404 @@ def asegurar_nombre_unico(base: str, usados: set) -> str:
         i += 1
     return f"{base}_{i}"
 
+def new_id(prefix: str = "id") -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
-def _new_qid(prefix: str = "q") -> str:
-    """ID único interno para el bank (evita colisiones por reruns)."""
-    return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+# ------------------------------------------------------------------------------------------
+# Modelo de datos (en memoria)
+# ------------------------------------------------------------------------------------------
+DEFAULT_PAGES = [
+    {"id": "P1", "title": "Página 1 — Portada", "info": "Formato Encuesta Comunidad 2026."},
+    {"id": "P2", "title": "Página 2 — Consentimiento Informado", "info": "Texto legal + aceptación Sí/No."},
+    {"id": "P3", "title": "I. DATOS DEMOGRÁFICOS", "info": "Datos generales de la persona participante."},
+    {"id": "P4", "title": "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO", "info": "Percepción, horarios, factores."},
+    {"id": "P5", "title": "III. RIESGOS... — Riesgos sociales y situacionales", "info": "Riesgos sociales/situacionales del distrito."},
+    {"id": "P6", "title": "III. RIESGOS... — Delitos", "info": "Delitos observados / ocurridos."},
+    {"id": "P7", "title": "Victimización A: Violencia intrafamiliar", "info": "Victimización en el hogar."},
+    {"id": "P8", "title": "Victimización B: Otros delitos", "info": "Victimización por otros delitos."},
+    {"id": "P9", "title": "Confianza Policial", "info": "Relación con policía, respuesta institucional."},
+    {"id": "P10", "title": "Propuestas ciudadanas", "info": "Sugerencias y mejoras en seguridad."},
+]
 
-
-def descargar_xlsform(df_survey: pd.DataFrame, df_choices: pd.DataFrame, df_settings: pd.DataFrame, nombre_archivo: str):
+def default_question_seed(page_id: str) -> list[dict]:
     """
-    Genera y permite descargar el XLSForm en Excel con 3 hojas:
-    - survey
-    - choices
-    - settings
+    Seed mínimo por página para que el editor NO quede vacío.
+    Luego tú vas pegando el banco real en partes posteriores.
     """
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        df_survey.to_excel(writer, sheet_name="survey", index=False)
-        df_choices.to_excel(writer, sheet_name="choices", index=False)
-        df_settings.to_excel(writer, sheet_name="settings", index=False)
+    if page_id == "P2":
+        return [
+            {
+                "id": new_id("q"),
+                "page_id": "P2",
+                "type": "select_one",
+                "name": "consentimiento",
+                "label": "¿Acepta participar en esta encuesta?",
+                "info": "Si responde 'No', finaliza la encuesta.",
+                "required": True,
+                "relevant": "",
+                "constraint": "",
+                "calculation": "",
+                "choice_list": "yesno",
+                "choices_inline": ["Sí", "No"],
+            }
+        ]
+    return [
+        {
+            "id": new_id("q"),
+            "page_id": page_id,
+            "type": "text",
+            "name": f"{slugify_name(page_id)}_placeholder",
+            "label": f"Pregunta placeholder en {page_id}",
+            "info": "Edita o elimina esta pregunta y agrega las reales.",
+            "required": False,
+            "relevant": "",
+            "constraint": "",
+            "calculation": "",
+            "choice_list": "",
+            "choices_inline": [],
+        }
+    ]
 
-        wb = writer.book
-        fmt_hdr = wb.add_format({"bold": True, "align": "left"})
+def _init_state():
+    if "app_title" not in st.session_state:
+        st.session_state.app_title = "Encuesta comunidad — San Carlos Oeste"
 
-        for sheet, df in (("survey", df_survey), ("choices", df_choices), ("settings", df_settings)):
-            ws = writer.sheets[sheet]
-            ws.freeze_panes(1, 0)
-            ws.set_row(0, None, fmt_hdr)
-            for col_idx, col_name in enumerate(df.columns):
-                ws.set_column(col_idx, col_idx, max(14, min(90, len(str(col_name)) + 10)))
+    # Banco de páginas
+    if "pages" not in st.session_state:
+        st.session_state.pages = deepcopy(DEFAULT_PAGES)
 
-    buffer.seek(0)
-    st.download_button(
-        label=f"📥 Descargar XLSForm ({nombre_archivo})",
-        data=buffer,
-        file_name=nombre_archivo,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+    # Preguntas: lista de dicts (una lista global con page_id)
+    if "questions" not in st.session_state:
+        qs = []
+        for p in st.session_state.pages:
+            qs.extend(default_question_seed(p["id"]))
+        st.session_state.questions = qs
 
+    # Banco de choices (opcional): también mantenemos un "choices_bank" tipo XLSForm
+    # Cada fila: {list_name, name, label, extra...}
+    if "choices_bank" not in st.session_state:
+        st.session_state.choices_bank = []
+        # lista yesno por defecto
+        st.session_state.choices_bank.extend([
+            {"list_name": "yesno", "name": "si", "label": "Sí"},
+            {"list_name": "yesno", "name": "no", "label": "No"},
+        ])
 
-def add_choice_list(choices_rows: list[dict], list_name: str, labels: list[str]):
-    """
-    Agrega choices (list_name/name/label) evitando duplicados.
-    - name se genera con slugify(label)
-    """
-    usados = set((str(r.get("list_name", "")).strip(), str(r.get("name", "")).strip()) for r in choices_rows)
-    for lab in labels:
-        row = {"list_name": list_name, "name": slugify_name(lab), "label": lab}
-        key = (row["list_name"], row["name"])
-        if key not in usados:
-            choices_rows.append(row)
-            usados.add(key)
+    if "active_section" not in st.session_state:
+        st.session_state.active_section = "Preguntas"
 
+    if "active_page" not in st.session_state:
+        st.session_state.active_page = st.session_state.pages[0]["id"]
 
-def ensure_choice_list_exists(choices_rows: list[dict], list_name: str):
-    """
-    Garantiza que exista al menos 1 fila en choices con ese list_name.
-    Esto evita el error de Survey123: "List name not in choices sheet: <list_name>"
-    """
-    existing_lists = {str(r.get("list_name", "")).strip() for r in choices_rows if str(r.get("list_name", "")).strip()}
-    if list_name not in existing_lists:
-        choices_rows.append({"list_name": list_name, "name": "placeholder_1", "label": "—"})
+_init_state()
 
 # ==========================================================================================
 # FIN PARTE 1/10
 # ==========================================================================================
+# -*- coding: utf-8 -*-
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 2/10) ==============================
-# =================== Session State + Carga automática del banco completo =================
+# =================== UI Base + Editor de Preguntas (con opciones desglosadas) ==============
 # ==========================================================================================
+# Objetivo de esta parte:
+# - Encabezado (logo + nombre)
+# - Navegación de secciones (Preguntas / Choices / Glosario / Catálogo / Exportar)
+# - Editor de Preguntas:
+#     - Editar título de página y su "info" (texto después del título)
+#     - Listado de preguntas por página
+#     - Cada pregunta editable: label + info + required + type + name
+#     - Si es select_one / select_multiple: desglosa opciones inline para editar/agregar/borrar/reordenar
 #
-# ESTA PARTE 2/10 HACE:
-# 1) Inicializa bancos:
-#    - questions_bank (survey)
-#    - choices_bank (choices)
-#    - glossary_bank (glosario)
-# 2) Carga AUTOMÁTICA el DOCX DESDE DISCO (sin uploader) y construye:
-#    - preguntas completas en P1–P10
-#    - opciones en choices (listas generadas)
-# 3) Si falta el DOCX o falta python-docx, se detiene con error claro.
-#
+# Nota:
+# - Choices global y glosario/catálogo/export se manejan en otras partes.
 # ==========================================================================================
 
 # ------------------------------------------------------------------------------------------
-# Ajuste: nombre exacto del DOCX en el servidor / repo (sin subir en la UI)
+# Helpers UI
 # ------------------------------------------------------------------------------------------
-DOCX_PATH = "Formato de encuesta Comunidad 2026 V.4.1 cambios generales.docx"
+def get_page_by_id(pid: str) -> dict | None:
+    for p in st.session_state.pages:
+        if p["id"] == pid:
+            return p
+    return None
 
-# ------------------------------------------------------------------------------------------
-# Session State
-# ------------------------------------------------------------------------------------------
-def init_state():
-    if "questions_bank" not in st.session_state:
-        st.session_state.questions_bank = []  # [{"qid","page","order","row"}]
-    if "choices_bank" not in st.session_state:
-        st.session_state.choices_bank = []    # [{"list_name","name","label",...}]
-    if "glossary_bank" not in st.session_state:
-        st.session_state.glossary_bank = {}   # {"Termino":"Def..."}
+def get_questions_for_page(pid: str) -> list[dict]:
+    return [q for q in (st.session_state.questions or []) if q.get("page_id") == pid]
 
-    if "active_page" not in st.session_state:
-        st.session_state.active_page = "p1"
-    if "selected_qid" not in st.session_state:
-        st.session_state.selected_qid = None
-    if "editor_mode" not in st.session_state:
-        st.session_state.editor_mode = "Simple"
+def upsert_question(q: dict):
+    qid = q["id"]
+    for i, existing in enumerate(st.session_state.questions):
+        if existing.get("id") == qid:
+            st.session_state.questions[i] = q
+            return
+    st.session_state.questions.append(q)
 
-    # Para evitar re-seed infinito:
-    if "seed_loaded" not in st.session_state:
-        st.session_state.seed_loaded = False
+def delete_question(qid: str):
+    st.session_state.questions = [q for q in st.session_state.questions if q.get("id") != qid]
 
-init_state()
+def move_question(qid: str, direction: int):
+    """direction: -1 arriba, +1 abajo dentro de la misma página"""
+    pid = None
+    for q in st.session_state.questions:
+        if q.get("id") == qid:
+            pid = q.get("page_id")
+            break
+    if not pid:
+        return
+    page_qs = [q for q in st.session_state.questions if q.get("page_id") == pid]
+    other_qs = [q for q in st.session_state.questions if q.get("page_id") != pid]
 
-# ------------------------------------------------------------------------------------------
-# UI encabezado (logo + nombre del lugar)
-# ------------------------------------------------------------------------------------------
-DEFAULT_LOGO_PATH = "001.png"
+    idx = next((i for i, q in enumerate(page_qs) if q.get("id") == qid), None)
+    if idx is None:
+        return
 
-col_logo, col_txt = st.columns([1, 3], vertical_alignment="center")
+    new_idx = idx + direction
+    if new_idx < 0 or new_idx >= len(page_qs):
+        return
 
-with col_logo:
-    up_logo = st.file_uploader("Logo (PNG/JPG)", type=["png", "jpg", "jpeg"], key="logo_uploader")
-    if up_logo:
-        st.image(up_logo, caption="Logo cargado", use_container_width=True)
-        st.session_state["_logo_bytes"] = up_logo.getvalue()
-        st.session_state["_logo_name"] = up_logo.name
+    page_qs[idx], page_qs[new_idx] = page_qs[new_idx], page_qs[idx]
+    st.session_state.questions = other_qs + page_qs
+
+def render_choice_inline_editor(q: dict):
+    """
+    Editor de opciones inline para preguntas select_one / select_multiple.
+    q["choices_inline"] = ["Opción 1", "Opción 2", ...]
+    """
+    st.markdown("**Opciones (una por fila)**")
+    current = q.get("choices_inline", []) or []
+    # Text area para edición rápida
+    raw = "\n".join([str(x) for x in current])
+    new_raw = st.text_area(
+        "Editar opciones (una por línea)",
+        value=raw,
+        height=120,
+        key=f"{q['id']}_choices_textarea"
+    )
+    # Botones: aplicar / agregar vacía
+    c1, c2, c3 = st.columns([1, 1, 2])
+    if c1.button("💾 Guardar opciones", use_container_width=True, key=f"{q['id']}_choices_save"):
+        lines = [ln.strip() for ln in (new_raw or "").splitlines() if ln.strip()]
+        q["choices_inline"] = lines
+        # si no tiene choice_list, le ponemos una lista local por name
+        if not q.get("choice_list"):
+            q["choice_list"] = f"list_{q.get('name','pregunta')}"
+        upsert_question(q)
+        st.success("Opciones guardadas.")
+        st.rerun()
+
+    if c2.button("➕ Agregar opción vacía", use_container_width=True, key=f"{q['id']}_choices_add"):
+        lines = [ln.strip() for ln in (new_raw or "").splitlines()]
+        lines.append("")
+        q["choices_inline"] = [x for x in lines if x != ""]
+        upsert_question(q)
+        st.rerun()
+
+    with c3:
+        st.caption("Tip: aquí editás rápido. En partes posteriores, el banco global de Choices también se puede sincronizar.")
+
+def render_question_card(q: dict, idx: int):
+    with st.container(border=True):
+        top = st.columns([3, 1, 1, 1, 1])
+        top[0].markdown(f"### {idx+1}. {q.get('label','(sin título)')}")
+
+        if top[1].button("⬆️", key=f"{q['id']}_up", use_container_width=True):
+            move_question(q["id"], -1); st.rerun()
+        if top[2].button("⬇️", key=f"{q['id']}_down", use_container_width=True):
+            move_question(q["id"], +1); st.rerun()
+        if top[3].button("🗑", key=f"{q['id']}_del", use_container_width=True):
+            delete_question(q["id"]); st.rerun()
+        if top[4].button("💾", key=f"{q['id']}_save_btn", use_container_width=True):
+            # Guardado se hace por widgets (ya están ligados abajo). Solo re-run para confirmar.
+            st.success("Guardado."); st.rerun()
+
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        q["label"] = col1.text_input(
+            "Título / Pregunta (label)",
+            value=q.get("label", ""),
+            key=f"{q['id']}_label"
+        )
+        q["name"] = col2.text_input(
+            "Nombre interno (name)",
+            value=q.get("name", ""),
+            key=f"{q['id']}_name"
+        )
+        q["required"] = col3.checkbox(
+            "Obligatoria",
+            value=bool(q.get("required", False)),
+            key=f"{q['id']}_req"
+        )
+
+        q["info"] = st.text_area(
+            "Info / Descripción (sale debajo del título en el formulario)",
+            value=q.get("info", ""),
+            height=80,
+            key=f"{q['id']}_info"
+        )
+
+        col4, col5, col6 = st.columns([1.5, 2, 2])
+        q["type"] = col4.selectbox(
+            "Tipo",
+            options=["text", "integer", "decimal", "date", "select_one", "select_multiple", "note"],
+            index=["text","integer","decimal","date","select_one","select_multiple","note"].index(q.get("type","text")) if q.get("type","text") in ["text","integer","decimal","date","select_one","select_multiple","note"] else 0,
+            key=f"{q['id']}_type"
+        )
+        q["relevant"] = col5.text_input(
+            "Relevancia (relevant) [opcional]",
+            value=q.get("relevant", ""),
+            key=f"{q['id']}_rel"
+        )
+        q["constraint"] = col6.text_input(
+            "Restricción (constraint) [opcional]",
+            value=q.get("constraint", ""),
+            key=f"{q['id']}_con"
+        )
+
+        q["calculation"] = st.text_input(
+            "Cálculo (calculation) [opcional]",
+            value=q.get("calculation", ""),
+            key=f"{q['id']}_calc"
+        )
+
+        # Si es selección, desglosar opciones
+        if q["type"] in ("select_one", "select_multiple"):
+            q["choice_list"] = st.text_input(
+                "Lista de opciones (choice_list) [interno]",
+                value=q.get("choice_list",""),
+                key=f"{q['id']}_clist"
+            )
+            render_choice_inline_editor(q)
+        else:
+            # limpiar campos si no aplica
+            q["choice_list"] = q.get("choice_list","")
+            q["choices_inline"] = q.get("choices_inline", [])
+
+        # Guardar cambios al vuelo
+        upsert_question(q)
+
+def render_preguntas():
+    # Selector de página
+    pages = st.session_state.pages
+    page_labels = [f"{p['id']} — {p['title']}" for p in pages]
+    page_ids = [p["id"] for p in pages]
+
+    sel = st.selectbox(
+        "Página",
+        options=page_ids,
+        format_func=lambda pid: next((f"{p['id']} — {p['title']}" for p in pages if p["id"] == pid), pid),
+        index=page_ids.index(st.session_state.active_page) if st.session_state.active_page in page_ids else 0,
+        key="page_selector"
+    )
+    st.session_state.active_page = sel
+
+    p = get_page_by_id(sel)
+    if not p:
+        st.error("Página no encontrada.")
+        return
+
+    st.markdown("## Editor de Página")
+    with st.container(border=True):
+        c1, c2 = st.columns([2, 3])
+        p["title"] = c1.text_input("Título de la página", value=p.get("title",""), key=f"{p['id']}_page_title")
+        p["info"] = c2.text_area("Info de la página (aparece debajo del título)", value=p.get("info",""), height=80, key=f"{p['id']}_page_info")
+
+        # Guardar en session_state.pages
+        for i, pp in enumerate(st.session_state.pages):
+            if pp["id"] == p["id"]:
+                st.session_state.pages[i] = p
+                break
+
+    st.markdown("---")
+    st.markdown("## Preguntas en esta página")
+
+    # Buscar
+    query = st.text_input("Buscar en esta página", value="", key=f"{sel}_search")
+    qs = get_questions_for_page(sel)
+    if query.strip():
+        qlow = query.strip().lower()
+        qs = [q for q in qs if qlow in (q.get("label","").lower() + " " + q.get("name","").lower() + " " + q.get("info","").lower())]
+
+    if not qs:
+        st.info("No hay preguntas en esta página (aún).")
     else:
-        try:
-            st.image(DEFAULT_LOGO_PATH, caption="Logo (001.png)", use_container_width=True)
-            st.session_state["_logo_bytes"] = None
-            st.session_state["_logo_name"] = "001.png"
-        except Exception:
-            st.warning("Sube un logo para incluirlo en el XLSForm.")
-            st.session_state["_logo_bytes"] = None
-            st.session_state["_logo_name"] = "logo.png"
+        for idx, q in enumerate(qs):
+            render_question_card(q, idx)
 
-with col_txt:
-    delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste", key="delegacion_input")
-    logo_media_name = st.text_input(
-        "Nombre de archivo para `media::image`",
-        value=st.session_state.get("_logo_name", "001.png"),
-        help="Debe coincidir con el archivo dentro de la carpeta `media/` del proyecto Survey123.",
-        key="logo_media_name_input"
+    st.markdown("---")
+    st.markdown("### ➕ Agregar pregunta")
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([2, 1.5, 1])
+        new_label = c1.text_input("Título (label)", value="", key=f"{sel}_new_label")
+        new_type = c2.selectbox("Tipo", ["text","integer","decimal","date","select_one","select_multiple","note"], key=f"{sel}_new_type")
+        if c3.button("Agregar", type="primary", use_container_width=True, key=f"{sel}_add_btn"):
+            usados = {q.get("name","") for q in st.session_state.questions}
+            base = slugify_name(new_label or f"pregunta_{sel}")
+            name = asegurar_nombre_unico(base, usados)
+            q = {
+                "id": new_id("q"),
+                "page_id": sel,
+                "type": new_type,
+                "name": name,
+                "label": new_label or "Nueva pregunta",
+                "info": "",
+                "required": False,
+                "relevant": "",
+                "constraint": "",
+                "calculation": "",
+                "choice_list": "yesno" if new_type in ("select_one","select_multiple") else "",
+                "choices_inline": ["Sí","No"] if new_type in ("select_one","select_multiple") else [],
+            }
+            st.session_state.questions.append(q)
+            st.success("Pregunta agregada.")
+            st.rerun()
+
+# ------------------------------------------------------------------------------------------
+# Header (logo + nombre)
+# ------------------------------------------------------------------------------------------
+colL, colR = st.columns([1, 3], vertical_alignment="top")
+
+with colL:
+    st.markdown("### Logo (PNG/JPG)")
+    logo = st.file_uploader("Sube el logo si lo deseas", type=["png", "jpg", "jpeg"], key="logo_uploader")
+    if logo:
+        st.image(logo, use_container_width=True)
+
+with colR:
+    st.markdown("### Nombre del lugar / Delegación")
+    st.session_state.app_title = st.text_input(
+        "Nombre visible en la app",
+        value=st.session_state.app_title,
+        key="app_title_input"
     )
 
-form_title = f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"
-st.markdown(f"### {form_title}")
+st.title(st.session_state.app_title)
 
 # ------------------------------------------------------------------------------------------
-# Loader DOCX -> preguntas + choices
+# Navegación Sección
 # ------------------------------------------------------------------------------------------
-def _require_docx_lib():
-    try:
-        from docx import Document  # noqa
-        return True
-    except Exception:
-        return False
-
-
-def _read_docx_paragraphs(path: str) -> list[str]:
-    from docx import Document
-    doc = Document(path)
-    paras = []
-    for p in doc.paragraphs:
-        tx = (p.text or "").strip()
-        if tx:
-            paras.append(tx)
-    return paras
-
-
-def _is_option_line(t: str) -> bool:
-    t = (t or "").strip()
-    return t.startswith("( )") or t.startswith("(  )") or t.startswith("☐") or t.startswith("•") or t.startswith("-")
-
-
-def _clean_option_text(t: str) -> str:
-    t = (t or "").strip()
-    t = t.replace("( )", "").replace("(  )", "").strip()
-    if t.startswith("☐"):
-        t = t.replace("☐", "").strip()
-    if t.startswith("•"):
-        t = t.replace("•", "").strip()
-    if t.startswith("-"):
-        t = t[1:].strip()
-    return t.strip()
-
-
-def _extract_question_number(t: str) -> str:
-    # Ej: "29.3. ¿Cómo valora..." -> "29_3"
-    m = re.match(r"^\s*(\d+)\.(\d+)?\.?\s*", t)
-    if not m:
-        return ""
-    a = m.group(1)
-    b = m.group(2)
-    return f"{a}_{b}" if b else f"{a}"
-
-
-def _strip_leading_number(t: str) -> str:
-    # Quita "29.3." al inicio para dejar el texto de pregunta limpio.
-    return re.sub(r"^\s*\d+(\.\d+)?\.?\s*", "", (t or "").strip()).strip()
-
-
-def _ensure_choices_list_with_seed_keep(list_name: str, labels: list[str]):
-    """
-    Crea lista y opciones seed si la lista no existe o si solo tiene placeholder.
-    Mantiene lo que el usuario ya editó.
-    """
-    if not list_name:
-        return
-
-    # filas actuales de esa lista
-    cur = [r for r in st.session_state.choices_bank if str(r.get("list_name","")).strip() == list_name]
-    # detecta placeholder único
-    has_real = any(str(r.get("name","")).strip() != "placeholder_1" for r in cur)
-
-    if not cur:
-        # crear desde cero
-        temp = []
-        add_choice_list(temp, list_name, labels)
-        if not temp:
-            temp = [{"list_name": list_name, "name": "placeholder_1", "label": "—"}]
-        st.session_state.choices_bank.extend(temp)
-        return
-
-    if cur and not has_real:
-        # reemplazar placeholder por opciones reales
-        st.session_state.choices_bank = [r for r in st.session_state.choices_bank
-                                        if not (str(r.get("list_name","")).strip() == list_name and str(r.get("name","")).strip() == "placeholder_1")]
-        temp = []
-        add_choice_list(temp, list_name, labels)
-        if not temp:
-            temp = [{"list_name": list_name, "name": "placeholder_1", "label": "—"}]
-        st.session_state.choices_bank.extend(temp)
-
-
-def _build_bank_from_docx(paras: list[str], form_title: str, logo_media_name: str):
-    """
-    Construye:
-    - P1: Intro (note logo + texto intro)
-    - P2: Consentimiento + acepta (select_one yesno) + end si No
-    - P3..P10: según headings y numeración del documento.
-    """
-    qb = []
-    choices_rows = []
-
-    # base yesno (fijo)
-    add_choice_list(choices_rows, "yesno", ["Sí", "No"])
-
-    # CANTÓN/DISTRITO (placeholder por defecto; el catálogo real se mete en pestaña Catálogo)
-    ensure_choice_list_exists(choices_rows, "list_canton")
-    ensure_choice_list_exists(choices_rows, "list_distrito")
-
-    # map slug de Sí/No
-    v_si = slugify_name("Sí")
-    v_no = slugify_name("No")
-    rel_si = f"${{acepta_participar}}='{v_si}'"
-
-    def add_q(page: str, order: int, row: dict):
-        qb.append({"qid": _new_qid("q"), "page": page, "order": order, "row": row})
-
-    # ------------------- localizar consentimiento e intro del doc -------------------
-    # En tu DOCX viene el consentimiento y la intro (texto) también.
-    # Tomamos lo que existe en el docx sin “inventar”.
-
-    # Buscar bloque de consentimiento (hasta la línea donde está la pregunta acepta)
-    idx_accept = None
-    for i, t in enumerate(paras):
-        if "¿Acepta participar" in t:
-            idx_accept = i
-            break
-
-    if idx_accept is None:
-        raise ValueError("No se encontró la pregunta '¿Acepta participar...?' en el DOCX.")
-
-    consent_title = paras[0].strip()
-    consent_block = paras[1:idx_accept]  # textos previos al acepta
-
-    # Buscar texto de introducción (en tu doc aparece después del consentimiento)
-    intro_text = None
-    for t in paras:
-        if t.startswith("Con el fin de hacer más segura nuestra comunidad"):
-            intro_text = t.strip()
-            break
-    if not intro_text:
-        intro_text = "Con el fin de hacer más segura nuestra comunidad, deseamos concentrarnos en los problemas de seguridad más importantes."
-
-    # ------------------- P1 Introducción -------------------
-    add_q("p1", 10, {"type": "begin_group", "name": "p1_intro", "label": "Introducción", "appearance": "field-list"})
-    add_q("p1", 20, {"type": "note", "name": "p1_logo", "label": form_title, "media::image": logo_media_name, "bind::esri:fieldType": "null"})
-    add_q("p1", 30, {"type": "note", "name": "p1_texto", "label": intro_text, "bind::esri:fieldType": "null"})
-    add_q("p1", 40, {"type": "end_group", "name": "p1_end", "label": ""})
-
-    # ------------------- P2 Consentimiento -------------------
-    add_q("p2", 10, {"type": "begin_group", "name": "p2_consent", "label": "Consentimiento Informado", "appearance": "field-list"})
-    add_q("p2", 20, {"type": "note", "name": "p2_titulo", "label": consent_title, "bind::esri:fieldType": "null"})
-
-    o = 30
-    for k, t in enumerate(consent_block, start=1):
-        # bullets del doc vienen como texto normal; lo mostramos como note
-        add_q("p2", o, {"type": "note", "name": f"p2_txt_{k}", "label": t, "bind::esri:fieldType": "null"})
-        o += 10
-
-    add_q("p2", o, {"type": "select_one yesno", "name": "acepta_participar", "label": "¿Acepta participar en esta encuesta?", "required": "yes", "appearance": "minimal"})
-    o += 10
-    add_q("p2", o, {"type": "end_group", "name": "p2_end", "label": ""})
-    o += 10
-    add_q("p2", o, {"type": "end", "name": "fin_por_no", "label": "Gracias. Usted indicó que no acepta participar en esta encuesta.", "relevant": f"${{acepta_participar}}='{v_no}'"})
-
-    # ------------------- Helpers: crear preguntas desde doc (num + opciones) -------------------
-    def add_numbered_question(page: str, order: int, qtext: str, options: list[str], allow_multi: bool):
-        used_names = {x.get("row", {}).get("name", "") for x in qb}
-        num = _extract_question_number(qtext)
-        base_name = f"p{page[1:]}_{num}" if num else slugify_name(qtext)[:30]
-        name = asegurar_nombre_unico(slugify_name(base_name), used_names)
-
-        label = qtext.strip()
-
-        if options:
-            list_name = f"list_{name}"
-            _ensure_choices_list_with_seed_keep(list_name, options)
-            qtype = f"select_multiple {list_name}" if allow_multi else f"select_one {list_name}"
-            add_q(page, order, {"type": qtype, "name": name, "label": label, "required": "no", "appearance": "minimal", "relevant": rel_si})
-        else:
-            add_q(page, order, {"type": "text", "name": name, "label": label, "required": "no", "relevant": rel_si})
-
-    # ------------------- Mapeo a páginas por bloques del DOCX -------------------
-    # Índices de headings relevantes
-    def find_idx(exact: str):
-        for i, t in enumerate(paras):
-            if t.strip() == exact:
-                return i
-        return None
-
-    idx_demo = find_idx("I. DATOS DEMOGRÁFICOS")
-    idx_perc = find_idx("II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO")
-    idx_riesgos = find_idx("Riesgos sociales y situacionales en el distrito")
-    idx_delitos = find_idx("Delitos")
-    idx_vict = find_idx("Victimización")
-    idx_b = find_idx("Apartado B: Victimización por otros delitos")
-    idx_conf = find_idx("Confianza Policial")
-    idx_prop = find_idx("Propuestas ciudadanas para la mejora de la seguridad")
-
-    # Validación mínima (sin suposiciones)
-    required_idxs = [idx_demo, idx_perc, idx_riesgos, idx_delitos, idx_vict, idx_b, idx_conf, idx_prop]
-    if any(x is None for x in required_idxs):
-        missing = []
-        names = ["I. DATOS DEMOGRÁFICOS", "II. PERCEPCIÓN...", "Riesgos...", "Delitos", "Victimización", "Apartado B...", "Confianza Policial", "Propuestas..."]
-        for nm, ix in zip(names, required_idxs):
-            if ix is None:
-                missing.append(nm)
-        raise ValueError("Faltan headings en el DOCX (no puedo mapear páginas): " + ", ".join(missing))
-
-    # Bloques por página
-    blocks = {
-        "p3": (idx_demo, idx_perc),
-        "p4": (idx_perc, idx_riesgos),
-        "p5": (idx_riesgos, idx_delitos),
-        "p6": (idx_delitos, idx_vict),
-        "p7": (idx_vict, idx_b),
-        "p8": (idx_b, idx_conf),
-        "p9": (idx_conf, idx_prop),
-        "p10": (idx_prop, len(paras)),
-    }
-
-    # P3 fijo incluye cantón/distrito + edad por rangos + género + escolaridad (del doc)
-    add_q("p3", 10, {"type": "begin_group", "name": "p3_demograficos", "label": "I. DATOS DEMOGRÁFICOS", "appearance": "field-list", "relevant": rel_si})
-    add_q("p3", 20, {"type": "select_one list_canton", "name": "canton", "label": "1. Cantón:", "required": "yes", "appearance": "minimal", "relevant": rel_si})
-    add_q("p3", 30, {"type": "select_one list_distrito", "name": "distrito", "label": "2. Distrito:", "required": "yes", "choice_filter": "canton_key=${canton}", "appearance": "minimal", "relevant": f"({rel_si}) and string-length(${{canton}})>0"})
-
-    # Edad por rangos (del doc)
-    edad_opts = ["18 a 29 años", "30 a 44 años", "45 a 64 años", "65 años o más"]
-    _ensure_choices_list_with_seed_keep("edad_rango", edad_opts)
-    add_q("p3", 40, {"type": "select_one edad_rango", "name": "edad_rango", "label": "3. Edad (en años cumplidos): marque una categoría que incluya su edad.", "required": "yes", "appearance": "minimal", "relevant": rel_si})
-
-    # Género (del doc)
-    genero_opts = ["Femenino", "Masculino", "Persona no Binaria", "Prefiero no decir"]
-    _ensure_choices_list_with_seed_keep("genero", genero_opts)
-    add_q("p3", 50, {"type": "select_one genero", "name": "genero", "label": "4. ¿Con cuál de estas opciones se identifica?", "required": "yes", "appearance": "minimal", "relevant": rel_si})
-
-    # Escolaridad (del doc)
-    escolaridad_opts = ["Ninguna", "Primaria incompleta", "Primaria completa", "Secundaria incompleta", "Secundaria completa", "Técnico", "Universitaria incompleta", "Universitaria completa"]
-    _ensure_choices_list_with_seed_keep("escolaridad", escolaridad_opts)
-    add_q("p3", 60, {"type": "select_one escolaridad", "name": "escolaridad", "label": "5. Escolaridad:", "required": "yes", "appearance": "minimal", "relevant": rel_si})
-
-    add_q("p3", 90, {"type": "end_group", "name": "p3_end", "label": ""})
-
-    # Para el resto de páginas (p4–p10), construimos preguntas numeradas detectando:
-    # - línea que empieza con número => pregunta
-    # - siguientes líneas "( )" o "☐" => opciones
-    # - si hay "selección múltiple" en notas cercanas => select_multiple
-    for page_id, (a, b) in blocks.items():
-        if page_id == "p3":
-            continue
-
-        title = PAGES_LABELS.get(page_id, page_id)
-        add_q(page_id, 10, {"type": "begin_group", "name": f"{page_id}_grp", "label": title.split(" ", 1)[1] if " " in title else title, "appearance": "field-list", "relevant": rel_si})
-
-        order = 20
-        i = a
-        # saltar el heading
-        i += 1
-
-        while i < b:
-            t = paras[i].strip()
-
-            # ignora notas generales
-            if t.lower().startswith("nota"):
-                i += 1
-                continue
-
-            # detecta pregunta numerada
-            if re.match(r"^\s*\d+(\.\d+)?\.?\s*", t):
-                qtext = t
-                opts = []
-                allow_multi = False
-
-                j = i + 1
-                # recolectar opciones inmediatas
-                while j < b and _is_option_line(paras[j]):
-                    opt = _clean_option_text(paras[j])
-                    if opt:
-                        opts.append(opt)
-                    j += 1
-
-                # buscar pista de “selección múltiple” en las siguientes 5 líneas (doc trae nota)
-                lookahead = " ".join(paras[j:j+6]).lower()
-                if "selección múltiple" in lookahead or "seleccion múltiple" in lookahead:
-                    allow_multi = True
-
-                add_numbered_question(page_id, order, qtext, opts, allow_multi)
-
-                order += 10
-                i = j
-                continue
-
-            i += 1
-
-        add_q(page_id, 9990, {"type": "end_group", "name": f"{page_id}_end", "label": ""})
-
-    return qb, choices_rows
-
-
-def apply_seed_if_empty():
-    """
-    Carga el banco completo UNA SOLA VEZ.
-    Si ya hay bancos, no los pisa.
-    """
-    if st.session_state.seed_loaded:
-        return
-
-    # si ya hay preguntas (por backup restore), no reseed
-    if st.session_state.questions_bank:
-        st.session_state.seed_loaded = True
-        return
-
-    if not _require_docx_lib():
-        st.error("Falta la librería python-docx. Debe estar en requirements.txt como: python-docx")
-        st.stop()
-
-    try:
-        paras = _read_docx_paragraphs(DOCX_PATH)
-    except Exception as e:
-        st.error(f"No pude leer el DOCX automáticamente. Verifica que exista en el mismo folder que app.py.\n\nArchivo: {DOCX_PATH}\nError: {e}")
-        st.stop()
-
-    try:
-        qb, choices_seed = _build_bank_from_docx(paras, form_title=form_title, logo_media_name=logo_media_name)
-    except Exception as e:
-        st.error(f"El DOCX se leyó, pero no pude construir el banco (estructura inesperada).\nError: {e}")
-        st.stop()
-
-    # cargar banks
-    st.session_state.questions_bank = qb
-    st.session_state.choices_bank = choices_seed
-
-    # glosario base mínimo (se amplía en partes posteriores)
-    if not st.session_state.glossary_bank:
-        st.session_state.glossary_bank = {}
-
-    # selección inicial
-    if st.session_state.questions_bank and not st.session_state.selected_qid:
-        st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"]
-
-    st.session_state.seed_loaded = True
-
-
-# Ejecutar seed automático
-apply_seed_if_empty()
-
-# ==========================================================================================
-# FIN PARTE 2/10
-# ==========================================================================================
-# ==========================================================================================
-# ============================== CÓDIGO COMPLETO (PARTE 3/10) ==============================
-# ========================= Navegación de Secciones + helpers UI ===========================
-# ==========================================================================================
-
-def _get_page_label(page_id: str) -> str:
-    return PAGES_LABELS.get(page_id, page_id)
-
-def _get_questions_for_page(page_id: str) -> list[dict]:
-    items = [q for q in st.session_state.questions_bank if q.get("page") == page_id]
-    return sorted(items, key=lambda x: int(x.get("order", 0)))
-
-def _set_selected_qid(qid: str):
-    st.session_state.selected_qid = qid
-
-# ------------------- Barra de Secciones (como tu UI) -------------------
-st.markdown("### Sección")
+st.markdown("## Sección")
 section = st.radio(
-    "",
-    ["Preguntas", "Choices", "Glosario", "Catálogo", "Exportar"],
+    "Sección",
+    options=["Preguntas", "Choices", "Glosario", "Catálogo", "Exportar"],
     horizontal=True,
-    key="section_radio",
-    label_visibility="collapsed"
+    index=["Preguntas","Choices","Glosario","Catálogo","Exportar"].index(st.session_state.active_section) if st.session_state.active_section in ["Preguntas","Choices","Glosario","Catálogo","Exportar"] else 0,
+    label_visibility="collapsed",
+    key="section_radio"
 )
+st.session_state.active_section = section
 
 st.markdown("---")
 
-# ==========================================================================================
-# FIN PARTE 3/10
-# ==========================================================================================
-# ==========================================================================================
-# ============================== CÓDIGO COMPLETO (PARTE 4/10) ==============================
-# =============================== Sección: Preguntas (survey) ==============================
-# ==========================================================================================
-
-def _normalize_int(v, default=0):
-    try:
-        return int(v)
-    except Exception:
-        return default
-
-def _delete_question(qid: str):
-    st.session_state.questions_bank = [q for q in st.session_state.questions_bank if q.get("qid") != qid]
-    if st.session_state.selected_qid == qid:
-        st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"] if st.session_state.questions_bank else None
-
-def _move_question(qid: str, direction: int, page_id: str):
-    items = _get_questions_for_page(page_id)
-    idx = next((i for i, it in enumerate(items) if it["qid"] == qid), None)
-    if idx is None:
-        return
-    new_idx = idx + direction
-    if new_idx < 0 or new_idx >= len(items):
-        return
-    # swap "order"
-    a = items[idx]
-    b = items[new_idx]
-    ao = _normalize_int(a.get("order", 0))
-    bo = _normalize_int(b.get("order", 0))
-    a["order"], b["order"] = bo, ao
-
-def _update_question_row(qid: str, new_row: dict):
-    for q in st.session_state.questions_bank:
-        if q.get("qid") == qid:
-            q["row"] = new_row
-            return
-
-def _add_new_question(page_id: str):
-    # Orden final: max + 10
-    items = _get_questions_for_page(page_id)
-    max_order = max([_normalize_int(i.get("order", 0)) for i in items], default=0)
-    order = max_order + 10
-    qid = _new_qid("q")
-    row = {
-        "type": "text",
-        "name": asegurar_nombre_unico(f"{page_id}_nuevo", {x.get("row", {}).get("name", "") for x in st.session_state.questions_bank}),
-        "label": "Nueva pregunta",
-        "required": "no"
-    }
-    st.session_state.questions_bank.append({"qid": qid, "page": page_id, "order": order, "row": row})
-    st.session_state.selected_qid = qid
-
+# ------------------------------------------------------------------------------------------
+# Render según sección (en esta parte solo Preguntas)
+# ------------------------------------------------------------------------------------------
 if section == "Preguntas":
-    st.markdown("## 🧾 Editor de Preguntas (survey) — vista legible + editar")
-
-    colA, colB = st.columns([1.1, 1.9], vertical_alignment="top")
-
-    with colA:
-        page_id = st.selectbox(
-            "Página",
-            PAGES,
-            index=PAGES.index(st.session_state.active_page) if st.session_state.active_page in PAGES else 0,
-            format_func=_get_page_label,
-            key="page_selectbox"
-        )
-        st.session_state.active_page = page_id
-
-        search_txt = st.text_input("Buscar en esta página", value="", key="q_search")
-
-        page_items = _get_questions_for_page(page_id)
-        if search_txt.strip():
-            s = search_txt.strip().lower()
-            page_items = [
-                it for it in page_items
-                if s in str(it.get("row", {}).get("label", "")).lower()
-                or s in str(it.get("row", {}).get("name", "")).lower()
-                or s in str(it.get("row", {}).get("type", "")).lower()
-            ]
-
-        if not page_items:
-            st.info("No hay preguntas en esta página (aún).")
-
-        st.markdown("### Lista (por orden)")
-        for it in page_items:
-            row = it.get("row", {})
-            label = row.get("label", "")
-            t = row.get("type", "")
-            nm = row.get("name", "")
-            is_sel = (st.session_state.selected_qid == it["qid"])
-
-            c1, c2, c3, c4 = st.columns([0.1, 0.7, 0.1, 0.1], vertical_alignment="center")
-            with c1:
-                if st.button("▶" if not is_sel else "✅", key=f"sel_{it['qid']}"):
-                    _set_selected_qid(it["qid"])
-            with c2:
-                st.caption(f"**{label}**\n\n`{t}` · `{nm}` · orden {it.get('order')}")
-            with c3:
-                if st.button("⬆", key=f"up_{it['qid']}"):
-                    _move_question(it["qid"], -1, page_id)
-            with c4:
-                if st.button("⬇", key=f"dn_{it['qid']}"):
-                    _move_question(it["qid"], +1, page_id)
-
-        st.markdown("---")
-        if st.button("➕ Agregar pregunta", use_container_width=True):
-            _add_new_question(page_id)
-
-    with colB:
-        st.markdown("### ✏️ Editor de la pregunta seleccionada")
-
-        qid = st.session_state.selected_qid
-        selected = next((q for q in st.session_state.questions_bank if q.get("qid") == qid), None)
-
-        if not selected:
-            st.warning("Seleccione una pregunta de la lista.")
-        else:
-            row = dict(selected.get("row", {}))  # copia editable
-
-            # Campos principales XLSForm
-            row["type"] = st.text_input("type", value=row.get("type", ""), key=f"type_{qid}")
-            row["name"] = st.text_input("name", value=row.get("name", ""), key=f"name_{qid}")
-            row["label"] = st.text_area("label", value=row.get("label", ""), height=90, key=f"label_{qid}")
-
-            colx1, colx2, colx3 = st.columns(3)
-            with colx1:
-                row["required"] = st.selectbox("required", ["no", "yes"], index=1 if row.get("required") == "yes" else 0, key=f"req_{qid}")
-            with colx2:
-                row["appearance"] = st.text_input("appearance", value=row.get("appearance", ""), key=f"app_{qid}")
-            with colx3:
-                row["relevant"] = st.text_input("relevant", value=row.get("relevant", ""), key=f"rel_{qid}")
-
-            row["constraint"] = st.text_input("constraint", value=row.get("constraint", ""), key=f"con_{qid}")
-            row["constraint_message"] = st.text_input("constraint_message", value=row.get("constraint_message", ""), key=f"conm_{qid}")
-            row["calculation"] = st.text_input("calculation", value=row.get("calculation", ""), key=f"calc_{qid}")
-            row["choice_filter"] = st.text_input("choice_filter", value=row.get("choice_filter", ""), key=f"cf_{qid}")
-
-            # media opcional
-            row["media::image"] = st.text_input("media::image", value=row.get("media::image", ""), key=f"img_{qid}")
-
-            csave, cdel = st.columns([0.7, 0.3])
-            with csave:
-                if st.button("💾 Guardar cambios", use_container_width=True, key=f"save_{qid}"):
-                    # asegurar name único si lo cambiaron
-                    used = {x.get("row", {}).get("name", "") for x in st.session_state.questions_bank if x.get("qid") != qid}
-                    base = slugify_name(row.get("name", "campo"))
-                    row["name"] = asegurar_nombre_unico(base, used)
-                    _update_question_row(qid, row)
-                    st.success("Guardado.")
-            with cdel:
-                if st.button("🗑️ Eliminar", use_container_width=True, key=f"del_{qid}"):
-                    _delete_question(qid)
-                    st.warning("Eliminado.")
+    render_preguntas()
+else:
+    st.info("Esta sección se completa en otras partes (Choices / Glosario / Catálogo / Exportar).")
 
 # ==========================================================================================
-# FIN PARTE 4/10
-# ==========================================================================================
-# ==========================================================================================
-# ============================== CÓDIGO COMPLETO (PARTE 5/10) ==============================
-# =============================== Sección: Choices (choices) ===============================
-# ==========================================================================================
-
-def _cb_all_lists() -> list[str]:
-    return sorted({
-        str(r.get("list_name", "")).strip()
-        for r in st.session_state.choices_bank
-        if str(r.get("list_name", "")).strip()
-    })
-
-def _cb_rows_for_list(list_name: str) -> list[dict]:
-    ln = str(list_name or "").strip()
-    return [r for r in st.session_state.choices_bank if str(r.get("list_name", "")).strip() == ln]
-
-def _cb_upsert(row: dict):
-    ln = str(row.get("list_name", "")).strip()
-    nm = str(row.get("name", "")).strip()
-    if not ln or not nm:
-        return
-
-    for i, r in enumerate(st.session_state.choices_bank):
-        if str(r.get("list_name", "")).strip() == ln and str(r.get("name", "")).strip() == nm:
-            st.session_state.choices_bank[i] = dict(row)
-            return
-    st.session_state.choices_bank.append(dict(row))
-
-def _cb_delete(list_name: str, name: str):
-    ln = str(list_name or "").strip()
-    nm = str(name or "").strip()
-    st.session_state.choices_bank = [
-        r for r in st.session_state.choices_bank
-        if not (str(r.get("list_name", "")).strip() == ln and str(r.get("name", "")).strip() == nm)
-    ]
-
-def _cb_ensure_list_placeholder(list_name: str):
-    ln = str(list_name or "").strip()
-    if not ln:
-        return
-    rows = _cb_rows_for_list(ln)
-    if not rows:
-        _cb_upsert({"list_name": ln, "name": "placeholder_1", "label": "—"})
-
-def _cb_rebuild_names(list_name: str):
-    ln = str(list_name or "").strip()
-    if not ln:
-        return
-    rows = _cb_rows_for_list(ln)
-    used = set()
-    for r in rows:
-        # No tocar placeholder
-        if str(r.get("name", "")).strip() == "placeholder_1" and str(r.get("label", "")).strip() == "—":
-            continue
-        lab = str(r.get("label", "")).strip()
-        base = slugify_name(lab) if lab else "opcion"
-        nm = asegurar_nombre_unico(base, used)
-        used.add(nm)
-        r["name"] = nm
-
-def _cb_rename_list(old: str, new: str):
-    o = str(old or "").strip()
-    n = str(new or "").strip()
-    if not o or not n or o == n:
-        return
-    for i, r in enumerate(st.session_state.choices_bank):
-        if str(r.get("list_name", "")).strip() == o:
-            st.session_state.choices_bank[i]["list_name"] = n
-
-def _cb_remove_duplicates():
-    """
-    Quita duplicados por llave (list_name, name) conservando la primera ocurrencia.
-    """
-    seen = set()
-    new_rows = []
-    for r in st.session_state.choices_bank:
-        ln = str(r.get("list_name", "")).strip()
-        nm = str(r.get("name", "")).strip()
-        if not ln or not nm:
-            continue
-        key = (ln, nm)
-        if key in seen:
-            continue
-        seen.add(key)
-        new_rows.append(r)
-    st.session_state.choices_bank = new_rows
-
-if section == "Choices":
-    st.markdown("## 🧩 Editor de Choices (opciones) — fácil para cualquier persona")
-
-    left, right = st.columns([1.05, 1.95], vertical_alignment="top")
-
-    # ------------------ LEFT: Listas ------------------
-    with left:
-        st.markdown("### 📚 Listas")
-
-        new_list = st.text_input("Crear nueva lista (list_name)", value="", key="cb_new_list_name")
-        if st.button("➕ Crear lista", type="primary", use_container_width=True, key="cb_btn_create_list"):
-            if not new_list.strip():
-                st.error("Indica un nombre de lista.")
-            else:
-                _cb_ensure_list_placeholder(new_list.strip())
-                st.success("Lista creada.")
-                st.rerun()
-
-        lists = _cb_all_lists()
-        if not lists:
-            # mínimo: asegurar yesno/list_canton/list_distrito
-            _cb_ensure_list_placeholder("yesno")
-            _cb_ensure_list_placeholder("list_canton")
-            _cb_ensure_list_placeholder("list_distrito")
-            lists = _cb_all_lists()
-
-        default_sel = "yesno" if "yesno" in lists else lists[0]
-        selected_list = st.selectbox("Selecciona lista", options=lists, index=lists.index(default_sel), key="cb_selected_list")
-
-        st.markdown("### ⚙️ Acciones de lista")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("🧼 Normalizar names", use_container_width=True, key="cb_btn_norm"):
-                _cb_rebuild_names(selected_list)
-                st.success("Names normalizados.")
-                st.rerun()
-
-        with c2:
-            rename_to = st.text_input("Renombrar list_name a", value="", key="cb_rename_to")
-            if st.button("✏️ Renombrar", use_container_width=True, key="cb_btn_rename"):
-                if not rename_to.strip():
-                    st.error("Indica el nuevo nombre.")
-                else:
-                    _cb_rename_list(selected_list, rename_to.strip())
-                    st.success("Lista renombrada.")
-                    st.rerun()
-
-        if st.button("🧹 Quitar duplicados (list_name + name)", use_container_width=True, key="cb_btn_dedup"):
-            _cb_remove_duplicates()
-            st.success("Duplicados eliminados.")
-            st.rerun()
-
-        st.markdown("### ➕ Agregar opción")
-        opt_label = st.text_input("label (visible)", value="", key="cb_add_label")
-        opt_name = st.text_input("name (interno) (opcional)", value="", key="cb_add_name")
-
-        opt_ck = ""
-        if selected_list == "list_distrito":
-            opt_ck = st.text_input("canton_key (solo list_distrito)", value="", key="cb_add_ck")
-
-        if st.button("Agregar opción", type="primary", use_container_width=True, key="cb_btn_add_opt"):
-            if not opt_label.strip():
-                st.error("Indica el texto visible (label).")
-            else:
-                existing = _cb_rows_for_list(selected_list)
-                used = {str(r.get("name", "")).strip() for r in existing if str(r.get("name", "")).strip()}
-                nm = opt_name.strip() if opt_name.strip() else slugify_name(opt_label.strip())
-                nm = asegurar_nombre_unico(nm, used)
-
-                row = {"list_name": selected_list, "name": nm, "label": opt_label.strip()}
-                if selected_list == "list_distrito":
-                    row["canton_key"] = opt_ck.strip()
-
-                _cb_upsert(row)
-                st.success("Opción agregada.")
-                st.rerun()
-
-    # ------------------ RIGHT: Opciones ------------------
-    with right:
-        st.markdown(f"### 🧾 Opciones en: `{selected_list}`")
-        rows = _cb_rows_for_list(selected_list)
-
-        if not rows:
-            st.info("Esta lista no tiene opciones.")
-        else:
-            st.caption("Edita texto y campos. Para borrar, usa el botón 🗑.")
-
-            for i, r in enumerate(rows):
-                ln = str(r.get("list_name", "")).strip()
-                nm = str(r.get("name", "")).strip()
-                lb = str(r.get("label", "")).strip()
-
-                base_key = f"cb_{ln}_{nm}_{i}"
-
-                with st.container(border=True):
-                    # 2 campos visibles como tu screenshot
-                    top = st.columns([2.2, 2.2, 0.9, 0.9], vertical_alignment="center")
-                    with top[0]:
-                        new_label = st.text_input("label (visible)", value=lb, key=f"{base_key}_lab")
-                    with top[1]:
-                        new_name = st.text_input("name (interno)", value=nm, key=f"{base_key}_nm")
-                    with top[2]:
-                        if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
-                            # Si cambia name: borrar la fila vieja
-                            if new_name.strip() and new_name.strip() != nm:
-                                _cb_delete(ln, nm)
-
-                            row_new = dict(r)
-                            row_new["label"] = new_label.strip()
-                            row_new["name"] = (new_name.strip() if new_name.strip() else nm)
-
-                            if selected_list == "list_distrito":
-                                ck_val = st.session_state.get(f"{base_key}_ck", str(r.get("canton_key", "")).strip())
-                                row_new["canton_key"] = str(ck_val).strip()
-
-                            _cb_upsert(row_new)
-                            st.success("Guardado.")
-                            st.rerun()
-
-                    with top[3]:
-                        if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
-                            _cb_delete(ln, nm)
-                            st.success("Eliminado.")
-                            st.rerun()
-
-                    if selected_list == "list_distrito":
-                        ck = str(r.get("canton_key", "")).strip()
-                        st.text_input("canton_key (para choice_filter)", value=ck, key=f"{base_key}_ck")
-
-            # Nunca dejar listas críticas sin placeholder
-            if selected_list in ("yesno", "list_canton", "list_distrito"):
-                _cb_ensure_list_placeholder(selected_list)
-
-# ==========================================================================================
-# FIN PARTE 5/10
-# ==========================================================================================
-# -*- coding: utf-8 -*-
-# ==========================================================================================
-# ============================== CÓDIGO COMPLETO (PARTE 6/10) ==============================
-# ============ Editor Catálogo Cantón→Distrito (integrado a choices_bank) ==================
-# ==========================================================================================
-#
-# ESTA PARTE 6/10 HACE:
-# 1) Editor amigable para cargar Cantón→Distrito "por lotes"
-#    e integrarlo DIRECTAMENTE en choices_bank, para que:
-#    ✅ Survey123 NO falle (listas existen y tienen filas reales)
-#    ✅ choice_filter "canton_key=${canton}" funcione
-#
-# 2) Permite:
-#    - Agregar cantón + múltiples distritos
-#    - Ver y editar tabla de cantones (list_canton)
-#    - Ver y editar tabla de distritos (list_distrito) con canton_key
-#    - Borrar cantones (y distritos asociados) / borrar distritos individuales
-#
-# IMPORTANTE:
-# - Esta parte NO depende de "pages" ni de glosario. Solo usa:
-#   - st.session_state.choices_bank
-#   - helpers de choices ya definidos en PARTE 4:
-#       cb_all_lists(), cb_rows_for_list(), cb_delete_row(), cb_upsert_row(), cb_ensure_list_exists()
-#   - slugify_name() y asegurar_nombre_unico() (PARTE 1)
-# - La UI se muestra SOLO cuando la "Sección" activa es "Catálogo"
-#
-# ==========================================================================================
-
-# ==========================================================================================
-# Helpers Catálogo (sobre choices_bank)
-# ==========================================================================================
-
-def cat_get_cantones() -> list[dict]:
-    """
-    Retorna cantones reales (sin placeholder) desde choices_bank para list_canton.
-    Formato: [{"name": "<slug>", "label": "Cantón"}, ...]
-    """
-    out = []
-    for r in st.session_state.get("choices_bank", []) or []:
-        if str(r.get("list_name", "")).strip() == "list_canton":
-            nm = str(r.get("name", "")).strip()
-            lb = str(r.get("label", "")).strip()
-            if nm and nm != "placeholder_1":
-                out.append({"name": nm, "label": lb})
-    return sorted(out, key=lambda x: (x["label"] or "").lower())
-
-
-def cat_get_distritos() -> list[dict]:
-    """
-    Retorna distritos reales (sin placeholder) desde choices_bank para list_distrito.
-    Formato: [{"name": "<slug>", "label": "Distrito", "canton_key": "<slug_canton>"}, ...]
-    """
-    out = []
-    for r in st.session_state.get("choices_bank", []) or []:
-        if str(r.get("list_name", "")).strip() == "list_distrito":
-            nm = str(r.get("name", "")).strip()
-            lb = str(r.get("label", "")).strip()
-            ck = str(r.get("canton_key", "")).strip()
-            if nm and nm != "placeholder_1":
-                out.append({"name": nm, "label": lb, "canton_key": ck})
-    return sorted(out, key=lambda x: ((x["canton_key"] or "").lower(), (x["label"] or "").lower()))
-
-
-def cat_add_lote(canton_label: str, distritos_labels: list[str]) -> tuple[bool, str]:
-    """
-    Agrega un lote:
-      Cantón (label) => genera slug => name
-      Distritos (labels) => slugs => name únicos en list_distrito
-      Cada distrito guarda canton_key=<slug del cantón>
-
-    Retorna: (ok, mensaje)
-    """
-    canton_label = (canton_label or "").strip()
-    distritos_labels = [d.strip() for d in (distritos_labels or []) if d and d.strip()]
-
-    if not canton_label:
-        return False, "Debes indicar el Cantón."
-    if not distritos_labels:
-        return False, "Debes indicar al menos un Distrito (uno por línea)."
-
-    # Asegurar existencia mínima de listas
-    cb_ensure_list_exists("list_canton")
-    cb_ensure_list_exists("list_distrito")
-
-    slug_c = slugify_name(canton_label)
-
-    # Upsert cantón (si ya existe, solo actualiza label)
-    cb_upsert_row({"list_name": "list_canton", "name": slug_c, "label": canton_label})
-
-    # Distritos: name únicos dentro de list_distrito
-    existing_d = cb_rows_for_list("list_distrito")
-    used_names = {str(r.get("name", "")).strip() for r in existing_d if str(r.get("name", "")).strip()}
-
-    added = 0
-    for dlab in distritos_labels:
-        base = slugify_name(dlab)
-        nm = asegurar_nombre_unico(base, used_names)
-        used_names.add(nm)
-        cb_upsert_row({"list_name": "list_distrito", "name": nm, "label": dlab, "canton_key": slug_c})
-        added += 1
-
-    return True, f"Lote agregado/actualizado: {canton_label} → {added} distrito(s)."
-
-
-def cat_delete_canton(slug_canton: str, delete_children: bool = True):
-    """
-    Borra un cantón por su slug (name). Opcionalmente borra distritos asociados (canton_key).
-    """
-    slug_canton = (slug_canton or "").strip()
-    if not slug_canton:
-        return
-
-    # Borra cantón
-    cb_delete_row("list_canton", slug_canton)
-
-    # Borra distritos asociados
-    if delete_children:
-        st.session_state.choices_bank = [
-            r for r in (st.session_state.get("choices_bank", []) or [])
-            if not (
-                str(r.get("list_name", "")).strip() == "list_distrito"
-                and str(r.get("canton_key", "")).strip() == slug_canton
-            )
-        ]
-
-
-def cat_delete_distrito(name_distrito: str):
-    """
-    Borra un distrito por su name (slug) en list_distrito.
-    """
-    name_distrito = (name_distrito or "").strip()
-    if not name_distrito:
-        return
-    cb_delete_row("list_distrito", name_distrito)
-
-
-def cat_clear_all_keep_placeholders():
-    """
-    Limpia TODOS los cantones/distritos reales, mantiene placeholders.
-    """
-    st.session_state.choices_bank = [
-        r for r in (st.session_state.get("choices_bank", []) or [])
-        if not (
-            (str(r.get("list_name", "")).strip() == "list_canton" and str(r.get("name", "")).strip() != "placeholder_1")
-            or
-            (str(r.get("list_name", "")).strip() == "list_distrito" and str(r.get("name", "")).strip() != "placeholder_1")
-        )
-    ]
-    cb_ensure_list_exists("list_canton")
-    cb_ensure_list_exists("list_distrito")
-
-
-# ==========================================================================================
-# UI Catálogo (solo cuando Sección activa == "Catálogo")
-# ==========================================================================================
-if "active_tab" in globals() and str(active_tab) == "Catálogo":
-    st.subheader("📚 Catálogo Cantón → Distrito (cascada) — fácil y sin Excel")
-
-    # Asegurar listas mínimas
-    cb_ensure_list_exists("list_canton")
-    cb_ensure_list_exists("list_distrito")
-
-    # ---------------------------
-    # Agregar por lotes
-    # ---------------------------
-    st.markdown("### ➕ Agregar por lote (Cantón y Distritos)")
-    with st.container(border=True):
-        col_c1, col_c2 = st.columns([2, 3])
-
-        canton_txt = col_c1.text_input("Cantón (una vez)", value="", key="cat_canton_txt")
-        distritos_txt = col_c2.text_area(
-            "Distritos del cantón (uno por línea)",
-            value="",
-            height=140,
-            key="cat_distritos_txt"
-        )
-
-        b1, b2 = st.columns([1, 1])
-        with b1:
-            if st.button("Agregar lote", type="primary", use_container_width=True, key="cat_add_lote_btn"):
-                d_list = [d.strip() for d in (distritos_txt or "").splitlines() if d and d.strip()]
-                ok, msg = cat_add_lote(canton_txt, d_list)
-                if ok:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-
-        with b2:
-            if st.button("Limpiar catálogo (cantones/distritos)", use_container_width=True, key="cat_clear_btn"):
-                cat_clear_all_keep_placeholders()
-                st.success("Catálogo limpiado (se mantuvieron placeholders).")
-                st.rerun()
-
-    st.markdown("---")
-
-    # ---------------------------
-    # Tablas de edición
-    # ---------------------------
-    cantones = cat_get_cantones()
-    distritos = cat_get_distritos()
-
-    t1, t2 = st.columns(2)
-
-    # ===== Cantones =====
-    with t1:
-        st.markdown("### 🏛 Cantones (list_canton)")
-        if not cantones:
-            st.info("No hay cantones cargados todavía.")
-        else:
-            for i, c in enumerate(cantones):
-                slug_c = c["name"]
-                lbl_c = c["label"]
-                base_key = f"cat_c_{slug_c}_{i}"
-
-                with st.container(border=True):
-                    top = st.columns([2.2, 2.2, 1, 1])
-                    with top[0]:
-                        new_label = st.text_input("label", value=lbl_c, key=f"{base_key}_lbl")
-                    with top[1]:
-                        new_slug = st.text_input("name (slug)", value=slug_c, key=f"{base_key}_slug")
-
-                    with top[2]:
-                        if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
-                            old = slug_c
-                            new = new_slug.strip() if new_slug.strip() else old
-                            new_lab = new_label.strip()
-
-                            # Si cambia slug, actualizar canton_key en distritos
-                            if new != old:
-                                # borrar viejo
-                                cb_delete_row("list_canton", old)
-
-                                # actualizar distritos asociados
-                                for j, r in enumerate(st.session_state.get("choices_bank", []) or []):
-                                    if (
-                                        str(r.get("list_name", "")).strip() == "list_distrito"
-                                        and str(r.get("canton_key", "")).strip() == old
-                                    ):
-                                        st.session_state.choices_bank[j]["canton_key"] = new
-
-                            cb_upsert_row({"list_name": "list_canton", "name": new, "label": new_lab})
-                            cb_ensure_list_exists("list_canton")
-                            cb_ensure_list_exists("list_distrito")
-                            st.success("Cantón guardado.")
-                            st.rerun()
-
-                    with top[3]:
-                        if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
-                            cat_delete_canton(slug_canton=slug_c, delete_children=True)
-                            cb_ensure_list_exists("list_canton")
-                            cb_ensure_list_exists("list_distrito")
-                            st.success("Cantón y distritos asociados eliminados.")
-                            st.rerun()
-
-    # ===== Distritos =====
-    with t2:
-        st.markdown("### 🧭 Distritos (list_distrito + canton_key)")
-        if not distritos:
-            st.info("No hay distritos cargados todavía.")
-        else:
-            for i, d in enumerate(distritos):
-                nm = d["name"]
-                lb = d["label"]
-                ck = d["canton_key"]
-                base_key = f"cat_d_{ck}_{nm}_{i}"
-
-                with st.container(border=True):
-                    top = st.columns([2.2, 2.2, 2.2, 1, 1])
-                    with top[0]:
-                        new_label = st.text_input("label", value=lb, key=f"{base_key}_lbl")
-                    with top[1]:
-                        new_name = st.text_input("name", value=nm, key=f"{base_key}_nm")
-                    with top[2]:
-                        new_ck = st.text_input("canton_key", value=ck, key=f"{base_key}_ck")
-
-                    with top[3]:
-                        if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
-                            old_nm = nm
-                            nn = new_name.strip() if new_name.strip() else old_nm
-
-                            # si cambia name, borrar viejo
-                            if nn != old_nm:
-                                cb_delete_row("list_distrito", old_nm)
-
-                            cb_upsert_row({
-                                "list_name": "list_distrito",
-                                "name": nn,
-                                "label": new_label.strip(),
-                                "canton_key": new_ck.strip()
-                            })
-                            cb_ensure_list_exists("list_canton")
-                            cb_ensure_list_exists("list_distrito")
-                            st.success("Distrito guardado.")
-                            st.rerun()
-
-                    with top[4]:
-                        if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
-                            cat_delete_distrito(nm)
-                            cb_ensure_list_exists("list_canton")
-                            cb_ensure_list_exists("list_distrito")
-                            st.success("Distrito eliminado.")
-                            st.rerun()
-
-    # Garantía final: nunca dejar listas críticas vacías (placeholders)
-    cb_ensure_list_exists("list_canton")
-    cb_ensure_list_exists("list_distrito")
-
-# ==========================================================================================
-# FIN PARTE 6/10
+# FIN PARTE 2/10
 # ==========================================================================================
 
 
