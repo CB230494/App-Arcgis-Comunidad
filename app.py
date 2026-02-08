@@ -773,6 +773,230 @@ if section == "Preguntas":
 # ==========================================================================================
 # FIN PARTE 4/10
 # ==========================================================================================
+# ==========================================================================================
+# ============================== CÓDIGO COMPLETO (PARTE 5/10) ==============================
+# =============================== Sección: Choices (choices) ===============================
+# ==========================================================================================
+
+def _cb_all_lists() -> list[str]:
+    return sorted({
+        str(r.get("list_name", "")).strip()
+        for r in st.session_state.choices_bank
+        if str(r.get("list_name", "")).strip()
+    })
+
+def _cb_rows_for_list(list_name: str) -> list[dict]:
+    ln = str(list_name or "").strip()
+    return [r for r in st.session_state.choices_bank if str(r.get("list_name", "")).strip() == ln]
+
+def _cb_upsert(row: dict):
+    ln = str(row.get("list_name", "")).strip()
+    nm = str(row.get("name", "")).strip()
+    if not ln or not nm:
+        return
+
+    for i, r in enumerate(st.session_state.choices_bank):
+        if str(r.get("list_name", "")).strip() == ln and str(r.get("name", "")).strip() == nm:
+            st.session_state.choices_bank[i] = dict(row)
+            return
+    st.session_state.choices_bank.append(dict(row))
+
+def _cb_delete(list_name: str, name: str):
+    ln = str(list_name or "").strip()
+    nm = str(name or "").strip()
+    st.session_state.choices_bank = [
+        r for r in st.session_state.choices_bank
+        if not (str(r.get("list_name", "")).strip() == ln and str(r.get("name", "")).strip() == nm)
+    ]
+
+def _cb_ensure_list_placeholder(list_name: str):
+    ln = str(list_name or "").strip()
+    if not ln:
+        return
+    rows = _cb_rows_for_list(ln)
+    if not rows:
+        _cb_upsert({"list_name": ln, "name": "placeholder_1", "label": "—"})
+
+def _cb_rebuild_names(list_name: str):
+    ln = str(list_name or "").strip()
+    if not ln:
+        return
+    rows = _cb_rows_for_list(ln)
+    used = set()
+    for r in rows:
+        # No tocar placeholder
+        if str(r.get("name", "")).strip() == "placeholder_1" and str(r.get("label", "")).strip() == "—":
+            continue
+        lab = str(r.get("label", "")).strip()
+        base = slugify_name(lab) if lab else "opcion"
+        nm = asegurar_nombre_unico(base, used)
+        used.add(nm)
+        r["name"] = nm
+
+def _cb_rename_list(old: str, new: str):
+    o = str(old or "").strip()
+    n = str(new or "").strip()
+    if not o or not n or o == n:
+        return
+    for i, r in enumerate(st.session_state.choices_bank):
+        if str(r.get("list_name", "")).strip() == o:
+            st.session_state.choices_bank[i]["list_name"] = n
+
+def _cb_remove_duplicates():
+    """
+    Quita duplicados por llave (list_name, name) conservando la primera ocurrencia.
+    """
+    seen = set()
+    new_rows = []
+    for r in st.session_state.choices_bank:
+        ln = str(r.get("list_name", "")).strip()
+        nm = str(r.get("name", "")).strip()
+        if not ln or not nm:
+            continue
+        key = (ln, nm)
+        if key in seen:
+            continue
+        seen.add(key)
+        new_rows.append(r)
+    st.session_state.choices_bank = new_rows
+
+if section == "Choices":
+    st.markdown("## 🧩 Editor de Choices (opciones) — fácil para cualquier persona")
+
+    left, right = st.columns([1.05, 1.95], vertical_alignment="top")
+
+    # ------------------ LEFT: Listas ------------------
+    with left:
+        st.markdown("### 📚 Listas")
+
+        new_list = st.text_input("Crear nueva lista (list_name)", value="", key="cb_new_list_name")
+        if st.button("➕ Crear lista", type="primary", use_container_width=True, key="cb_btn_create_list"):
+            if not new_list.strip():
+                st.error("Indica un nombre de lista.")
+            else:
+                _cb_ensure_list_placeholder(new_list.strip())
+                st.success("Lista creada.")
+                st.rerun()
+
+        lists = _cb_all_lists()
+        if not lists:
+            # mínimo: asegurar yesno/list_canton/list_distrito
+            _cb_ensure_list_placeholder("yesno")
+            _cb_ensure_list_placeholder("list_canton")
+            _cb_ensure_list_placeholder("list_distrito")
+            lists = _cb_all_lists()
+
+        default_sel = "yesno" if "yesno" in lists else lists[0]
+        selected_list = st.selectbox("Selecciona lista", options=lists, index=lists.index(default_sel), key="cb_selected_list")
+
+        st.markdown("### ⚙️ Acciones de lista")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🧼 Normalizar names", use_container_width=True, key="cb_btn_norm"):
+                _cb_rebuild_names(selected_list)
+                st.success("Names normalizados.")
+                st.rerun()
+
+        with c2:
+            rename_to = st.text_input("Renombrar list_name a", value="", key="cb_rename_to")
+            if st.button("✏️ Renombrar", use_container_width=True, key="cb_btn_rename"):
+                if not rename_to.strip():
+                    st.error("Indica el nuevo nombre.")
+                else:
+                    _cb_rename_list(selected_list, rename_to.strip())
+                    st.success("Lista renombrada.")
+                    st.rerun()
+
+        if st.button("🧹 Quitar duplicados (list_name + name)", use_container_width=True, key="cb_btn_dedup"):
+            _cb_remove_duplicates()
+            st.success("Duplicados eliminados.")
+            st.rerun()
+
+        st.markdown("### ➕ Agregar opción")
+        opt_label = st.text_input("label (visible)", value="", key="cb_add_label")
+        opt_name = st.text_input("name (interno) (opcional)", value="", key="cb_add_name")
+
+        opt_ck = ""
+        if selected_list == "list_distrito":
+            opt_ck = st.text_input("canton_key (solo list_distrito)", value="", key="cb_add_ck")
+
+        if st.button("Agregar opción", type="primary", use_container_width=True, key="cb_btn_add_opt"):
+            if not opt_label.strip():
+                st.error("Indica el texto visible (label).")
+            else:
+                existing = _cb_rows_for_list(selected_list)
+                used = {str(r.get("name", "")).strip() for r in existing if str(r.get("name", "")).strip()}
+                nm = opt_name.strip() if opt_name.strip() else slugify_name(opt_label.strip())
+                nm = asegurar_nombre_unico(nm, used)
+
+                row = {"list_name": selected_list, "name": nm, "label": opt_label.strip()}
+                if selected_list == "list_distrito":
+                    row["canton_key"] = opt_ck.strip()
+
+                _cb_upsert(row)
+                st.success("Opción agregada.")
+                st.rerun()
+
+    # ------------------ RIGHT: Opciones ------------------
+    with right:
+        st.markdown(f"### 🧾 Opciones en: `{selected_list}`")
+        rows = _cb_rows_for_list(selected_list)
+
+        if not rows:
+            st.info("Esta lista no tiene opciones.")
+        else:
+            st.caption("Edita texto y campos. Para borrar, usa el botón 🗑.")
+
+            for i, r in enumerate(rows):
+                ln = str(r.get("list_name", "")).strip()
+                nm = str(r.get("name", "")).strip()
+                lb = str(r.get("label", "")).strip()
+
+                base_key = f"cb_{ln}_{nm}_{i}"
+
+                with st.container(border=True):
+                    # 2 campos visibles como tu screenshot
+                    top = st.columns([2.2, 2.2, 0.9, 0.9], vertical_alignment="center")
+                    with top[0]:
+                        new_label = st.text_input("label (visible)", value=lb, key=f"{base_key}_lab")
+                    with top[1]:
+                        new_name = st.text_input("name (interno)", value=nm, key=f"{base_key}_nm")
+                    with top[2]:
+                        if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
+                            # Si cambia name: borrar la fila vieja
+                            if new_name.strip() and new_name.strip() != nm:
+                                _cb_delete(ln, nm)
+
+                            row_new = dict(r)
+                            row_new["label"] = new_label.strip()
+                            row_new["name"] = (new_name.strip() if new_name.strip() else nm)
+
+                            if selected_list == "list_distrito":
+                                ck_val = st.session_state.get(f"{base_key}_ck", str(r.get("canton_key", "")).strip())
+                                row_new["canton_key"] = str(ck_val).strip()
+
+                            _cb_upsert(row_new)
+                            st.success("Guardado.")
+                            st.rerun()
+
+                    with top[3]:
+                        if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
+                            _cb_delete(ln, nm)
+                            st.success("Eliminado.")
+                            st.rerun()
+
+                    if selected_list == "list_distrito":
+                        ck = str(r.get("canton_key", "")).strip()
+                        st.text_input("canton_key (para choice_filter)", value=ck, key=f"{base_key}_ck")
+
+            # Nunca dejar listas críticas sin placeholder
+            if selected_list in ("yesno", "list_canton", "list_distrito"):
+                _cb_ensure_list_placeholder(selected_list)
+
+# ==========================================================================================
+# FIN PARTE 5/10
+# ==========================================================================================
+
 
 
 
