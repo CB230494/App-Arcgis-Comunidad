@@ -1,1207 +1,1432 @@
 # app.py
-# ======================================================================================
-# Encuesta Comunidad 2026 (V.4.1) - App Streamlit + Generador XLSForm (Survey123/ArcGIS)
+# =====================================================================================
+# Editor XLSForm (Survey123) - Encuesta Comunidad 2026 (v4.1)
+# - CRUD de preguntas (editar, eliminar, duplicar)
+# - Reordenar preguntas (subir/bajar + mover a índice)
+# - CRUD de listas de opciones (choices)
+# - Exportar XLSForm a Excel (survey / choices / settings)
 #
 # Requisitos:
-#   pip install streamlit openpyxl
+#   streamlit, pandas, openpyxl
 #
 # Ejecutar:
 #   streamlit run app.py
-# ======================================================================================
+# =====================================================================================
 
-import json
+from __future__ import annotations
+
+import io
 import re
-from datetime import datetime
-from io import BytesIO
+from copy import deepcopy
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Any
 
+import pandas as pd
 import streamlit as st
-from openpyxl import Workbook
-from openpyxl.utils import get_column_letter
 
-# ----------------------------- Config -----------------------------
-st.set_page_config(page_title="Encuesta Comunidad 2026", layout="wide")
 
-# ----------------------------- Utils -----------------------------
-def slug_code(label: str) -> str:
-    """Convierte una etiqueta a un 'name' seguro para XLSForm."""
-    if label is None:
-        return "vacio"
-    s = label.strip().lower()
-    s = (
-        s.replace("á", "a").replace("é", "e").replace("í", "i")
-        .replace("ó", "o").replace("ú", "u").replace("ñ", "n")
-    )
+# ---------------------------
+# Utilidades
+# ---------------------------
+
+def slugify(s: str) -> str:
+    s = s.strip().lower()
     s = re.sub(r"[^\w\s-]", "", s, flags=re.UNICODE)
-    s = re.sub(r"[\s\-]+", "_", s).strip("_")
-    if not s:
-        s = "opcion"
-    return s[:63]
-
-
-def ss_init_answers():
-    if "answers" not in st.session_state:
-        st.session_state["answers"] = {}
-
-
-def save_answer(qid, value):
-    ss_init_answers()
-    st.session_state["answers"][qid] = value
-
-
-def read_answer(qid, default=None):
-    ss_init_answers()
-    return st.session_state["answers"].get(qid, default)
-
-
-def divider():
-    st.markdown("---")
-
-
-def title_block(title, subtitle=None):
-    st.markdown(f"## {title}")
-    if subtitle:
-        st.info(subtitle)
-
-
-def multiselect_exclusive(label, options, exclusive_option, qid, help_text=None):
-    """Multiselect con exclusión (si se elige la opción exclusiva, no se pueden combinar otras)."""
-    current = read_answer(qid, [])
-    if not isinstance(current, list):
-        current = []
-    sel = st.multiselect(label, options, default=current, help=help_text, key=f"ui_{qid}")
-
-    if exclusive_option in sel and len(sel) > 1:
-        sel = [exclusive_option]
-        st.warning(f'La opción "{exclusive_option}" no puede combinarse con otras.')
-        st.session_state[f"ui_{qid}"] = sel
-
-    save_answer(qid, sel)
-    return sel
-
-
-def radio_required(label, options, qid, help_text=None, horizontal=False):
-    current = read_answer(qid, None)
-    if current not in options:
-        current = options[0]
-    sel = st.radio(
-        label, options, index=options.index(current),
-        help=help_text, horizontal=horizontal, key=f"ui_{qid}"
-    )
-    save_answer(qid, sel)
-    return sel
-
-
-def select_required(label, options, qid, help_text=None):
-    current = read_answer(qid, None)
-    if current not in options:
-        current = options[0]
-    sel = st.selectbox(
-        label, options, index=options.index(current),
-        help=help_text, key=f"ui_{qid}"
-    )
-    save_answer(qid, sel)
-    return sel
-
-
-def text_area_optional(label, qid, help_text=None, placeholder=""):
-    current = read_answer(qid, "")
-    val = st.text_area(
-        label, value=current, help=help_text, placeholder=placeholder, key=f"ui_{qid}"
-    )
-    save_answer(qid, val)
-    return val
-
-
-def text_input_optional(label, qid, help_text=None, placeholder=""):
-    current = read_answer(qid, "")
-    val = st.text_input(
-        label, value=current, help=help_text, placeholder=placeholder, key=f"ui_{qid}"
-    )
-    save_answer(qid, val)
-    return val
-
-
-def slider_int(label, min_v, max_v, qid, help_text=None):
-    current = read_answer(qid, min_v)
-    if not isinstance(current, int):
-        current = min_v
-    val = st.slider(
-        label, min_value=min_v, max_value=max_v, value=current,
-        help=help_text, key=f"ui_{qid}"
-    )
-    save_answer(qid, val)
-    return val
-
-
-# ======================================================================================
-# Catálogos (mismos textos que usa la App) -> se reutilizan para generar XLSForm
-# ======================================================================================
-
-YESNO = ["Sí", "No"]
-
-Q3_EDAD = ["18 a 29 años", "30 a 44 años", "45 a 64 años", "65 años o más"]
-
-Q4_GENERO = ["Femenino", "Masculino", "Persona no Binaria", "Prefiero no decir"]
-
-Q5_ESCOLARIDAD = [
-    "Ninguna",
-    "Primaria incompleta",
-    "Primaria completa",
-    "Secundaria incompleta",
-    "Secundaria completa",
-    "Técnico",
-    "Universitaria incompleta",
-    "Universitaria completa",
-]
-
-Q6_RELACION = ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"]
-
-Q7_ESCALA = ["Muy inseguro", "Inseguro", "Ni seguro ni inseguro", "Seguro", "Muy seguro"]
-
-Q7_1_OPTS = [
-    "Venta o distribución de drogas",
-    "Consumo de drogas en espacios públicos",
-    "Consumo de alcohol en espacios públicos",
-    "Riñas o peleas frecuentes",
-    "Asaltos o robos a personas",
-    "Robos a viviendas o comercios",
-    "Amenazas o extorsiones",
-    "Balaceras, detonaciones o ruidos similares",
-    "Presencia de grupos que generan temor",
-    "Vandalismo o daños intencionales",
-    "Poca iluminación en calles o espacios públicos",
-    "Lotes baldíos o abandonados",
-    "Casas o edificios abandonados",
-    "Calles en mal estado",
-    "Falta de limpieza o acumulación de basura",
-    "Paradas de bus inseguras",
-    "Falta de cámaras de seguridad",
-    "Comercios inseguros o sin control",
-    "Daños frecuentes a la propiedad",
-    "Presencia de personas en situación de calle que influye en su percepción de seguridad",
-    "Presencia de personas en situación de ocio (sin actividad laboral o educativa)",
-    "Ventas informales (ambulantes)",
-    "Problemas con transporte informal",
-    "Falta de patrullajes visibles",
-    "Falta de presencia policial en la zona",
-    "Situaciones de violencia intrafamiliar",
-    "Situaciones de violencia de género",
-    "Otro problema que considere importante (especifique abajo)",
-]
-Q7_1_OTRO_LABEL = "Otro problema que considere importante (especifique abajo)"
-
-Q8_CAMBIO = [
-    "1 (Mucho menos seguro)",
-    "2 (Menos seguro)",
-    "3 (Se mantiene igual)",
-    "4 (Más seguro)",
-    "5 (Mucho más seguro)",
-]
-
-Q9_ZONAS = [
-    "Discotecas, bares, sitios de entretenimiento",
-    "Espacios recreativos (parques, play, plaza de deportes)",
-    "Lugar de residencia (casa de habitación)",
-    "Paradas y/o estaciones de buses, taxis, trenes",
-    "Puentes peatonales",
-    "Transporte público",
-    "Zona bancaria",
-    "Zona de comercio",
-    "Zonas residenciales (calles y barrios, distinto a su casa)",
-    "Zonas francas",
-    "Lugares de interés turístico",
-    "Centros educativos",
-]
-Q9_ESCALA = ["1 (Muy inseguro)", "2 (Inseguro)", "3 (Ni seguro ni inseguro)", "4 (Seguro)", "5 (Muy seguro)", "No aplica"]
-
-Q10_OPTS = [
-    "Discotecas, bares, sitios de entretenimiento",
-    "Espacios recreativos (parques, play, plaza de deportes)",
-    "Lugar de residencia (casa de habitación)",
-    "Paradas y/o estaciones de buses, taxis, trenes",
-    "Puentes peatonales",
-    "Transporte público",
-    "Zona bancaria",
-    "Zona comercial",
-    "Zonas francas",
-    "Zonas residenciales (calles y barrios, distinto a su casa)",
-    "Lugares de interés turístico",
-    "Centros educativos",
-    "Otros (especifique abajo)",
-]
-Q10_OTRO = "Otros (especifique abajo)"
-
-Q12_OPTS = [
-    "Problemas vecinales o conflictos entre vecinos",
-    "Presencia de personas en situación de calle (personas que viven permanentemente en la vía pública)",
-    "Zona donde se ejerce prostitución",
-    "Desvinculación escolar (deserción escolar)",
-    "Falta de oportunidades laborales",
-    "Acumulación de basura, aguas negras o mal alcantarillado",
-    "Carencia o inexistencia de alumbrado público",
-    "Lotes baldíos",
-    "Cuarterías",
-    "Asentamientos informales o precarios",
-    "Pérdida de espacios públicos (parques, polideportivos u otros)",
-    "Consumo de alcohol en vía pública",
-    "Consumo de drogas en espacios públicos",
-    "Ventas informales (ambulantes)",
-    "Escándalos musicales o ruidos excesivos",
-    "Otro problema que considere importante (especifique abajo)",
-    "No se observan estas problemáticas en el distrito",
-]
-Q12_EXCL = "No se observan estas problemáticas en el distrito"
-Q12_OTRO_LABEL = "Otro problema que considere importante (especifique abajo)"
-
-Q13_OPTS = [
-    "Falta de oferta educativa",
-    "Falta de oferta deportiva",
-    "Falta de oferta recreativa",
-    "Falta de actividades culturales",
-    "Otro problema que considere importante (especifique abajo)",
-]
-Q13_OTRO_LABEL = "Otro problema que considere importante (especifique abajo)"
-
-Q14_OPTS = [
-    "Áreas públicas (calles, parques, paradas, espacios abiertos)",
-    "Áreas privadas (viviendas, locales, espacios cerrados)",
-    "No se observa consumo de drogas",
-]
-Q14_EXCL = "No se observa consumo de drogas"
-
-Q15_OPTS = ["Calles en mal estado", "Falta de señalización de tránsito", "Carencia o inexistencia de aceras"]
-
-Q16_OPTS = ["Casa de habitación (espacio cerrado)", "Edificación abandonada", "Lote baldío", "Otro tipo de espacio (especifique abajo)", "No se observa"]
-Q16_EXCL = "No se observa"
-Q16_OTRO_LABEL = "Otro tipo de espacio (especifique abajo)"
-
-Q17_OPTS = [
-    "Transporte informal o no autorizado (taxis piratas)",
-    "Plataformas de transporte digital",
-    "Transporte público (buses)",
-    "Servicios de reparto o mensajería “exprés” (por ejemplo, repartidores en motocicleta o bicimoto)",
-    "Otro tipo de situación relacionada con el transporte (especifique abajo)",
-    "No se observa",
-]
-Q17_EXCL = "No se observa"
-Q17_OTRO_LABEL = "Otro tipo de situación relacionada con el transporte (especifique abajo)"
-
-Q18_OPTS = [
-    "Disturbios en vía pública (riñas o agresiones)",
-    "Daños a la propiedad (viviendas, comercios, vehículos u otros bienes)",
-    "Daños al poliducto (perforaciones, tomas ilegales o vandalismo)",
-    "Extorsión (amenazas o intimidación para exigir dinero u otros beneficios)",
-    "Hurto (sustracción de artículos mediante el descuido)",
-    "Compra o venta de artículos robados (receptación)",
-    "Contrabando (licor, cigarrillos, medicinas, ropa, calzado, etc.)",
-    "Maltrato animal",
-    "Tráfico de personas (coyotaje)",
-    "Otro delito (especifique abajo)",
-    "No se observan delitos",
-]
-Q18_EXCL = "No se observan delitos"
-Q18_OTRO_LABEL = "Otro delito (especifique abajo)"
-
-Q19_OPTS = [
-    "En espacios cerrados (casas, edificaciones u otros inmuebles)",
-    "En vía pública",
-    "De forma ocasional o móvil (sin punto fijo)",
-    "No se observa venta de drogas",
-    "Otro (especifique abajo)",
-]
-Q19_EXCL = "No se observa venta de drogas"
-Q19_OTRO_LABEL = "Otro (especifique abajo)"
-
-Q20_OPTS = [
-    "Homicidios (muerte intencional de una persona)",
-    "Personas heridas de forma intencional (heridos)",
-    "Femicidio (homicidio de una mujer por razones de género)",
-    "No se observan delitos contra la vida",
-]
-Q20_EXCL = "No se observan delitos contra la vida"
-
-Q21_OPTS = [
-    "Abuso sexual (tocamientos u otros actos sexuales sin consentimiento)",
-    "Violación (acceso sexual sin consentimiento)",
-    "Acoso sexual (insinuaciones, solicitudes o conductas sexuales no deseadas)",
-    "Acoso callejero (comentarios, gestos o conductas sexuales en espacios públicos)",
-    "No se observan delitos sexuales",
-]
-Q21_EXCL = "No se observan delitos sexuales"
-
-Q22_OPTS = ["Asalto a personas", "Asalto a comercio", "Asalto a vivienda", "Asalto a transporte público", "No se observan asaltos"]
-Q22_EXCL = "No se observan asaltos"
-
-Q23_OPTS = [
-    "Billetes falsos",
-    "Documentos falsos",
-    "Estafas relacionadas con la compra o venta de oro",
-    "Lotería falsa",
-    "Estafas informáticas (por internet, redes sociales o correos electrónicos)",
-    "Estafas telefónicas",
-    "Estafas con tarjetas (clonación, cargos no autorizados)",
-    "No se observan estafas",
-]
-Q23_EXCL = "No se observan estafas"
-
-Q24_OPTS = [
-    "Robo a comercios",
-    "Robo a edificaciones",
-    "Robo a viviendas",
-    "Robo de vehículos completos",
-    "Robo a vehículos (tacha)",
-    "Robo de ganado (destace)",
-    "Robo de bienes agrícolas",
-    "Robo de cultivos",
-    "Robo de cable",
-    "No se observan robos",
-]
-Q24_EXCL = "No se observan robos"
-
-Q25_OPTS = ["Abandono de adulto mayor", "Abandono de menor de edad", "Abandono de incapaz", "No se observan situaciones de abandono"]
-Q25_EXCL = "No se observan situaciones de abandono"
-
-Q26_OPTS = ["Sexual", "Laboral", "No se observan"]
-Q26_EXCL = "No se observan"
-
-Q27_OPTS = ["Caza ilegal", "Pesca ilegal", "Tala ilegal", "Extracción ilegal de material minero", "No se observan delitos ambientales"]
-Q27_EXCL = "No se observan delitos ambientales"
-
-Q28_OPTS = ["Con fines laborales", "Con fines sexuales", "No se observan situaciones de trata de personas"]
-Q28_EXCL = "No se observan situaciones de trata de personas"
-
-Q29_1_OPTS = [
-    "Violencia psicológica (gritos, amenazas, humillaciones, maltratos, entre otros)",
-    "Violencia física (agresiones físicas, empujones, golpes, entre otros)",
-    "Violencia vicaria (uso de hijas, hijos u otras personas para causar daño emocional)",
-    "Violencia patrimonial (destrucción, retención o control de bienes, documentos o dinero)",
-    "Violencia sexual (actos de carácter sexual sin consentimiento)",
-]
-
-Q29_2_OPTS = ["Sí", "No", "No recuerda"]
-
-Q29_3_OPTS = ["Excelente", "Bueno", "Regular", "Malo", "Muy malo"]
-
-Q30_OPTS = ["NO", "Sí, y denuncié", "Sí, pero no denuncié"]
-
-Q30_1_OPTS = [
-    "Asalto a mano armada en la calle o espacio público",
-    "Asalto en el transporte público",
-    "Asalto o robo de su vehículo (coche, motocicleta, etc.)",
-    "Robo de accesorios o partes de su vehículo (espejos, llantas, radio)",
-    "Robo o intento de robo con fuerza a su vivienda (forzar puerta/ventana)",
-    "Robo o intento de robo con fuerza a su comercio o negocio",
-    "Hurto de su cartera, bolso o celular (sin darse cuenta)",
-    "Daños a su propiedad (grafitis, rotura de cristales, cercas, etc.)",
-    "Receptación (alguien en su hogar compró/recibió un artículo y luego supo que era robado)",
-    "Pérdida de artículos por descuido (celular, bicicleta, etc.)",
-    "Estafa telefónica",
-    "Estafa o fraude informático (internet/redes/correo)",
-    "Fraude con tarjetas bancarias (clonación/uso no autorizado)",
-    "Ser víctima de billetes o documentos falsos",
-    "Extorsión (intimidación o amenaza para obtener dinero u otro beneficio)",
-    "Maltrato animal",
-    "Acoso o intimidación sexual en un espacio público",
-    "Algún tipo de delito sexual (abuso, violación)",
-    "Lesiones personales (herido en riña o agresión)",
-    "Otro (especifique abajo)",
-]
-Q30_1_OTRO_LABEL = "Otro (especifique abajo)"
-
-Q30_2_OPTS = [
-    "Distancia o dificultad de acceso a oficinas para denunciar",
-    "Miedo a represalias",
-    "Falta de respuesta o seguimiento en denuncias anteriores",
-    "Complejidad o dificultad para realizar la denuncia (trámites, requisitos, tiempo)",
-    "Desconocimiento de dónde colocar la denuncia (falta de información)",
-    "El policía me dijo que era mejor no denunciar",
-    "Falta de tiempo para colocar la denuncia",
-    "Desconfianza en las autoridades o en el proceso de denuncia",
-    "Otro motivo (especifique abajo)",
-]
-Q30_2_OTRO_LABEL = "Otro motivo (especifique abajo)"
-
-Q30_3_OPTS = [
-    "00:00 – 02:59 (madrugada)",
-    "03:00 – 05:59 (madrugada)",
-    "06:00 – 08:59 (mañana)",
-    "09:00 – 11:59 (mañana)",
-    "12:00 – 14:59 (mediodía / tarde)",
-    "15:00 – 17:59 (tarde)",
-    "18:00 – 20:59 (noche)",
-    "21:00 – 23:59 (noche)",
-    "Desconocido",
-]
-
-Q30_4_OPTS = [
-    "Arma blanca (cuchillo, machete, tijeras)",
-    "Arma de fuego",
-    "Amenazas o intimidación",
-    "Arrebato (le quitaron un objeto de forma rápida o sorpresiva)",
-    "Boquete (apertura de huecos en paredes/techos/estructuras)",
-    "Ganzúa (pata de chancho, llaves falsas u objetos similares)",
-    "Engaño (mentiras, falsas ofertas o distracción)",
-    "Escalamiento (trepando muros, rejas o techos)",
-    "Otro (especifique abajo)",
-    "No sabe / No recuerda",
-]
-Q30_4_OTRO_LABEL = "Otro (especifique abajo)"
-
-Q31_1_OPTS = [
-    "Solicitud de ayuda o auxilio",
-    "Atención relacionada con una denuncia",
-    "Atención cordial o preventiva durante un patrullaje",
-    "Fui abordado o registrado para identificación",
-    "Fui objeto de una infracción o conflicto",
-    "Evento preventivo (cívico policial, reunión comunitaria)",
-    "Otra (especifique abajo)",
-]
-Q31_1_OTRO_LABEL = "Otra (especifique abajo)"
-
-Q37_OPTS = ["Todos los días", "Varias veces por semana", "Una vez por semana", "Casi nunca", "Nunca"]
-
-Q38_OPTS = ["Sí", "No", "A veces"]
-Q39_OPTS = ["Sí", "No", "A veces"]
-Q40_OPTS = ["Sí", "No", "No estoy seguro(a)"]
-Q41_OPTS = ["Sí", "No", "A veces"]
-
-Q42_OPTS = [
-    "Mayor presencia policial y patrullaje",
-    "Acciones disuasivas en puntos conflictivos",
-    "Acciones contra consumo y venta de drogas",
-    "Mejorar el servicio policial a la comunidad",
-    "Acercamiento comunitario y comercial",
-    "Actividades de prevención y educación",
-    "Coordinación interinstitucional",
-    "Integridad y credibilidad policial",
-    "Otro (especifique abajo)",
-    "No tiene una opinión al respecto",
-]
-Q42_EXCL = "No tiene una opinión al respecto"
-Q42_OTRO_LABEL = "Otro (especifique abajo)"
-
-Q43_OPTS = [
-    "Mantenimiento e iluminación del espacio público",
-    "Limpieza y ordenamiento urbano",
-    "Instalación de cámaras y seguridad municipal",
-    "Control del comercio informal y transporte",
-    "Creación y mejoramiento de espacios públicos",
-    "Desarrollo social y generación de empleo",
-    "Coordinación interinstitucional",
-    "Acercamiento municipal a comercio y comunidad",
-    "Otro (especifique abajo)",
-    "No tiene una opinión al respecto",
-]
-Q43_EXCL = "No tiene una opinión al respecto"
-Q43_OTRO_LABEL = "Otro (especifique abajo)"
-
-# ======================================================================================
-# XLSForm Generator (Survey123)
-# ======================================================================================
-
-def _autosize(ws, max_col=20):
-    for col in range(1, max_col + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 32
-
-
-def build_xlsform_bytes(include_geopoint: bool = True) -> bytes:
-    """
-    Genera XLSForm (.xlsx) en memoria con:
-      - settings, survey, choices
-      - condicionales (relevant)
-    """
-    wb = Workbook()
-
-    # ---------------- settings ----------------
-    ws_settings = wb.active
-    ws_settings.title = "settings"
-    ws_settings.append(["form_title", "form_id", "version", "default_language"])
-    ws_settings.append(["Encuesta Comunidad 2026", "encuesta_comunidad_2026", "v4_1", "es"])
-    _autosize(ws_settings, 6)
-
-    # ---------------- choices ----------------
-    ws_choices = wb.create_sheet("choices")
-    ws_choices.append(["list_name", "name", "label"])
-
-    def add_choice_list(list_name: str, labels: list[str]):
-        seen = set()
-        for lab in labels:
-            base = slug_code(lab)
-            code = base
-            i = 2
-            while code in seen:
-                code = f"{base}_{i}"
-                i += 1
-            seen.add(code)
-            ws_choices.append([list_name, code, lab])
-
-    # cargar listas
-    add_choice_list("yesno", YESNO)
-    add_choice_list("edad_rango", Q3_EDAD)
-    add_choice_list("genero", Q4_GENERO)
-    add_choice_list("escolaridad", Q5_ESCOLARIDAD)
-    add_choice_list("relacion_zona", Q6_RELACION)
-    add_choice_list("seguridad_5", Q7_ESCALA)
-    add_choice_list("razones_inseguridad", Q7_1_OPTS)
-    add_choice_list("cambio_5", Q8_CAMBIO)
-    add_choice_list("espacios", Q9_ZONAS)
-    add_choice_list("seguridad_5_na", Q9_ESCALA)
-    add_choice_list("foco_inseguridad", Q10_OPTS)
-    add_choice_list("prob_12", Q12_OPTS)
-    add_choice_list("car_13", Q13_OPTS)
-    add_choice_list("donde_14", Q14_OPTS)
-    add_choice_list("vial_15", Q15_OPTS)
-    add_choice_list("venta_16", Q16_OPTS)
-    add_choice_list("transp_17", Q17_OPTS)
-    add_choice_list("delitos_18", Q18_OPTS)
-    add_choice_list("ventaforma_19", Q19_OPTS)
-    add_choice_list("vida_20", Q20_OPTS)
-    add_choice_list("sex_21", Q21_OPTS)
-    add_choice_list("asaltos_22", Q22_OPTS)
-    add_choice_list("estafas_23", Q23_OPTS)
-    add_choice_list("robos_24", Q24_OPTS)
-    add_choice_list("abandono_25", Q25_OPTS)
-    add_choice_list("explinf_26", Q26_OPTS)
-    add_choice_list("amb_27", Q27_OPTS)
-    add_choice_list("trata_28", Q28_OPTS)
-    add_choice_list("vif_29_1", Q29_1_OPTS)
-    add_choice_list("medidas_29_2", Q29_2_OPTS)
-    add_choice_list("val_29_3", Q29_3_OPTS)
-    add_choice_list("vict_30", Q30_OPTS)
-    add_choice_list("vict_30_1", Q30_1_OPTS)
-    add_choice_list("noden_30_2", Q30_2_OPTS)
-    add_choice_list("horario_30_3", Q30_3_OPTS)
-    add_choice_list("modo_30_4", Q30_4_OPTS)
-    add_choice_list("at_31_1", Q31_1_OPTS)
-    add_choice_list("freq_37", Q37_OPTS)
-    add_choice_list("sionoaveces", Q38_OPTS)
-    add_choice_list("quejas_40", Q40_OPTS)
-    add_choice_list("fp_42", Q42_OPTS)
-    add_choice_list("muni_43", Q43_OPTS)
-
-    _autosize(ws_choices, 3)
-
-    # maps label->name por list
-    list_maps = {}
-    for row in ws_choices.iter_rows(min_row=2, values_only=True):
-        list_name, name, label = row
-        list_maps.setdefault(list_name, {})[label] = name
-
-    def code(list_name: str, label: str) -> str:
-        return list_maps[list_name][label]
-
-    # ---------------- survey ----------------
-    ws_survey = wb.create_sheet("survey")
-    headers = [
-        "type", "name", "label", "hint", "required",
-        "relevant", "constraint", "constraint_message",
-        "appearance", "calculation"
+    s = re.sub(r"\s+", "_", s)
+    s = re.sub(r"_+", "_", s)
+    return s[:60] if s else "item"
+
+
+def make_choice(list_name: str, name: str, label: str) -> Dict[str, str]:
+    return {"list_name": list_name, "name": name, "label": label}
+
+
+def validate_unique_question_names(questions: List[Dict[str, Any]]) -> List[str]:
+    seen = {}
+    errors = []
+    for i, q in enumerate(questions):
+        n = (q.get("name") or "").strip()
+        if not n:
+            errors.append(f"Fila #{i+1}: pregunta sin 'name'.")
+            continue
+        if n in seen:
+            errors.append(f"Duplicado 'name': {n} (filas {seen[n]} y {i+1}).")
+        else:
+            seen[n] = i + 1
+    return errors
+
+
+def constraint_none_and_others(field: str, none_value: str) -> str:
+    # XLSForm: no permitir "none" junto con otras en select_multiple
+    # Ejemplo: not(selected(${q12}, 'no_observa') and count-selected(${q12}) > 1)
+    return f"not(selected(${{{field}}}, '{none_value}') and count-selected(${{{field}}}) > 1)"
+
+
+def to_excel_bytes(survey_df: pd.DataFrame, choices_df: pd.DataFrame, settings_df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        survey_df.to_excel(writer, index=False, sheet_name="survey")
+        choices_df.to_excel(writer, index=False, sheet_name="choices")
+        settings_df.to_excel(writer, index=False, sheet_name="settings")
+    return output.getvalue()
+
+
+# ---------------------------
+# Datos base (Encuesta Comunidad 2026 v4.1)
+# ---------------------------
+
+def base_settings() -> Dict[str, str]:
+    return {
+        "form_title": "Encuesta Comunidad 2026",
+        "form_id": "encuesta_comunidad_2026",
+        "version": "v4.1",
+        "default_language": "Spanish",
+    }
+
+
+def base_choices() -> Dict[str, List[Dict[str, str]]]:
+    # Nota: Cantón/Distrito normalmente se manejan con cascada (choice_filter) y listas grandes.
+    # Aquí dejamos placeholders para que las cargues/edites desde la app.
+    choices = {}
+
+    # Sí/No
+    choices["yesno"] = [
+        make_choice("yesno", "si", "Sí"),
+        make_choice("yesno", "no", "No"),
     ]
-    ws_survey.append(headers)
 
-    def add_q(qtype, name, label, hint="", required="no", relevant="", constraint="", constraint_msg="", appearance="", calc=""):
-        ws_survey.append([qtype, name, label, hint, required, relevant, constraint, constraint_msg, appearance, calc])
+    # Sí/No/A veces
+    choices["si_no_aveces"] = [
+        make_choice("si_no_aveces", "si", "Sí"),
+        make_choice("si_no_aveces", "no", "No"),
+        make_choice("si_no_aveces", "aveces", "A veces"),
+    ]
 
-    if include_geopoint:
-        add_q("geopoint", "location", "Ubicación (marque en el mapa)", required="no")
+    # Sí/No/No estoy seguro
+    choices["si_no_noseguro"] = [
+        make_choice("si_no_noseguro", "si", "Sí"),
+        make_choice("si_no_noseguro", "no", "No"),
+        make_choice("si_no_noseguro", "no_seguro", "No estoy seguro(a)"),
+    ]
 
-    add_q("select_one yesno", "consent", "¿Acepta participar en esta encuesta?", required="yes")
-    rel_form = f"${{consent}}='{code('yesno','Sí')}'"
+    # Sí/No/No recuerda
+    choices["si_no_norec"] = [
+        make_choice("si_no_norec", "si", "Sí"),
+        make_choice("si_no_norec", "no", "No"),
+        make_choice("si_no_norec", "no_recuerda", "No recuerda"),
+    ]
 
-    # I
-    add_q("begin_group", "g_demo", "I. Datos demográficos", relevant=rel_form)
-    add_q("text", "canton", "1. Cantón:", relevant=rel_form)
-    add_q("text", "distrito", "2. Distrito:", relevant=rel_form)
-    add_q("select_one edad_rango", "edad_rango", "3. Edad (en años cumplidos):", required="yes", relevant=rel_form)
-    add_q("select_one genero", "genero", "4. ¿Con cuál de estas opciones se identifica?", required="yes", relevant=rel_form)
-    add_q("select_one escolaridad", "escolaridad", "5. Escolaridad:", required="yes", relevant=rel_form)
-    add_q("select_one relacion_zona", "relacion_zona", "6. ¿Cuál es su relación con la zona?", required="yes", relevant=rel_form)
-    add_q("end_group", "g_demo_end", "")
+    # Edad
+    choices["edad_rangos"] = [
+        make_choice("edad_rangos", "18_29", "18 a 29 años"),
+        make_choice("edad_rangos", "30_44", "30 a 44 años"),
+        make_choice("edad_rangos", "45_64", "45 a 64 años"),
+        make_choice("edad_rangos", "65_mas", "65 años o más"),
+    ]
 
-    # II
-    add_q("begin_group", "g_perc", "II. Percepción ciudadana de seguridad en el distrito", relevant=rel_form)
-    add_q("select_one seguridad_5", "seg_distrito", "7. ¿Qué tan seguro percibe usted el distrito donde reside o transita?", required="yes", relevant=rel_form)
+    # Género
+    choices["genero"] = [
+        make_choice("genero", "femenino", "Femenino"),
+        make_choice("genero", "masculino", "Masculino"),
+        make_choice("genero", "no_binaria", "Persona no Binaria"),
+        make_choice("genero", "pref_no_decir", "Prefiero no decir"),
+    ]
 
-    rel_7_1 = (
-        f"{rel_form} and ("
-        f"${{seg_distrito}}='{code('seguridad_5','Muy inseguro')}' or "
-        f"${{seg_distrito}}='{code('seguridad_5','Inseguro')}'"
-        f")"
-    )
-    add_q("select_multiple razones_inseguridad", "razones_inseguridad",
-          "7.1. Indique por qué considera el distrito inseguro (selección múltiple)", relevant=rel_7_1)
-    add_q(
-        "text", "razones_inseguridad_otro", "7.1 Otro (especifique):",
-        relevant=f"{rel_7_1} and selected(${{razones_inseguridad}}, '{code('razones_inseguridad', Q7_1_OTRO_LABEL)}')"
-    )
+    # Escolaridad
+    choices["escolaridad"] = [
+        make_choice("escolaridad", "ninguna", "Ninguna"),
+        make_choice("escolaridad", "prim_incomp", "Primaria incompleta"),
+        make_choice("escolaridad", "prim_comp", "Primaria completa"),
+        make_choice("escolaridad", "sec_incomp", "Secundaria incompleta"),
+        make_choice("escolaridad", "sec_comp", "Secundaria completa"),
+        make_choice("escolaridad", "tecnico", "Técnico"),
+        make_choice("escolaridad", "uni_incomp", "Universitaria incompleta"),
+        make_choice("escolaridad", "uni_comp", "Universitaria completa"),
+    ]
 
-    add_q("select_one cambio_5", "cambio_seg",
-          "8. En comparación con los 12 meses anteriores, ¿cómo percibe que ha cambiado la seguridad en este distrito?",
-          required="yes", relevant=rel_form)
-    add_q("text", "cambio_seg_porque", "8.1. Indique por qué (explique brevemente):", relevant=rel_form)
+    # Relación con la zona
+    choices["relacion_zona"] = [
+        make_choice("relacion_zona", "vivo", "Vivo en la zona"),
+        make_choice("relacion_zona", "trabajo", "Trabajo en la zona"),
+        make_choice("relacion_zona", "visito", "Visito la zona"),
+        make_choice("relacion_zona", "estudio", "Estudio en la zona"),
+    ]
 
-    add_q("begin_repeat", "r_matriz_9", "9. Seguridad por tipo de espacio (una fila por espacio)", relevant=rel_form)
-    add_q("select_one espacios", "espacio_9", "Espacio", required="yes", relevant=rel_form)
-    add_q("select_one seguridad_5_na", "valor_9", "Nivel de seguridad percibida", required="yes", relevant=rel_form)
-    add_q("end_repeat", "r_matriz_9_end", "")
+    # Likert seguridad 1-5 con No aplica
+    choices["likert_1_5_na"] = [
+        make_choice("likert_1_5_na", "1", "Muy Inseguro (1)"),
+        make_choice("likert_1_5_na", "2", "Inseguro (2)"),
+        make_choice("likert_1_5_na", "3", "Ni seguro ni inseguro (3)"),
+        make_choice("likert_1_5_na", "4", "Seguro (4)"),
+        make_choice("likert_1_5_na", "5", "Muy Seguro (5)"),
+        make_choice("likert_1_5_na", "na", "No Aplica"),
+    ]
 
-    add_q("select_one foco_inseguridad", "foco_10", "10. Principal foco de inseguridad en el distrito", required="yes", relevant=rel_form)
-    add_q("text", "foco_10_otro", "10. Otros (especifique):", relevant=f"{rel_form} and ${{foco_10}}='{code('foco_inseguridad', Q10_OTRO)}'")
-    add_q("text", "razones_11",
-          "11. Describa brevemente las razones por las cuales considera inseguro el espacio seleccionado:", relevant=rel_form)
-    add_q("end_group", "g_perc_end", "")
+    # Q7: percepción seguridad del distrito (5 categorías)
+    choices["q7_seguridad"] = [
+        make_choice("q7_seguridad", "muy_inseguro", "Muy inseguro"),
+        make_choice("q7_seguridad", "inseguro", "Inseguro"),
+        make_choice("q7_seguridad", "neutral", "Ni seguro ni inseguro"),
+        make_choice("q7_seguridad", "seguro", "Seguro"),
+        make_choice("q7_seguridad", "muy_seguro", "Muy seguro"),
+    ]
 
-    # III
-    add_q("begin_group", "g_riesgos", "III. Riesgos, delitos, victimización y evaluación policial", relevant=rel_form)
-    add_q("select_multiple prob_12", "prob_12", "12. Problemáticas que afectan su distrito (selección múltiple)", relevant=rel_form)
-    add_q("text", "prob_12_otro", "12. Otro (especifique):", relevant=f"{rel_form} and selected(${{prob_12}}, '{code('prob_12', Q12_OTRO_LABEL)}')")
+    # Q8: cambio 12 meses (1-5)
+    choices["q8_cambio"] = [
+        make_choice("q8_cambio", "1", "1 (Mucho Menos Seguro)"),
+        make_choice("q8_cambio", "2", "2 (Menos Seguro)"),
+        make_choice("q8_cambio", "3", "3 (Se mantiene igual)"),
+        make_choice("q8_cambio", "4", "4 (Más Seguro)"),
+        make_choice("q8_cambio", "5", "5 (Mucho Más Seguro)"),
+    ]
 
-    add_q("select_multiple car_13", "car_13", "13. Carencias que identifica (selección múltiple)", relevant=rel_form)
-    add_q("text", "car_13_otro", "13. Otro (especifique):", relevant=f"{rel_form} and selected(${{car_13}}, '{code('car_13', Q13_OTRO_LABEL)}')")
+    # Espacios (Q10 + lista matriz Q9)
+    choices["espacios_distrito"] = [
+        make_choice("espacios_distrito", "discotecas", "Discotecas, bares, sitios de entretenimiento"),
+        make_choice("espacios_distrito", "recreativos", "Espacios recreativos (parques, play, plaza de deportes)"),
+        make_choice("espacios_distrito", "residencia", "Lugar de residencia (casa de habitación)"),
+        make_choice("espacios_distrito", "paradas", "Paradas y/o estaciones de buses, taxis, trenes"),
+        make_choice("espacios_distrito", "puentes", "Puentes peatones"),
+        make_choice("espacios_distrito", "transporte_publico", "Transporte público"),
+        make_choice("espacios_distrito", "bancaria", "Zona bancaria"),
+        make_choice("espacios_distrito", "comercio", "Zona de comercio"),
+        make_choice("espacios_distrito", "residenciales", "Zonas residenciales (calles y barrios, distinto a su casa)"),
+        make_choice("espacios_distrito", "zonas_francas", "Zonas francas"),
+        make_choice("espacios_distrito", "turistico", "Lugares de interés turístico"),
+        make_choice("espacios_distrito", "educativos", "Centros educativos"),
+        make_choice("espacios_distrito", "otros", "Otros"),
+    ]
 
-    add_q("select_multiple donde_14", "donde_14", "14. ¿Dónde ocurre el consumo de drogas? (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple vial_15", "vial_15", "15. Deficiencias de infraestructura vial (selección múltiple)", relevant=rel_form)
+    # Q7.1 (multiselect percepción inseguridad)
+    choices["q7_1_inseg"] = [
+        make_choice("q7_1_inseg", "venta_drogas", "Venta o distribución de drogas"),
+        make_choice("q7_1_inseg", "consumo_drogas", "Consumo de drogas en espacios públicos"),
+        make_choice("q7_1_inseg", "consumo_alcohol", "Consumo de alcohol en espacios públicos"),
+        make_choice("q7_1_inseg", "rinas", "Riñas o peleas frecuentes"),
+        make_choice("q7_1_inseg", "asaltos_personas", "Asaltos o robos a personas"),
+        make_choice("q7_1_inseg", "robos_vivienda_comercio", "Robos a viviendas o comercios"),
+        make_choice("q7_1_inseg", "amenazas_extorsion", "Amenazas o extorsiones"),
+        make_choice("q7_1_inseg", "balaceras", "Balaceras, detonaciones o ruidos similares"),
+        make_choice("q7_1_inseg", "grupos_temor", "Presencia de grupos que generan temor"),
+        make_choice("q7_1_inseg", "vandalismo", "Vandalismo o daños intencionales"),
+        make_choice("q7_1_inseg", "poca_iluminacion", "Poca iluminación en calles o espacios públicos"),
+        make_choice("q7_1_inseg", "lotes_baldios", "Lotes baldíos o abandonados"),
+        make_choice("q7_1_inseg", "casas_abandonadas", "Casas o edificios abandonados"),
+        make_choice("q7_1_inseg", "calles_mal_estado", "Calles en mal estado"),
+        make_choice("q7_1_inseg", "basura", "Falta de limpieza o acumulación de basura"),
+        make_choice("q7_1_inseg", "paradas_inseguras", "Paradas de bus inseguras"),
+        make_choice("q7_1_inseg", "sin_camaras", "Falta de cámaras de seguridad"),
+        make_choice("q7_1_inseg", "comercios_sin_control", "Comercios inseguros o sin control"),
+        make_choice("q7_1_inseg", "danos_propiedad", "Daños frecuentes a la propiedad"),
+        make_choice("q7_1_inseg", "situacion_calle", "Presencia de personas en situación de calle que influye en su percepción de seguridad"),
+        make_choice("q7_1_inseg", "situacion_ocio", "Presencia de personas en situación de ocio (sin actividad laboral o educativa)"),
+        make_choice("q7_1_inseg", "ventas_informales", "Ventas informales (ambulantes)"),
+        make_choice("q7_1_inseg", "transporte_informal", "Problemas con transporte informal"),
+        make_choice("q7_1_inseg", "sin_patrullaje", "Falta de patrullajes visibles"),
+        make_choice("q7_1_inseg", "sin_presencia_policial", "Falta de presencia policial en la zona"),
+        make_choice("q7_1_inseg", "vif", "Situaciones de violencia intrafamiliar"),
+        make_choice("q7_1_inseg", "violencia_genero", "Situaciones de violencia de género"),
+        make_choice("q7_1_inseg", "otro", "Otro problema que considere importante"),
+    ]
 
-    add_q("select_multiple venta_16", "venta_16", "16. Espacios donde se identifica venta de drogas (selección múltiple)", relevant=rel_form)
-    add_q("text", "venta_16_otro", "16. Otro (especifique):", relevant=f"{rel_form} and selected(${{venta_16}}, '{code('venta_16', Q16_OTRO_LABEL)}')")
+    # Q12 problemáticas (incluye "no_observa")
+    choices["q12_problemas"] = [
+        make_choice("q12_problemas", "conflictos_vecinales", "Problemas vecinales o conflictos entre vecinos"),
+        make_choice("q12_problemas", "situacion_calle", "Presencia de personas en situación de calle (personas que viven permanentemente en la vía pública)"),
+        make_choice("q12_problemas", "prostitucion", "Zona donde se ejerce prostitución"),
+        make_choice("q12_problemas", "desercion", "Desvinculación escolar (deserción escolar)"),
+        make_choice("q12_problemas", "falta_empleo", "Falta de oportunidades laborales"),
+        make_choice("q12_problemas", "basura_aguas", "Acumulación de basura, aguas negras o mal alcantarillado"),
+        make_choice("q12_problemas", "sin_alumbrado", "Carencia o inexistencia de alumbrado público"),
+        make_choice("q12_problemas", "lotes_baldios", "Lotes baldíos"),
+        make_choice("q12_problemas", "cuarterias", "Cuarterías"),
+        make_choice("q12_problemas", "asentamientos", "Asentamientos informales o precarios"),
+        make_choice("q12_problemas", "perdida_espacios", "Pérdida de espacios públicos (parques, polideportivos u otros)"),
+        make_choice("q12_problemas", "alcohol_via_publica", "Consumo de alcohol en vía pública"),
+        make_choice("q12_problemas", "drogas_publico", "Consumo de drogas en espacios públicos"),
+        make_choice("q12_problemas", "ventas_informales", "Ventas informales (ambulantes)"),
+        make_choice("q12_problemas", "ruidos", "Escándalos musicales o ruidos excesivos"),
+        make_choice("q12_problemas", "otro", "Otro problema que considere importante"),
+        make_choice("q12_problemas", "no_observa", "No se observan estas problemáticas en el distrito"),
+    ]
 
-    add_q("select_multiple transp_17", "transp_17", "17. Inseguridad asociada a transporte (selección múltiple)", relevant=rel_form)
-    add_q("text", "transp_17_otro", "17. Otro (especifique):", relevant=f"{rel_form} and selected(${{transp_17}}, '{code('transp_17', Q17_OTRO_LABEL)}')")
+    # Q13 carencias (inversión social)
+    choices["q13_carencias"] = [
+        make_choice("q13_carencias", "educativa", "Falta de oferta educativa"),
+        make_choice("q13_carencias", "deportiva", "Falta de oferta deportiva"),
+        make_choice("q13_carencias", "recreativa", "Falta de oferta recreativa"),
+        make_choice("q13_carencias", "cultural", "Falta de actividades culturales"),
+        make_choice("q13_carencias", "otro", "Otro problema que considere importante"),
+    ]
 
-    add_q("select_multiple delitos_18", "delitos_18", "18. Delitos que se presentan en el distrito (selección múltiple)", relevant=rel_form)
-    add_q("text", "delitos_18_otro", "18. Otro delito (especifique):", relevant=f"{rel_form} and selected(${{delitos_18}}, '{code('delitos_18', Q18_OTRO_LABEL)}')")
+    # Q14 consumo drogas dónde
+    choices["q14_drogas_donde"] = [
+        make_choice("q14_drogas_donde", "publicas", "Áreas públicas (calles, parques, paradas, espacios abiertos)"),
+        make_choice("q14_drogas_donde", "privadas", "Áreas privadas (viviendas, locales, espacios cerrados)"),
+        make_choice("q14_drogas_donde", "no_observa", "No se observa consumo de drogas"),
+    ]
 
-    add_q("select_multiple ventaforma_19", "ventaforma_19", "19. Forma de venta de drogas (selección múltiple)", relevant=rel_form)
-    add_q("text", "ventaforma_19_otro", "19. Otro (especifique):", relevant=f"{rel_form} and selected(${{ventaforma_19}}, '{code('ventaforma_19', Q19_OTRO_LABEL)}')")
+    # Q15 deficiencias vial
+    choices["q15_vial"] = [
+        make_choice("q15_vial", "calles_mal_estado", "Calles en mal estado"),
+        make_choice("q15_vial", "sin_senalizacion", "Falta de señalización de tránsito"),
+        make_choice("q15_vial", "sin_aceras", "Carencia o inexistencia de aceras"),
+    ]
 
-    add_q("select_multiple vida_20", "vida_20", "20. Delitos contra la vida (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple sex_21", "sex_21", "21. Delitos sexuales (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple asaltos_22", "asaltos_22", "22. Asaltos (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple estafas_23", "estafas_23", "23. Estafas (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple robos_24", "robos_24", "24. Robos (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple abandono_25", "abandono_25", "25. Abandono de personas (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple explinf_26", "explinf_26", "26. Explotación infantil (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple amb_27", "amb_27", "27. Delitos ambientales (selección múltiple)", relevant=rel_form)
-    add_q("select_multiple trata_28", "trata_28", "28. Trata de personas (selección múltiple)", relevant=rel_form)
+    # Q16 puntos venta drogas
+    choices["q16_puntos_venta"] = [
+        make_choice("q16_puntos_venta", "casa", "Casa de habitación (espacio cerrado)"),
+        make_choice("q16_puntos_venta", "edificacion_abandonada", "Edificación abandonada"),
+        make_choice("q16_puntos_venta", "lote_baldio", "Lote baldío"),
+        make_choice("q16_puntos_venta", "otro", "Otro tipo de espacio"),
+        make_choice("q16_puntos_venta", "no_observa", "No se observa"),
+    ]
 
-    add_q("select_one yesno", "vif_29", "29. En los últimos 12 meses, ¿su hogar fue afectado por violencia intrafamiliar?", required="yes", relevant=rel_form)
-    rel_29 = f"{rel_form} and ${{vif_29}}='{code('yesno','Sí')}'"
-    add_q("select_multiple vif_29_1", "vif_29_1", "29.1 Tipo(s) de violencia (selección múltiple)", relevant=rel_29)
-    add_q("select_one medidas_29_2", "medidas_29_2", "29.2 ¿Solicitó medidas de protección?", relevant=rel_29)
-    add_q("select_one val_29_3", "abordaje_29_3", "29.3 Abordaje de Fuerza Pública", relevant=rel_29)
+    # Q17 transporte inseguridad
+    choices["q17_transporte"] = [
+        make_choice("q17_transporte", "informal", "Transporte informal o no autorizado (taxis piratas)"),
+        make_choice("q17_transporte", "plataformas", "Plataformas de transporte digital"),
+        make_choice("q17_transporte", "buses", "Transporte público (buses)"),
+        make_choice("q17_transporte", "reparto", "Servicios de reparto o mensajería “exprés” (por ejemplo, repartidores en motocicleta o bicimoto)"),
+        make_choice("q17_transporte", "otro", "Otro tipo de situación relacionada con el transporte"),
+        make_choice("q17_transporte", "no_observa", "No se observa"),
+    ]
 
-    add_q("select_one vict_30", "vict_30", "30. En los últimos 12 meses, ¿su hogar fue afectado por algún delito?", required="yes", relevant=rel_form)
-    rel_30 = f"{rel_form} and ${{vict_30}}!='{code('vict_30','NO')}'"
-    add_q("select_multiple vict_30_1", "vict_30_1", "30.1 Situación(es) (selección múltiple)", relevant=rel_30)
-    add_q("text", "vict_30_1_otro", "30.1 Otro (especifique):", relevant=f"{rel_30} and selected(${{vict_30_1}}, '{code('vict_30_1', Q30_1_OTRO_LABEL)}')")
+    # Q18 delitos generales
+    choices["q18_delitos"] = [
+        make_choice("q18_delitos", "disturbios", "Disturbios en vía pública (riñas o agresiones)"),
+        make_choice("q18_delitos", "danos_propiedad", "Daños a la propiedad (viviendas, comercios, vehículos u otros bienes)"),
+        make_choice("q18_delitos", "danos_poliducto", "Daños al poliducto (perforaciones, tomas ilegales o vandalismo)"),
+        make_choice("q18_delitos", "extorsion", "Extorsión (amenazas o intimidación para exigir dinero u otros beneficios)"),
+        make_choice("q18_delitos", "hurto", "Hurto (sustracción de artículos mediante el descuido)"),
+        make_choice("q18_delitos", "receptacion", "Compra o venta de artículos robados (receptación)"),
+        make_choice("q18_delitos", "contrabando", "Contrabando (licor, cigarrillos, medicinas, ropa, calzado, etc.)"),
+        make_choice("q18_delitos", "maltrato_animal", "Maltrato animal"),
+        make_choice("q18_delitos", "coyotaje", "Tráfico de personas (coyotaje)"),
+        make_choice("q18_delitos", "otro", "Otro delito"),
+        make_choice("q18_delitos", "no_observa", "No se observan delitos"),
+    ]
 
-    rel_30_2 = f"{rel_form} and ${{vict_30}}='{code('vict_30','Sí, pero no denuncié')}'"
-    add_q("select_multiple noden_30_2", "noden_30_2", "30.2 Motivo(s) de no denunciar (selección múltiple)", relevant=rel_30_2)
-    add_q("text", "noden_30_2_otro", "30.2 Otro (especifique):", relevant=f"{rel_30_2} and selected(${{noden_30_2}}, '{code('noden_30_2', Q30_2_OTRO_LABEL)}')")
+    # Q19 forma venta drogas
+    choices["q19_venta_drogas"] = [
+        make_choice("q19_venta_drogas", "cerrados", "En espacios cerrados (casas, edificaciones u otros inmuebles)"),
+        make_choice("q19_venta_drogas", "via_publica", "En vía pública"),
+        make_choice("q19_venta_drogas", "movil", "De forma ocasional o móvil (sin punto fijo)"),
+        make_choice("q19_venta_drogas", "no_observa", "No se observa venta de drogas"),
+        make_choice("q19_venta_drogas", "otro", "Otro"),
+    ]
 
-    add_q("select_one horario_30_3", "horario_30_3", "30.3 Horario del hecho", relevant=rel_30)
-    add_q("select_multiple modo_30_4", "modo_30_4", "30.4 Forma o modo (selección múltiple)", relevant=rel_30)
-    add_q("text", "modo_30_4_otro", "30.4 Otro (especifique):", relevant=f"{rel_30} and selected(${{modo_30_4}}, '{code('modo_30_4', Q30_4_OTRO_LABEL)}')")
+    # Q20 vida
+    choices["q20_vida"] = [
+        make_choice("q20_vida", "homicidios", "Homicidios (muerte intencional de una persona)"),
+        make_choice("q20_vida", "heridos", "Personas heridas de forma intencional (heridos)"),
+        make_choice("q20_vida", "femicidio", "Femicidio (homicidio de una mujer por razones de género)"),
+        make_choice("q20_vida", "no_observa", "No se observan delitos contra la vida"),
+    ]
 
-    add_q("end_group", "g_riesgos_end", "")
+    # Q21 sexuales
+    choices["q21_sexuales"] = [
+        make_choice("q21_sexuales", "abuso", "Abuso sexual (tocamientos u otros actos sexuales sin consentimiento)"),
+        make_choice("q21_sexuales", "violacion", "Violación (acceso sexual sin consentimiento)"),
+        make_choice("q21_sexuales", "acoso", "Acoso sexual (insinuaciones, solicitudes o conductas sexuales no deseadas)"),
+        make_choice("q21_sexuales", "acoso_callejero", "Acoso callejero (comentarios, gestos o conductas sexuales en espacios públicos)"),
+        make_choice("q21_sexuales", "no_observa", "No se observan delitos sexuales"),
+    ]
 
-    # Confianza (31–41)
-    add_q("begin_group", "g_conf", "Confianza policial", relevant=rel_form)
-    add_q("select_one yesno", "idpol_31", "31. ¿Identifica a los policías en su comunidad?", required="yes", relevant=rel_form)
-    rel_31 = f"{rel_form} and ${{idpol_31}}='{code('yesno','Sí')}'"
-    add_q("select_multiple at_31_1", "at_31_1", "31.1 Tipo de atención (selección múltiple)", relevant=rel_31)
-    add_q("text", "at_31_1_otro", "31.1 Otra (especifique):", relevant=f"{rel_31} and selected(${{at_31_1}}, '{code('at_31_1', Q31_1_OTRO_LABEL)}')")
+    # Q22 asaltos
+    choices["q22_asaltos"] = [
+        make_choice("q22_asaltos", "personas", "Asalto a personas"),
+        make_choice("q22_asaltos", "comercio", "Asalto a comercio"),
+        make_choice("q22_asaltos", "vivienda", "Asalto a vivienda"),
+        make_choice("q22_asaltos", "transporte", "Asalto a transporte público"),
+        make_choice("q22_asaltos", "no_observa", "No se observan asaltos"),
+    ]
 
-    add_q("integer", "conf_32", "32. Nivel de confianza (1 a 10)", relevant=rel_31, constraint=".>=1 and .<=10", constraint_msg="Debe estar entre 1 y 10")
+    # Q23 estafas
+    choices["q23_estafas"] = [
+        make_choice("q23_estafas", "billetes_falsos", "Billetes falsos"),
+        make_choice("q23_estafas", "documentos_falsos", "Documentos falsos"),
+        make_choice("q23_estafas", "oro", "Estafas relacionadas con la compra o venta de oro"),
+        make_choice("q23_estafas", "loteria", "Lotería falsa"),
+        make_choice("q23_estafas", "informatica", "Estafas informáticas (por internet, redes sociales o correos electrónicos)"),
+        make_choice("q23_estafas", "telefonicas", "Estafas telefónicas"),
+        make_choice("q23_estafas", "tarjetas", "Estafas con tarjetas (clonación, cargos no autorizados)"),
+        make_choice("q23_estafas", "no_observa", "No se observan estafas"),
+    ]
 
-    for nm, lbl in [
-        ("prof_33", "33. Profesionalidad de la Fuerza Pública (1 a 10)"),
-        ("cal_34", "34. Calidad del servicio policial (1 a 10)"),
-        ("sat_35", "35. Satisfacción con el trabajo preventivo (1 a 10)"),
-        ("contrib_36", "36. Contribución de la presencia policial para reducir crimen (1 a 10)"),
-    ]:
-        add_q("integer", nm, lbl, relevant=rel_form, constraint=".>=1 and .<=10", constraint_msg="Debe estar entre 1 y 10")
+    # Q24 robos
+    choices["q24_robos"] = [
+        make_choice("q24_robos", "comercios", "Robo a comercios"),
+        make_choice("q24_robos", "edificaciones", "Robo a edificaciones"),
+        make_choice("q24_robos", "viviendas", "Robo a viviendas"),
+        make_choice("q24_robos", "vehiculos_completos", "Robo de vehículos completos"),
+        make_choice("q24_robos", "tacha", "Robo a vehículos (tacha)"),
+        make_choice("q24_robos", "ganado", "Robo de ganado (destace)"),
+        make_choice("q24_robos", "bienes_agricolas", "Robo de bienes agrícolas"),
+        make_choice("q24_robos", "cultivos", "Robo de cultivos"),
+        make_choice("q24_robos", "cable", "Robo de cable"),
+        make_choice("q24_robos", "no_observa", "No se observan robos"),
+    ]
 
-    add_q("select_one freq_37", "freq_37", "37. Frecuencia de presencia policial", required="yes", relevant=rel_form)
-    add_q("select_one sionoaveces", "cons_38", "38. Presencia consistente a lo largo del día", required="yes", relevant=rel_form)
-    add_q("select_one sionoaveces", "just_39", "39. Trato justo e imparcial", required="yes", relevant=rel_form)
-    add_q("select_one quejas_40", "quejas_40", "40. Puede expresar quejas sin temor", required="yes", relevant=rel_form)
-    add_q("select_one sionoaveces", "info_41", "41. Información veraz, clara y oportuna", required="yes", relevant=rel_form)
-    add_q("end_group", "g_conf_end", "")
+    # Q25 abandono
+    choices["q25_abandono"] = [
+        make_choice("q25_abandono", "adulto_mayor", "Abandono de adulto mayor"),
+        make_choice("q25_abandono", "menor", "Abandono de menor de edad"),
+        make_choice("q25_abandono", "incapaz", "Abandono de incapaz"),
+        make_choice("q25_abandono", "no_observa", "No se observan situaciones de abandono"),
+    ]
+
+    # Q26 explotación infantil
+    choices["q26_explotacion"] = [
+        make_choice("q26_explotacion", "sexual", "Sexual"),
+        make_choice("q26_explotacion", "laboral", "Laboral"),
+        make_choice("q26_explotacion", "no_observa", "No se observan"),
+    ]
+
+    # Q27 ambientales
+    choices["q27_ambientales"] = [
+        make_choice("q27_ambientales", "caza", "Caza ilegal"),
+        make_choice("q27_ambientales", "pesca", "Pesca ilegal"),
+        make_choice("q27_ambientales", "tala", "Tala ilegal"),
+        make_choice("q27_ambientales", "extraccion", "Extracción ilegal de material minero"),
+        make_choice("q27_ambientales", "no_observa", "No se observan delitos ambientales"),
+    ]
+
+    # Q28 trata personas
+    choices["q28_trata"] = [
+        make_choice("q28_trata", "laboral", "Con fines laborales"),
+        make_choice("q28_trata", "sexual", "Con fines sexuales"),
+        make_choice("q28_trata", "no_observa", "No se observan situaciones de trata de personas"),
+    ]
+
+    # Q29.1 tipos VIF
+    choices["q29_1_vif_tipos"] = [
+        make_choice("q29_1_vif_tipos", "psicologica", "Violencia psicológica (gritos, amenazas, humillaciones, maltratos, entre otros)"),
+        make_choice("q29_1_vif_tipos", "fisica", "Violencia física (agresiones físicas, empujones, golpes, entre otros)"),
+        make_choice("q29_1_vif_tipos", "vicaria", "Violencia vicaria (uso de hijas, hijos u otras personas para causar daño emocional)"),
+        make_choice("q29_1_vif_tipos", "patrimonial", "Violencia patrimonial (destrucción, retención o control de bienes, documentos o dinero)"),
+        make_choice("q29_1_vif_tipos", "sexual", "Violencia sexual (actos de carácter sexual sin consentimiento)"),
+    ]
+
+    # Q29.3 valoración FP
+    choices["q29_3_valora"] = [
+        make_choice("q29_3_valora", "excelente", "Excelente"),
+        make_choice("q29_3_valora", "bueno", "Bueno"),
+        make_choice("q29_3_valora", "regular", "Regular"),
+        make_choice("q29_3_valora", "malo", "Malo"),
+        make_choice("q29_3_valora", "muy_malo", "Muy malo"),
+    ]
+
+    # Q30 victimización por delitos (única)
+    choices["q30_vict_delito"] = [
+        make_choice("q30_vict_delito", "no", "NO"),
+        make_choice("q30_vict_delito", "si_denuncio", "Sí, y denuncié"),
+        make_choice("q30_vict_delito", "si_no_denuncio", "Sí, pero no denuncié"),
+    ]
+
+    # Q30.1 situaciones (multi)
+    choices["q30_1_situaciones"] = [
+        make_choice("q30_1_situaciones", "asalto_mano_armada", "Asalto a mano armada (amenaza con arma o uso de violencia) en la calle o espacio público"),
+        make_choice("q30_1_situaciones", "asalto_transporte", "Asalto en el transporte público (bus, taxi, metro, etc.)"),
+        make_choice("q30_1_situaciones", "robo_vehiculo", "Asalto o robo de su vehículo (coche, motocicleta, etc.)"),
+        make_choice("q30_1_situaciones", "robo_partes", "Robo de accesorios o partes de su vehículo (espejos, llantas, radio)"),
+        make_choice("q30_1_situaciones", "robo_vivienda_fuerza", "Robo o intento de robo con fuerza a su vivienda (ej. forzar una puerta o ventana)"),
+        make_choice("q30_1_situaciones", "robo_comercio_fuerza", "Robo o intento de robo con fuerza a su comercio o negocio"),
+        make_choice("q30_1_situaciones", "hurto_cartera", "Hurto de su cartera, bolso o celular (sin que se diera cuenta, por descuido)"),
+        make_choice("q30_1_situaciones", "danos_propiedad", "Daños a su propiedad (ej. grafitis, rotura de cristales, destrucción de cercas)"),
+        make_choice("q30_1_situaciones", "receptacion", "Receptación (Alguien en su hogar compró o recibió un artículo que luego supo que era robado)"),
+        make_choice("q30_1_situaciones", "perdida_descuido", "Pérdida de artículos (celular, bicicleta, etc.) por descuido"),
+        make_choice("q30_1_situaciones", "estafa_telefonica", "Estafa telefónica (ej. llamadas para pedir dinero o datos personales)"),
+        make_choice("q30_1_situaciones", "fraude_informatico", "Estafa o fraude informático (ej. a través de internet, redes sociales o correo electrónico)"),
+        make_choice("q30_1_situaciones", "fraude_tarjetas", "Fraude con tarjetas bancarias (clonación o uso no autorizado)"),
+        make_choice("q30_1_situaciones", "billetes_documentos", "Ser víctima de billetes o documentos falsos"),
+        make_choice("q30_1_situaciones", "extorsion", "Extorsión (intimidación o amenaza para obtener dinero u otro beneficio)"),
+        make_choice("q30_1_situaciones", "maltrato_animal", "Maltrato animal (si usted o alguien de su hogar fue testigo o su mascota fue la víctima)"),
+        make_choice("q30_1_situaciones", "acoso_sexual_publico", "Acoso o intimidación sexual en un espacio público"),
+        make_choice("q30_1_situaciones", "delito_sexual", "Algún tipo de delito sexual (abuso, violación)"),
+        make_choice("q30_1_situaciones", "lesiones", "Lesiones personales (haber sido herido en una riña o agresión)"),
+        make_choice("q30_1_situaciones", "otro", "Otro"),
+    ]
+
+    # Q30.2 motivos no denunciar
+    choices["q30_2_motivos"] = [
+        make_choice("q30_2_motivos", "distancia", "Distancia o dificultad de acceso a oficinas para denunciar"),
+        make_choice("q30_2_motivos", "miedo", "Miedo a represalias"),
+        make_choice("q30_2_motivos", "sin_seguimiento", "Falta de respuesta o seguimiento en denuncias anteriores"),
+        make_choice("q30_2_motivos", "tramites", "Complejidad o dificultad para realizar la denuncia (trámites, requisitos, tiempo)"),
+        make_choice("q30_2_motivos", "desconoce", "Desconocimiento de dónde colocar la denuncia (falta de información)"),
+        make_choice("q30_2_motivos", "policia_no", "El Policía me dijo que era mejor no denunciar"),
+        make_choice("q30_2_motivos", "sin_tiempo", "Falta de tiempo para colocar la denuncia"),
+        make_choice("q30_2_motivos", "desconfianza", "Desconfianza en las autoridades o en el proceso de denuncia"),
+        make_choice("q30_2_motivos", "otro", "Otro motivo"),
+    ]
+
+    # Q30.3 rango horario
+    choices["q30_3_horario"] = [
+        make_choice("q30_3_horario", "00_02", "00:00 – 02:59 (madrugada)"),
+        make_choice("q30_3_horario", "03_05", "03:00 – 05:59 (madrugada)"),
+        make_choice("q30_3_horario", "06_08", "06:00 – 08:59 (mañana)"),
+        make_choice("q30_3_horario", "09_11", "09:00 – 11:59 (mañana)"),
+        make_choice("q30_3_horario", "12_14", "12:00 – 14:59 (mediodía / tarde)"),
+        make_choice("q30_3_horario", "15_17", "15:00 – 17:59 (tarde)"),
+        make_choice("q30_3_horario", "18_20", "18:00 – 20:59 (noche)"),
+        make_choice("q30_3_horario", "21_23", "21:00 – 23:59 (noche)"),
+        make_choice("q30_3_horario", "desconocido", "Desconocido"),
+    ]
+
+    # Q30.4 modo ocurrido (incluye Arrebato)
+    choices["q30_4_modo"] = [
+        make_choice("q30_4_modo", "arma_blanca", "Arma blanca (cuchillo, machete, tijeras)"),
+        make_choice("q30_4_modo", "arma_fuego", "Arma de fuego"),
+        make_choice("q30_4_modo", "amenazas", "Amenazas o intimidación"),
+        make_choice("q30_4_modo", "arrebato", "Arrebato (le quitaron un objeto de forma rápida o sorpresiva)"),
+        make_choice("q30_4_modo", "boquete", "Boquete (ingreso mediante apertura de huecos en paredes, techos o estructuras)"),
+        make_choice("q30_4_modo", "ganzua", "Ganzúa (pata de chancho, llaves falsas u objetos similares)"),
+        make_choice("q30_4_modo", "engano", "Engaño (mediante mentiras, falsas ofertas o distracción)"),
+        make_choice("q30_4_modo", "escalamiento", "Escalamiento (ingreso trepando muros, rejas o techos)"),
+        make_choice("q30_4_modo", "otro", "Otro"),
+        make_choice("q30_4_modo", "no_sabe", "No sabe / No recuerda"),
+    ]
+
+    # Q31.1 tipos de atención
+    choices["q31_1_atencion"] = [
+        make_choice("q31_1_atencion", "auxilio", "Solicitud de ayuda o auxilio"),
+        make_choice("q31_1_atencion", "denuncia", "Atención relacionada con una denuncia"),
+        make_choice("q31_1_atencion", "cordial", "Atención cordial o preventiva durante un patrullaje"),
+        make_choice("q31_1_atencion", "abordado", "Fui abordado o registrado para identificación"),
+        make_choice("q31_1_atencion", "infraccion", "Fui objeto de una infracción o conflicto"),
+        make_choice("q31_1_atencion", "evento", "Evento preventivos (Cívico policial, Reunión Comunitaria)"),
+        make_choice("q31_1_atencion", "otro", "Otra (especifique)"),
+    ]
+
+    # Q37 frecuencia
+    choices["q37_frecuencia"] = [
+        make_choice("q37_frecuencia", "diario", "Todos los días"),
+        make_choice("q37_frecuencia", "varias", "Varias veces por semana"),
+        make_choice("q37_frecuencia", "una", "Una vez por semana"),
+        make_choice("q37_frecuencia", "casi_nunca", "Casi nunca"),
+        make_choice("q37_frecuencia", "nunca", "Nunca"),
+    ]
+
+    # Q42 (multi)
+    choices["q42_fp_mejora"] = [
+        make_choice("q42_fp_mejora", "patrullaje", "Mayor presencia policial y patrullaje"),
+        make_choice("q42_fp_mejora", "disuasivas", "Acciones disuasivas en puntos conflictivos"),
+        make_choice("q42_fp_mejora", "drogas", "Acciones contra consumo y venta de drogas"),
+        make_choice("q42_fp_mejora", "servicio", "Mejorar el servicio policial a la comunidad"),
+        make_choice("q42_fp_mejora", "acercamiento", "Acercamiento comunitario y comercial"),
+        make_choice("q42_fp_mejora", "prevencion", "Actividades de prevención y educación"),
+        make_choice("q42_fp_mejora", "coordinacion", "Coordinación interinstitucional"),
+        make_choice("q42_fp_mejora", "integridad", "Integridad y credibilidad policial"),
+        make_choice("q42_fp_mejora", "otro", "Otro"),
+        make_choice("q42_fp_mejora", "sin_opinion", "No tiene una opinión al respecto"),
+    ]
+
+    # Q43 (multi)
+    choices["q43_muni_mejora"] = [
+        make_choice("q43_muni_mejora", "iluminacion", "Mantenimiento e iluminación del espacio público"),
+        make_choice("q43_muni_mejora", "limpieza", "Limpieza y ordenamiento urbano"),
+        make_choice("q43_muni_mejora", "camaras", "Instalación de cámaras y seguridad municipal"),
+        make_choice("q43_muni_mejora", "informal", "Control del comercio informal y transporte"),
+        make_choice("q43_muni_mejora", "espacios", "Creación y mejoramiento de espacios públicos"),
+        make_choice("q43_muni_mejora", "desarrollo", "Desarrollo social y generación de empleo"),
+        make_choice("q43_muni_mejora", "coordinacion", "Coordinación interinstitucional"),
+        make_choice("q43_muni_mejora", "acercamiento", "Acercamiento municipal a comercio y comunidad"),
+        make_choice("q43_muni_mejora", "otro", "Otro"),
+        make_choice("q43_muni_mejora", "sin_opinion", "No tiene una opinión al respecto"),
+    ]
+
+    # Cantón/Distrito placeholders
+    choices["canton"] = [make_choice("canton", "placeholder", "Cargar cantones aquí (editar en Choices)")]
+    choices["distrito"] = [make_choice("distrito", "placeholder", "Cargar distritos aquí (editar en Choices)")]
+
+    return choices
+
+
+def base_questions() -> List[Dict[str, Any]]:
+    q = []
+
+    # --- Sección: Consentimiento
+    q.append({"type": "begin_group", "name": "sec_consentimiento", "label": "Consentimiento informado", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
+
+    q.append({
+        "type": "select_one yesno",
+        "name": "consent",
+        "label": "¿Acepta participar en esta encuesta?",
+        "hint": "Participación libre y voluntaria. Si responde “No”, finaliza la encuesta.",
+        "required": "yes",
+        "relevant": "",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "yesno",
+    })
+    q.append({
+        "type": "end_group",
+        "name": "",
+        "label": "",
+        "hint": "",
+        "required": "",
+        "relevant": "",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "",
+    })
+
+    # --- Sección I: Datos demográficos
+    q.append({"type": "begin_group", "name": "sec_demograficos", "label": "I. Datos demográficos", "hint": "", "required": "", "relevant": "${consent} = 'si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
+
+    q.append({"type": "select_one canton", "name": "canton", "label": "1. Cantón:", "hint": "", "required": "yes", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "canton"})
+    q.append({"type": "select_one distrito", "name": "distrito", "label": "2. Distrito:", "hint": "", "required": "yes", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "distrito"})
+    q.append({"type": "select_one edad_rangos", "name": "edad", "label": "3. Edad (en años cumplidos): marque una categoría que incluya su edad.", "hint": "", "required": "yes", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "edad_rangos"})
+    q.append({"type": "select_one genero", "name": "genero", "label": "4. ¿Con cuál de estas opciones se identifica?", "hint": "", "required": "yes", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "genero"})
+    q.append({"type": "select_one escolaridad", "name": "escolaridad", "label": "5. Escolaridad:", "hint": "", "required": "yes", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "escolaridad"})
+    q.append({"type": "select_one relacion_zona", "name": "relacion_zona", "label": "6. ¿Cuál es su relación con la zona?", "hint": "", "required": "yes", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "relacion_zona"})
+
+    q.append({"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+
+    # --- Sección II: Percepción
+    q.append({"type": "begin_group", "name": "sec_percepcion", "label": "II. Percepción ciudadana de seguridad en el distrito", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
+
+    q.append({
+        "type": "select_one q7_seguridad",
+        "name": "q7",
+        "label": "7. ¿Qué tan seguro percibe usted el distrito donde reside o transita?",
+        "hint": "",
+        "required": "yes",
+        "relevant": "${consent}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q7_seguridad",
+    })
+
+    q.append({
+        "type": "select_multiple q7_1_inseg",
+        "name": "q7_1",
+        "label": "7.1. Indique por qué considera el distrito inseguro (marque todas las situaciones que percibe que ocurren con mayor frecuencia):",
+        "hint": "Percepción general (no constituye denuncia).",
+        "required": "",
+        "relevant": "${q7}='muy_inseguro' or ${q7}='inseguro'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q7_1_inseg",
+    })
+
+    q.append({
+        "type": "select_one q8_cambio",
+        "name": "q8",
+        "label": "8. En comparación con los 12 meses anteriores, ¿cómo percibe que ha cambiado la seguridad en este distrito?",
+        "hint": "",
+        "required": "yes",
+        "relevant": "${consent}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q8_cambio",
+    })
+
+    q.append({
+        "type": "text",
+        "name": "q8_1",
+        "label": "8.1. Indique por qué (explique brevemente la razón de su respuesta anterior):",
+        "hint": "",
+        "required": "",
+        "relevant": "${q8} != ''",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "",
+    })
+
+    # Q9 matriz -> se modela como varias preguntas select_one con misma lista
+    q.append({"type": "begin_group", "name": "q9_matriz", "label": "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito:", "hint": "Seleccione una opción por cada espacio.", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
+
+    espacios = [
+        ("discotecas", "Discotecas, bares, sitios de entretenimiento"),
+        ("recreativos", "Espacios recreativos (parques, play, plaza de deportes)"),
+        ("residencia", "Lugar de residencia (casa de habitación)"),
+        ("paradas", "Paradas y/o estaciones de buses, taxis, trenes"),
+        ("puentes", "Puentes peatones"),
+        ("transporte_publico", "Transporte público"),
+        ("bancaria", "Zona bancaria"),
+        ("comercio", "Zona de comercio"),
+        ("residenciales", "Zonas residenciales (calles y barrios, distinto a su casa)"),
+        ("zonas_francas", "Zonas francas"),
+        ("turistico", "Lugares de interés turístico"),
+        ("educativos", "Centros educativos"),
+    ]
+    for code, label in espacios:
+        q.append({
+            "type": "select_one likert_1_5_na",
+            "name": f"q9_{code}",
+            "label": label,
+            "hint": "",
+            "required": "",
+            "relevant": "${consent}='si'",
+            "constraint": "",
+            "constraint_message": "",
+            "appearance": "",
+            "choice_list": "likert_1_5_na",
+        })
+    q.append({"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+
+    q.append({
+        "type": "select_one espacios_distrito",
+        "name": "q10",
+        "label": "10. Desde su percepción ¿cuál considera que es el principal foco de inseguridad en el distrito?",
+        "hint": "",
+        "required": "yes",
+        "relevant": "${consent}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "espacios_distrito",
+    })
+
+    q.append({
+        "type": "text",
+        "name": "q11",
+        "label": "11. Describa brevemente las razones por las cuales considera inseguro el tipo de espacio seleccionado en la pregunta anterior.",
+        "hint": "",
+        "required": "",
+        "relevant": "${q10} != ''",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "",
+    })
+
+    q.append({"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+
+    # --- Sección III: Riesgos/Delitos/Victimización
+    q.append({"type": "begin_group", "name": "sec_riesgos_delitos", "label": "III. Riesgos, delitos, victimización y evaluación policial", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
+
+    # Q12
+    q.append({
+        "type": "select_multiple q12_problemas",
+        "name": "q12",
+        "label": "12. Según su percepción u observación, seleccione las problemáticas que afectan su distrito:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q12", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q12_problemas",
+    })
+
+    q.append({
+        "type": "select_multiple q13_carencias",
+        "name": "q13",
+        "label": "13. En relación con la oferta de servicios y oportunidades en su distrito (inversión social), indique cuáles carencias identifica:",
+        "hint": "",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q13_carencias",
+    })
+
+    q.append({
+        "type": "select_multiple q14_drogas_donde",
+        "name": "q14",
+        "label": "14. En los casos en que se observa consumo de drogas en el distrito, indique dónde ocurre:",
+        "hint": "Si marca “No se observa…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q14", "no_observa"),
+        "constraint_message": "Si marca “No se observa…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q14_drogas_donde",
+    })
+
+    q.append({
+        "type": "select_multiple q15_vial",
+        "name": "q15",
+        "label": "15. Indique las principales deficiencias de infraestructura vial que afectan su distrito:",
+        "hint": "",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q15_vial",
+    })
+
+    q.append({
+        "type": "select_multiple q16_puntos_venta",
+        "name": "q16",
+        "label": "16. Según su percepción u observación, indique en qué tipo de espacios se identifica la existencia de puntos de venta de drogas en el distrito:",
+        "hint": "Si marca “No se observa”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q16", "no_observa"),
+        "constraint_message": "Si marca “No se observa”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q16_puntos_venta",
+    })
+
+    q.append({
+        "type": "select_multiple q17_transporte",
+        "name": "q17",
+        "label": "17. Según su percepción u observación, indique si ha identificado situaciones de inseguridad asociadas al transporte en su distrito:",
+        "hint": "Si marca “No se observa”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q17", "no_observa"),
+        "constraint_message": "Si marca “No se observa”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q17_transporte",
+    })
+
+    # Delitos
+    q.append({"type": "begin_group", "name": "grp_delitos", "label": "Delitos (observación/conocimiento)", "hint": "No constituye denuncia formal.", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
+
+    q.append({
+        "type": "select_multiple q18_delitos",
+        "name": "q18",
+        "label": "18. Seleccione los delitos que, según su conocimiento u observación, se presentan en el distrito:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q18", "no_observa"),
+        "constraint_message": "Si marca “No se observan delitos”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q18_delitos",
+    })
+
+    q.append({
+        "type": "select_multiple q19_venta_drogas",
+        "name": "q19",
+        "label": "19. Según su conocimiento u observación, ¿de qué forma se presenta la venta de drogas en el distrito?",
+        "hint": "Si marca “No se observa…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q19", "no_observa"),
+        "constraint_message": "Si marca “No se observa…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q19_venta_drogas",
+    })
+
+    q.append({
+        "type": "select_multiple q20_vida",
+        "name": "q20",
+        "label": "20. Delitos contra la vida:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q20", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q20_vida",
+    })
+
+    q.append({
+        "type": "select_multiple q21_sexuales",
+        "name": "q21",
+        "label": "21. Delitos sexuales:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q21", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q21_sexuales",
+    })
+
+    q.append({
+        "type": "select_multiple q22_asaltos",
+        "name": "q22",
+        "label": "22. Asaltos:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q22", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q22_asaltos",
+    })
+
+    q.append({
+        "type": "select_multiple q23_estafas",
+        "name": "q23",
+        "label": "23. Estafas:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q23", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q23_estafas",
+    })
+
+    q.append({
+        "type": "select_multiple q24_robos",
+        "name": "q24",
+        "label": "24. Robo (sustracción mediante la utilización de la fuerza):",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q24", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q24_robos",
+    })
+
+    q.append({
+        "type": "select_multiple q25_abandono",
+        "name": "q25",
+        "label": "25. Abandono de personas:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q25", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q25_abandono",
+    })
+
+    q.append({
+        "type": "select_multiple q26_explotacion",
+        "name": "q26",
+        "label": "26. Explotación infantil:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q26", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q26_explotacion",
+    })
+
+    q.append({
+        "type": "select_multiple q27_ambientales",
+        "name": "q27",
+        "label": "27. Delitos ambientales:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q27", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q27_ambientales",
+    })
+
+    q.append({
+        "type": "select_multiple q28_trata",
+        "name": "q28",
+        "label": "28. Trata de personas:",
+        "hint": "Si marca “No se observan…”, no seleccione otras opciones.",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": constraint_none_and_others("q28", "no_observa"),
+        "constraint_message": "Si marca “No se observan…”, no puede seleccionar otras opciones.",
+        "appearance": "",
+        "choice_list": "q28_trata",
+    })
+
+    q.append({"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+
+    # Victimización
+    q.append({"type": "begin_group", "name": "grp_victim", "label": "Victimización", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
+
+    q.append({
+        "type": "select_one yesno",
+        "name": "q29",
+        "label": "29. Durante los últimos 12 meses, ¿usted o algún miembro de su hogar ha sido afectado por violencia intrafamiliar?",
+        "hint": "",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "yesno",
+    })
+
+    q.append({
+        "type": "select_multiple q29_1_vif_tipos",
+        "name": "q29_1",
+        "label": "29.1. ¿Qué tipo(s) de violencia intrafamiliar se presentaron?",
+        "hint": "",
+        "required": "",
+        "relevant": "${q29}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q29_1_vif_tipos",
+    })
+
+    q.append({
+        "type": "select_one si_no_norec",
+        "name": "q29_2",
+        "label": "29.2. ¿Solicitó medidas de protección?",
+        "hint": "",
+        "required": "",
+        "relevant": "${q29}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "si_no_norec",
+    })
+
+    q.append({
+        "type": "select_one q29_3_valora",
+        "name": "q29_3",
+        "label": "29.3. ¿Cómo valora el abordaje de la Fuerza Pública ante esta situación?",
+        "hint": "",
+        "required": "",
+        "relevant": "${q29}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q29_3_valora",
+    })
+
+    q.append({
+        "type": "select_one q30_vict_delito",
+        "name": "q30",
+        "label": "30. Durante los últimos 12 meses, ¿usted o algún miembro de su hogar fue afectado por algún delito?",
+        "hint": "",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q30_vict_delito",
+    })
+
+    q.append({
+        "type": "select_multiple q30_1_situaciones",
+        "name": "q30_1",
+        "label": "30.1. ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar?",
+        "hint": "",
+        "required": "",
+        "relevant": "${q30}!='no'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q30_1_situaciones",
+    })
+
+    q.append({
+        "type": "select_multiple q30_2_motivos",
+        "name": "q30_2",
+        "label": "30.2. En caso de no haber realizado la denuncia, indique el/los motivo(s):",
+        "hint": "",
+        "required": "",
+        "relevant": "${q30}='si_no_denuncio'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q30_2_motivos",
+    })
+
+    q.append({
+        "type": "select_one q30_3_horario",
+        "name": "q30_3",
+        "label": "30.3. ¿Tiene conocimiento sobre el horario en el cual se presentó el hecho?",
+        "hint": "",
+        "required": "",
+        "relevant": "${q30}!='no'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q30_3_horario",
+    })
+
+    q.append({
+        "type": "select_multiple q30_4_modo",
+        "name": "q30_4",
+        "label": "30.4. ¿Cuál fue la forma o modo en que ocurrió la situación?",
+        "hint": "",
+        "required": "",
+        "relevant": "${q30}!='no'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q30_4_modo",
+    })
+
+    q.append({"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+
+    # Confianza policial
+    q.append({"type": "begin_group", "name": "grp_confianza", "label": "Confianza policial", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
+
+    q.append({
+        "type": "select_one yesno",
+        "name": "q31",
+        "label": "31. ¿Identifica usted a los policías de la Fuerza Pública de Costa Rica en su comunidad?",
+        "hint": "",
+        "required": "",
+        "relevant": "${consent}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "yesno",
+    })
+
+    q.append({
+        "type": "select_multiple q31_1_atencion",
+        "name": "q31_1",
+        "label": "31.1. ¿Cuáles de los siguientes tipos de atención ha tenido?",
+        "hint": "",
+        "required": "",
+        "relevant": "${q31}='si'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "q31_1_atencion",
+    })
+
+    # Escalas 1-10 como integer con constraint
+    scale_1_10 = "(. >= 1 and . <= 10)"
+    q.append({"type": "integer", "name": "q32", "label": "32. Nivel de confianza en la policía (1=Ninguna, 10=Mucha confianza):", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": scale_1_10, "constraint_message": "Ingrese un valor entre 1 y 10.", "appearance": "", "choice_list": ""})
+    q.append({"type": "integer", "name": "q33", "label": "33. Profesionalidad de Fuerza Pública (1=Nada profesional, 10=Muy profesional):", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": scale_1_10, "constraint_message": "Ingrese un valor entre 1 y 10.", "appearance": "", "choice_list": ""})
+    q.append({"type": "integer", "name": "q34", "label": "34. Calidad del servicio policial (1=Muy mala, 10=Muy buena):", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": scale_1_10, "constraint_message": "Ingrese un valor entre 1 y 10.", "appearance": "", "choice_list": ""})
+    q.append({"type": "integer", "name": "q35", "label": "35. Satisfacción con el trabajo preventivo (1=Nada satisfecho, 10=Muy satisfecho):", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": scale_1_10, "constraint_message": "Ingrese un valor entre 1 y 10.", "appearance": "", "choice_list": ""})
+    q.append({"type": "integer", "name": "q36", "label": "36. Medida en que la presencia policial ayuda a reducir el crimen (1=No contribuye, 10=Contribuye muchísimo):", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": scale_1_10, "constraint_message": "Ingrese un valor entre 1 y 10.", "appearance": "", "choice_list": ""})
+
+    q.append({"type": "select_one q37_frecuencia", "name": "q37", "label": "37. ¿Con qué frecuencia observa presencia policial en su distrito?", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "q37_frecuencia"})
+    q.append({"type": "select_one si_no_aveces", "name": "q38", "label": "38. ¿La presencia policial es consistente a lo largo del día?", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "si_no_aveces"})
+    q.append({"type": "select_one si_no_aveces", "name": "q39", "label": "39. ¿La policía trata a las personas de manera justa e imparcial?", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "si_no_aveces"})
+    q.append({"type": "select_one si_no_noseguro", "name": "q40", "label": "40. ¿Puede expresar quejas a la policía sin temor a represalias?", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "si_no_noseguro"})
+    q.append({"type": "select_one si_no_aveces", "name": "q41", "label": "41. ¿La policía proporciona información veraz, clara y oportuna a la comunidad?", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "si_no_aveces"})
+
+    q.append({"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
 
     # Propuestas
-    add_q("begin_group", "g_prop", "Propuestas", relevant=rel_form)
-    add_q("select_multiple fp_42", "fp_42", "42. ¿Qué actividad debe realizar la Fuerza Pública? (selección múltiple)", relevant=rel_form)
-    add_q("text", "fp_42_otro", "42. Otro (especifique):", relevant=f"{rel_form} and selected(${{fp_42}}, '{code('fp_42', Q42_OTRO_LABEL)}')")
+    q.append({"type": "begin_group", "name": "grp_propuestas", "label": "Propuestas ciudadanas", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
 
-    add_q("select_multiple muni_43", "muni_43", "43. ¿Qué actividad debe realizar la Municipalidad? (selección múltiple)", relevant=rel_form)
-    add_q("text", "muni_43_otro", "43. Otro (especifique):", relevant=f"{rel_form} and selected(${{muni_43}}, '{code('muni_43', Q43_OTRO_LABEL)}')")
-    add_q("end_group", "g_prop_end", "")
+    q.append({"type": "select_multiple q42_fp_mejora", "name": "q42", "label": "42. ¿Qué actividad considera que deba realizar la Fuerza Pública para mejorar la seguridad en su comunidad?", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "q42_fp_mejora"})
+    q.append({"type": "select_multiple q43_muni_mejora", "name": "q43", "label": "43. ¿Qué actividad considera que deba realizar la municipalidad para mejorar la seguridad en su comunidad?", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "q43_muni_mejora"})
 
-    # Info adicional
-    add_q("begin_group", "g_extra", "Información adicional", relevant=rel_form)
-    add_q("select_one yesno", "info_44", "44. ¿Tiene información de persona o grupo que se dedique a delitos?", required="yes", relevant=rel_form)
-    add_q("text", "info_44_1", "44.1 Describa características:", relevant=f"{rel_form} and ${{info_44}}='{code('yesno','Sí')}'")
-    add_q("text", "contacto_45", "45. (Voluntario) Contacto:", relevant=rel_form)
-    add_q("text", "extra_46", "46. Otra información pertinente:", relevant=rel_form)
-    add_q("end_group", "g_extra_end", "")
+    q.append({"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
 
-    _autosize(ws_survey, len(headers))
+    # Contacto voluntario
+    q.append({"type": "begin_group", "name": "grp_contacto", "label": "Información adicional y contacto voluntario", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "field-list", "choice_list": ""})
 
-    bio = BytesIO()
-    wb.save(bio)
-    return bio.getvalue()
+    q.append({"type": "select_one yesno", "name": "q44", "label": "44. ¿Usted tiene información de alguna persona o grupo que se dedique a realizar algún delito en su comunidad?", "hint": "Información confidencial y voluntaria (no constituye denuncia formal).", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": "yesno"})
+    q.append({"type": "text", "name": "q44_1", "label": "44.1. Si su respuesta es “Sí”, describa características que pueda aportar (nombre de estructura/banda, alias, domicilio, vehículos, etc.).", "hint": "", "required": "", "relevant": "${q44}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+    q.append({"type": "text", "name": "q45", "label": "45. (Voluntario) Anote nombre/teléfono/correo para ser contactado de forma confidencial.", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+    q.append({"type": "text", "name": "q46", "label": "46. Registre cualquier otra información que estime pertinente.", "hint": "", "required": "", "relevant": "${consent}='si'", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+
+    q.append({"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+
+    # Final (nota: en Survey123 para terminar en "No", se puede usar una nota y un end)
+    q.insert(2, {
+        "type": "begin_group",
+        "name": "end_if_no",
+        "label": "",
+        "hint": "",
+        "required": "",
+        "relevant": "${consent}='no'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "",
+    })
+    q.insert(3, {
+        "type": "note",
+        "name": "msg_no",
+        "label": "Gracias. No se continuará con la encuesta porque no otorgó consentimiento.",
+        "hint": "",
+        "required": "",
+        "relevant": "${consent}='no'",
+        "constraint": "",
+        "constraint_message": "",
+        "appearance": "",
+        "choice_list": "",
+    })
+    q.insert(4, {"type": "end_group", "name": "", "label": "", "hint": "", "required": "", "relevant": "", "constraint": "", "constraint_message": "", "appearance": "", "choice_list": ""})
+
+    return q
 
 
-# ======================================================================================
-# Sidebar
-# ======================================================================================
-st.sidebar.title("Encuesta Comunidad 2026")
-st.sidebar.caption("Condicionales + exportar XLSForm")
+def init_state():
+    if "settings" not in st.session_state:
+        st.session_state.settings = base_settings()
+    if "choices" not in st.session_state:
+        st.session_state.choices = base_choices()
+    if "questions" not in st.session_state:
+        st.session_state.questions = base_questions()
+    if "selected_q_index" not in st.session_state:
+        st.session_state.selected_q_index = 0
 
-if st.sidebar.button("🧹 Reiniciar respuestas"):
-    st.session_state["answers"] = {}
-    for k in list(st.session_state.keys()):
-        if k.startswith("ui_"):
-            del st.session_state[k]
-    st.rerun()
 
-section = st.sidebar.radio(
-    "Ir a sección",
-    [
-        "Consentimiento",
-        "I. Datos demográficos",
-        "II. Percepción ciudadana",
-        "III. Riesgos / delitos / victimización",
-        "Confianza policial",
-        "Propuestas",
-        "Información adicional",
-        "Resumen y exportación",
-    ],
-)
+# ---------------------------
+# Conversión a DataFrames XLSForm
+# ---------------------------
 
-# ======================================================================================
-# Main
-# ======================================================================================
-st.title("📋 Encuesta de Percepción Comunidad 2026 (V.4.1)")
-st.caption("App: preguntas + opciones + condicionales + descarga XLSForm (Survey123/ArcGIS).")
+SURVEY_COLS = [
+    "type", "name", "label", "hint", "required", "relevant",
+    "constraint", "constraint_message", "appearance"
+]
+CHOICES_COLS = ["list_name", "name", "label"]
 
-# ---------------- Consentimiento ----------------
-if section == "Consentimiento":
-    title_block("Consentimiento informado", "Participación voluntaria para personas mayores de 18 años.")
-    st.markdown(
-        """
-Usted está siendo invitado(a) a participar de forma libre y voluntaria en una encuesta sobre seguridad, convivencia y percepción ciudadana.
 
-La información recopilada será utilizada exclusivamente para fines estadísticos, analíticos y preventivos, conforme a la Ley N.º 8968.
-"""
-    )
-    consent = radio_required("¿Acepta participar en esta encuesta?", YESNO, "consent", horizontal=True)
-    if consent == "No":
-        st.error("La encuesta finaliza porque no aceptó participar.")
-        st.stop()
-    st.success("Gracias. Puede continuar.")
-    divider()
+def build_survey_df(questions: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for q in questions:
+        row = {c: q.get(c, "") for c in SURVEY_COLS}
+        rows.append(row)
+    return pd.DataFrame(rows, columns=SURVEY_COLS)
 
-# ---------------- I. Datos demográficos ----------------
-if section == "I. Datos demográficos":
-    title_block("I. Datos demográficos")
 
-    text_input_optional("1. Cantón:", "q1_canton", placeholder="Ej. San José")
-    text_input_optional("2. Distrito:", "q2_distrito", placeholder="Ej. Catedral")
+def build_choices_df(choices: Dict[str, List[Dict[str, str]]]) -> pd.DataFrame:
+    rows = []
+    for list_name, items in choices.items():
+        for it in items:
+            rows.append({"list_name": list_name, "name": it["name"], "label": it["label"]})
+    return pd.DataFrame(rows, columns=CHOICES_COLS)
 
-    radio_required("3. Edad (en años cumplidos):", Q3_EDAD, "q3_edad_rango")
-    radio_required("4. ¿Con cuál de estas opciones se identifica?", Q4_GENERO, "q4_genero")
-    radio_required("5. Escolaridad:", Q5_ESCOLARIDAD, "q5_escolaridad")
-    radio_required("6. ¿Cuál es su relación con la zona?", Q6_RELACION, "q6_relacion_zona", horizontal=True)
 
-    divider()
+def build_settings_df(settings: Dict[str, str]) -> pd.DataFrame:
+    return pd.DataFrame([settings])
 
-# ---------------- II. Percepción ciudadana ----------------
-if section == "II. Percepción ciudadana":
-    title_block("II. Percepción ciudadana de seguridad en el distrito")
 
-    q7 = radio_required(
-        "7. ¿Qué tan seguro percibe usted el distrito donde reside o transita?",
-        Q7_ESCALA,
-        "q7_seguridad_distrito",
-        horizontal=True,
-    )
+# ---------------------------
+# UI (Streamlit)
+# ---------------------------
 
-    if q7 in ("Muy inseguro", "Inseguro"):
-        st.subheader("7.1. Indique por qué considera el distrito inseguro (selección múltiple)")
-        sel_7_1 = st.multiselect(
-            "Seleccione todo lo que corresponda:",
-            Q7_1_OPTS,
-            default=read_answer("q7_1", []),
-            key="ui_q7_1",
+st.set_page_config(page_title="Editor XLSForm - Comunidad 2026", layout="wide")
+init_state()
+
+st.title("🧩 Editor XLSForm (Survey123) — Encuesta Comunidad 2026 v4.1")
+st.caption("Editar preguntas, opciones, condicionales (relevant/constraint), reordenar y exportar a Excel (XLSForm).")
+
+tabs = st.tabs(["📝 Preguntas", "📚 Choices (Opciones)", "⚙️ Settings", "📤 Exportar", "✅ Validación"])
+
+# ---------------------------
+# TAB: Preguntas
+# ---------------------------
+with tabs[0]:
+    col_left, col_right = st.columns([0.35, 0.65], gap="large")
+
+    with col_left:
+        st.subheader("Lista de preguntas")
+        questions = st.session_state.questions
+
+        labels = []
+        for i, q in enumerate(questions):
+            t = q.get("type", "")
+            name = q.get("name", "")
+            lbl = q.get("label", "")
+            show = f"{i+1:03d} | {t} | {name} | {lbl[:55]}"
+            labels.append(show)
+
+        idx = st.selectbox(
+            "Seleccionar",
+            options=list(range(len(labels))),
+            format_func=lambda i: labels[i],
+            index=st.session_state.selected_q_index if len(labels) else 0
         )
-        save_answer("q7_1", sel_7_1)
-        if Q7_1_OTRO_LABEL in sel_7_1:
-            text_input_optional("7.1 Otro (especifique):", "q7_1_otro", placeholder="Escriba aquí...")
+        st.session_state.selected_q_index = idx
 
-    divider()
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("⬆️ Subir", use_container_width=True, disabled=(idx == 0)):
+                questions[idx-1], questions[idx] = questions[idx], questions[idx-1]
+                st.session_state.selected_q_index = idx - 1
+                st.rerun()
+        with c2:
+            if st.button("⬇️ Bajar", use_container_width=True, disabled=(idx >= len(questions)-1)):
+                questions[idx+1], questions[idx] = questions[idx], questions[idx+1]
+                st.session_state.selected_q_index = idx + 1
+                st.rerun()
+        with c3:
+            new_pos = st.number_input("Mover a índice", min_value=1, max_value=len(questions), value=idx+1)
+            if st.button("🚚 Mover", use_container_width=True):
+                new_i = int(new_pos) - 1
+                item = questions.pop(idx)
+                questions.insert(new_i, item)
+                st.session_state.selected_q_index = new_i
+                st.rerun()
 
-    select_required(
-        "8. En comparación con los 12 meses anteriores, ¿cómo percibe que ha cambiado la seguridad en este distrito?",
-        Q8_CAMBIO,
-        "q8_cambio_seguridad",
-    )
-    text_area_optional("8.1. Indique por qué (explique brevemente):", "q8_1_por_que", placeholder="Escriba aquí...")
+        st.divider()
 
-    divider()
+        st.subheader("Acciones")
+        a1, a2 = st.columns(2)
+        with a1:
+            if st.button("➕ Nueva pregunta", use_container_width=True):
+                questions.insert(idx+1, {
+                    "type": "text",
+                    "name": f"nueva_{len(questions)+1}",
+                    "label": "Nueva pregunta",
+                    "hint": "",
+                    "required": "",
+                    "relevant": "",
+                    "constraint": "",
+                    "constraint_message": "",
+                    "appearance": "",
+                    "choice_list": "",
+                })
+                st.session_state.selected_q_index = idx + 1
+                st.rerun()
+        with a2:
+            if st.button("📄 Duplicar", use_container_width=True):
+                questions.insert(idx+1, deepcopy(questions[idx]))
+                st.session_state.selected_q_index = idx + 1
+                st.rerun()
 
-    st.subheader("9. Matriz: seguridad por tipo de espacio")
-    grid = read_answer("q9_matriz", {})
-    if not isinstance(grid, dict):
-        grid = {}
-    for z in Q9_ZONAS:
-        default_val = grid.get(z, Q9_ESCALA[2])
-        val = st.selectbox(
-            z,
-            Q9_ESCALA,
-            index=Q9_ESCALA.index(default_val) if default_val in Q9_ESCALA else 2,
-            key=f"ui_q9_{z}",
-        )
-        grid[z] = val
-    save_answer("q9_matriz", grid)
+        if st.button("🗑️ Eliminar", type="secondary", use_container_width=True):
+            if len(questions) > 1:
+                questions.pop(idx)
+                st.session_state.selected_q_index = max(0, idx - 1)
+                st.rerun()
+            else:
+                st.warning("No puede eliminar la última pregunta.")
 
-    divider()
+    with col_right:
+        st.subheader("Editar pregunta seleccionada")
+        q = st.session_state.questions[st.session_state.selected_q_index]
 
-    q10 = radio_required(
-        "10. Desde su percepción, ¿cuál considera que es el principal foco de inseguridad en el distrito?",
-        Q10_OPTS,
-        "q10_foco",
-    )
-    if q10 == Q10_OTRO:
-        text_input_optional("10. Otros (especifique):", "q10_otro", placeholder="Escriba aquí...")
+        # Campos base
+        q["type"] = st.text_input("type", value=q.get("type", ""))
+        q["name"] = st.text_input("name", value=q.get("name", ""))
+        q["label"] = st.text_area("label", value=q.get("label", ""), height=90)
+        q["hint"] = st.text_area("hint", value=q.get("hint", ""), height=60)
 
-    text_area_optional(
-        "11. Describa brevemente las razones por las cuales considera inseguro el espacio seleccionado:",
-        "q11_razones",
-        placeholder="Escriba aquí...",
-    )
-    divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            q["required"] = st.text_input("required (ej: yes)", value=q.get("required", ""))
+            q["appearance"] = st.text_input("appearance", value=q.get("appearance", ""))
+        with c2:
+            q["relevant"] = st.text_input("relevant (lógica/condicional)", value=q.get("relevant", ""))
+            q["constraint"] = st.text_input("constraint", value=q.get("constraint", ""))
 
-# ---------------- III. Riesgos / delitos / victimización ----------------
-if section == "III. Riesgos / delitos / victimización":
-    title_block("III. Riesgos, delitos, victimización y evaluación policial")
+        q["constraint_message"] = st.text_input("constraint_message", value=q.get("constraint_message", ""))
 
-    st.subheader("Riesgos sociales y situacionales")
-    q12 = multiselect_exclusive(
-        "12. Según su percepción u observación, seleccione las problemáticas que afectan su distrito:",
-        Q12_OPTS,
-        exclusive_option=Q12_EXCL,
-        qid="q12_problematicas",
-    )
-    if Q12_OTRO_LABEL in q12:
-        text_input_optional("12. Otro (especifique):", "q12_otro", placeholder="Escriba aquí...")
+        st.caption("Tips rápidos: para select_one/ select_multiple se usa 'type' como: `select_one lista` o `select_multiple lista`.")
 
-    divider()
+        # Si es select_one/multiple, mostrar ayuda de lista
+        m = re.match(r"^\s*(select_one|select_multiple)\s+([A-Za-z0-9_]+)\s*$", q.get("type", ""))
+        if m:
+            list_name = m.group(2)
+            st.info(f"Esta pregunta usa la lista de opciones: **{list_name}** (edítala en la pestaña **Choices**).")
 
-    q13 = st.multiselect(
-        "13. Carencias que identifica (Inversión social):",
-        Q13_OPTS,
-        default=read_answer("q13_carencias", []),
-        key="ui_q13",
-    )
-    save_answer("q13_carencias", q13)
-    if Q13_OTRO_LABEL in q13:
-        text_input_optional("13. Otro (especifique):", "q13_otro", placeholder="Escriba aquí...")
 
-    divider()
+# ---------------------------
+# TAB: Choices
+# ---------------------------
+with tabs[1]:
+    st.subheader("Listas de opciones (choices)")
+    choices = st.session_state.choices
 
-    multiselect_exclusive(
-        "14. En los casos en que se observa consumo de drogas, indique dónde ocurre:",
-        Q14_OPTS,
-        Q14_EXCL,
-        "q14_donde_consumo",
-    )
-    divider()
+    list_names = sorted(list(choices.keys()))
+    sel_list = st.selectbox("Seleccionar lista", list_names, index=0)
 
-    q15 = st.multiselect(
-        "15. Deficiencias de infraestructura vial:",
-        Q15_OPTS,
-        default=read_answer("q15_vial", []),
-        key="ui_q15",
-    )
-    save_answer("q15_vial", q15)
-    divider()
+    st.write(f"**Lista:** `{sel_list}`  |  **Opciones:** {len(choices[sel_list])}")
 
-    q16 = multiselect_exclusive(
-        "16. Espacios donde se identifica venta de drogas en el distrito:",
-        Q16_OPTS,
-        Q16_EXCL,
-        "q16_venta_drogas_espacios",
-    )
-    if Q16_OTRO_LABEL in q16:
-        text_input_optional("16. Otro tipo de espacio (especifique):", "q16_otro", placeholder="Escriba aquí...")
-    divider()
-
-    q17 = multiselect_exclusive(
-        "17. Situaciones de inseguridad asociadas a transporte (según percepción/observación):",
-        Q17_OPTS,
-        Q17_EXCL,
-        "q17_transporte_inseguridad",
-    )
-    if Q17_OTRO_LABEL in q17:
-        text_input_optional("17. Otro (especifique):", "q17_otro", placeholder="Escriba aquí...")
-    divider()
-
-    st.subheader("Delitos")
-    q18 = multiselect_exclusive(
-        "18. Delitos que se presentan en el distrito (según conocimiento/observación):",
-        Q18_OPTS,
-        Q18_EXCL,
-        "q18_delitos",
-    )
-    if Q18_OTRO_LABEL in q18:
-        text_input_optional("18. Otro delito (especifique):", "q18_otro", placeholder="Escriba aquí...")
-    divider()
-
-    q19 = multiselect_exclusive(
-        "19. ¿De qué forma se presenta la venta de drogas en el distrito?",
-        Q19_OPTS,
-        Q19_EXCL,
-        "q19_forma_venta_drogas",
-    )
-    if Q19_OTRO_LABEL in q19:
-        text_input_optional("19. Otro (especifique):", "q19_otro", placeholder="Escriba aquí...")
-    divider()
-
-    multiselect_exclusive("20. Delitos contra la vida:", Q20_OPTS, Q20_EXCL, "q20_vida")
-    divider()
-
-    multiselect_exclusive("21. Delitos sexuales:", Q21_OPTS, Q21_EXCL, "q21_sexuales")
-    divider()
-
-    multiselect_exclusive("22. Asaltos:", Q22_OPTS, Q22_EXCL, "q22_asaltos")
-    divider()
-
-    multiselect_exclusive("23. Estafas:", Q23_OPTS, Q23_EXCL, "q23_estafas")
-    divider()
-
-    multiselect_exclusive("24. Robo (con fuerza):", Q24_OPTS, Q24_EXCL, "q24_robos")
-    divider()
-
-    multiselect_exclusive("25. Abandono de personas:", Q25_OPTS, Q25_EXCL, "q25_abandono")
-    divider()
-
-    multiselect_exclusive("26. Explotación infantil:", Q26_OPTS, Q26_EXCL, "q26_explotacion_infantil")
-    divider()
-
-    multiselect_exclusive("27. Delitos ambientales:", Q27_OPTS, Q27_EXCL, "q27_ambientales")
-    divider()
-
-    multiselect_exclusive("28. Trata de personas:", Q28_OPTS, Q28_EXCL, "q28_trata")
-    divider()
-
-    st.subheader("Victimización - Apartado A: Violencia intrafamiliar")
-    q29 = radio_required(
-        "29. Durante los últimos 12 meses, ¿usted o algún miembro de su hogar ha sido afectado por violencia intrafamiliar?",
-        YESNO,
-        "q29_vif",
-        horizontal=True,
-    )
-    if q29 == "Sí":
-        q29_1 = st.multiselect(
-            "29.1. ¿Qué tipo(s) de violencia se presentaron?",
-            Q29_1_OPTS,
-            default=read_answer("q29_1", []),
-            key="ui_q29_1",
-        )
-        save_answer("q29_1", q29_1)
-
-        radio_required("29.2. ¿Solicitó medidas de protección?", Q29_2_OPTS, "q29_2_medidas", horizontal=True)
-        radio_required("29.3. ¿Cómo valora el abordaje de la Fuerza Pública ante esta situación?", Q29_3_OPTS, "q29_3_abordaje", horizontal=True)
-
-    divider()
-
-    st.subheader("Victimización - Apartado B: otros delitos")
-    q30 = radio_required(
-        "30. Durante los últimos 12 meses, ¿usted o algún miembro de su hogar fue afectado por algún delito?",
-        Q30_OPTS,
-        "q30_vict_delito",
-        horizontal=True,
-    )
-    if q30 != "NO":
-        q30_1 = st.multiselect(
-            "30.1. Situación(es) (Selección múltiple):",
-            Q30_1_OPTS,
-            default=read_answer("q30_1", []),
-            key="ui_q30_1",
-        )
-        save_answer("q30_1", q30_1)
-        if Q30_1_OTRO_LABEL in q30_1:
-            text_input_optional("30.1 Otro (especifique):", "q30_1_otro", placeholder="Escriba aquí...")
-
-        if q30 == "Sí, pero no denuncié":
-            q30_2 = st.multiselect(
-                "30.2 Motivo(s) de no denunciar (selección múltiple):",
-                Q30_2_OPTS,
-                default=read_answer("q30_2", []),
-                key="ui_q30_2",
-            )
-            save_answer("q30_2", q30_2)
-            if Q30_2_OTRO_LABEL in q30_2:
-                text_input_optional("30.2 Otro motivo (especifique):", "q30_2_otro", placeholder="Escriba aquí...")
-
-        radio_required("30.3 Horario del hecho (rango):", Q30_3_OPTS, "q30_3_horario")
-
-        q30_4 = st.multiselect(
-            "30.4 Forma o modo en que ocurrió (selección múltiple):",
-            Q30_4_OPTS,
-            default=read_answer("q30_4", []),
-            key="ui_q30_4",
-        )
-        save_answer("q30_4", q30_4)
-        if Q30_4_OTRO_LABEL in q30_4:
-            text_input_optional("30.4 Otro (especifique):", "q30_4_otro", placeholder="Escriba aquí...")
-
-    divider()
-
-# ---------------- Confianza policial ----------------
-if section == "Confianza policial":
-    title_block("Confianza policial")
-
-    q31 = radio_required(
-        "31. ¿Identifica usted a los policías de la Fuerza Pública de Costa Rica en su comunidad?",
-        YESNO,
-        "q31_identifica_policias",
-        horizontal=True,
-    )
-
-    if q31 == "Sí":
-        q31_1 = st.multiselect(
-            "31.1 ¿Cuáles de los siguientes tipos de atención ha tenido? (Selección múltiple)",
-            Q31_1_OPTS,
-            default=read_answer("q31_1", []),
-            key="ui_q31_1",
-        )
-        save_answer("q31_1", q31_1)
-        if Q31_1_OTRO_LABEL in q31_1:
-            text_input_optional("31.1 Otra (especifique):", "q31_1_otro", placeholder="Escriba aquí...")
-
-        slider_int("32. Nivel de confianza en la policía (1=Ninguna, 10=Mucha):", 1, 10, "q32_confianza")
-
-    slider_int("33. Profesionalidad de la Fuerza Pública en su distrito (1–10):", 1, 10, "q33_profesionalidad")
-    slider_int("34. Calidad del servicio policial en su distrito (1–10):", 1, 10, "q34_calidad_servicio")
-    slider_int("35. Satisfacción con el trabajo preventivo (1–10):", 1, 10, "q35_satisfaccion")
-    slider_int("36. Contribución de la presencia policial para reducir crimen (1–10):", 1, 10, "q36_contribucion")
-
-    radio_required("37. ¿Con qué frecuencia observa presencia policial en su distrito?", Q37_OPTS, "q37_frecuencia_presencia", horizontal=True)
-    radio_required("38. ¿Considera que la presencia policial es consistente a lo largo del día en su distrito?", Q38_OPTS, "q38_consistencia", horizontal=True)
-    radio_required("39. ¿Considera que la policía trata a las personas de manera justa e imparcial en su distrito?", Q39_OPTS, "q39_justicia", horizontal=True)
-    radio_required("40. ¿Cree que puede expresar preocupaciones o quejas a la policía sin temor a represalias?", Q40_OPTS, "q40_quejas", horizontal=True)
-    radio_required("41. ¿Considera que la policía proporciona información veraz, clara y oportuna a la comunidad?", Q41_OPTS, "q41_info", horizontal=True)
-
-    divider()
-
-# ---------------- Propuestas ----------------
-if section == "Propuestas":
-    title_block("Propuestas ciudadanas para la mejora de la seguridad")
-
-    q42 = multiselect_exclusive(
-        "42. ¿Qué actividad considera que deba realizar la Fuerza Pública para mejorar la seguridad en su comunidad?",
-        Q42_OPTS,
-        exclusive_option=Q42_EXCL,
-        qid="q42_fp_acciones",
-    )
-    if Q42_OTRO_LABEL in q42:
-        text_input_optional("42. Otro (especifique):", "q42_otro", placeholder="Escriba aquí...")
-
-    divider()
-
-    q43 = multiselect_exclusive(
-        "43. ¿Qué actividad considera que deba realizar la municipalidad para mejorar la seguridad en su comunidad?",
-        Q43_OPTS,
-        exclusive_option=Q43_EXCL,
-        qid="q43_muni_acciones",
-    )
-    if Q43_OTRO_LABEL in q43:
-        text_input_optional("43. Otro (especifique):", "q43_otro", placeholder="Escriba aquí...")
-
-    divider()
-
-# ---------------- Información adicional ----------------
-if section == "Información adicional":
-    title_block("Información adicional y contacto voluntario")
-
-    q44 = radio_required(
-        "44. ¿Usted tiene información de alguna persona o grupo que se dedique a realizar algún delito en su comunidad?",
-        YESNO,
-        "q44_info_delito",
-        horizontal=True,
-    )
-    if q44 == "Sí":
-        text_area_optional(
-            "44.1. Describa características (nombre de estructura/banda, alias, domicilio, vehículos, etc.):",
-            "q44_1_detalle",
-            placeholder="Escriba aquí...",
-        )
-
-    divider()
-
-    text_area_optional(
-        "45. (Voluntario) Anote su nombre, teléfono o correo para ser contactado confidencialmente:",
-        "q45_contacto",
-        placeholder="Escriba aquí...",
-    )
-    text_area_optional(
-        "46. Registre cualquier otra información que estime pertinente:",
-        "q46_extra",
-        placeholder="Escriba aquí...",
-    )
-
-    st.success("Fin de la encuesta.")
-    divider()
-
-# ---------------- Resumen y exportación ----------------
-if section == "Resumen y exportación":
-    title_block("Resumen y exportación")
-
-    ss_init_answers()
-    st.markdown("### Respuestas registradas")
-    st.json(st.session_state["answers"])
-
-    payload = {
-        "metadata": {
-            "instrumento": "Encuesta de Percepción Comunidad 2026",
-            "version": "V.4.1 (cambios generales)",
-            "exported_at": datetime.now().isoformat(timespec="seconds"),
+    ch_df = pd.DataFrame(choices[sel_list])
+    edited = st.data_editor(
+        ch_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "list_name": st.column_config.TextColumn(disabled=True),
+            "name": st.column_config.TextColumn(),
+            "label": st.column_config.TextColumn(),
         },
-        "respuestas": dict(st.session_state["answers"]),
-    }
-    st.download_button(
-        label="⬇️ Descargar respuestas (JSON)",
-        data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
-        file_name="respuestas_encuesta_comunidad_2026.json",
-        mime="application/json",
+        hide_index=True
     )
 
-    divider()
+    # Guardar cambios
+    if st.button("💾 Guardar cambios en esta lista"):
+        # Re-armar con list_name fijo
+        new_items = []
+        for _, row in edited.iterrows():
+            nm = str(row.get("name", "")).strip()
+            lb = str(row.get("label", "")).strip()
+            if nm and lb:
+                new_items.append(make_choice(sel_list, nm, lb))
+        choices[sel_list] = new_items
+        st.success("Lista guardada.")
 
-    st.markdown("### Generar XLSForm (Excel para Survey123 / ArcGIS)")
-    include_geo = st.checkbox("Incluir ubicación (geopoint) recomendado", value=True)
+    st.divider()
+    st.subheader("Crear / Eliminar listas")
+    c1, c2 = st.columns(2)
+    with c1:
+        new_list = st.text_input("Nueva lista (list_name)", value="")
+        if st.button("➕ Crear lista"):
+            ln = slugify(new_list)
+            if not ln:
+                st.warning("Nombre inválido.")
+            elif ln in choices:
+                st.warning("Esa lista ya existe.")
+            else:
+                choices[ln] = [make_choice(ln, "opcion_1", "Opción 1")]
+                st.success(f"Lista creada: {ln}")
+                st.rerun()
+    with c2:
+        del_list = st.selectbox("Eliminar lista", [""] + list_names)
+        if st.button("🗑️ Eliminar lista seleccionada"):
+            if del_list and del_list in choices:
+                # OJO: si hay preguntas que la usan, el XLSForm quedará inválido.
+                del choices[del_list]
+                st.success("Lista eliminada.")
+                st.rerun()
 
-    xls_bytes = build_xlsform_bytes(include_geopoint=include_geo)
+
+# ---------------------------
+# TAB: Settings
+# ---------------------------
+with tabs[2]:
+    st.subheader("Settings (XLSForm)")
+    s = st.session_state.settings
+    s["form_title"] = st.text_input("form_title", value=s.get("form_title", ""))
+    s["form_id"] = st.text_input("form_id", value=s.get("form_id", ""))
+    s["version"] = st.text_input("version", value=s.get("version", ""))
+    s["default_language"] = st.text_input("default_language", value=s.get("default_language", "Spanish"))
+    st.info("En Survey123, settings mínimos suelen ser suficientes (form_title, form_id, version).")
+
+
+# ---------------------------
+# TAB: Exportar
+# ---------------------------
+with tabs[3]:
+    st.subheader("Exportar XLSForm a Excel")
+    survey_df = build_survey_df(st.session_state.questions)
+    choices_df = build_choices_df(st.session_state.choices)
+    settings_df = build_settings_df(st.session_state.settings)
+
+    st.write("Vista previa: **survey**")
+    st.dataframe(survey_df, use_container_width=True, height=280)
+
+    st.write("Vista previa: **choices**")
+    st.dataframe(choices_df, use_container_width=True, height=200)
+
+    excel_bytes = to_excel_bytes(survey_df, choices_df, settings_df)
+
     st.download_button(
-        "⬇️ Descargar XLSForm (Excel)",
-        data=xls_bytes,
-        file_name="Encuesta_Comunidad_2026_XLSForm.xlsx",
+        label="⬇️ Descargar XLSForm (Excel)",
+        data=excel_bytes,
+        file_name=f"{st.session_state.settings.get('form_id','encuesta')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
     )
 
-    divider()
-    st.markdown("### Condicionales implementados en la app")
-    st.write(
-        "- **7.1** aparece si en **7** selecciona *Muy inseguro* o *Inseguro*.\n"
-        "- **29.1–29.3** aparece si en **29** selecciona *Sí*.\n"
-        "- **30.1–30.4** aparece si en **30** selecciona distinto de *NO*.\n"
-        "- **30.2** aparece solo si en **30** selecciona *Sí, pero no denuncié*.\n"
-        "- **31.1 y 32** aparece si en **31** selecciona *Sí*.\n"
-        "- **44.1** aparece si en **44** selecciona *Sí*."
-    )
+    st.caption("Luego lo cargas en Survey123 Connect / ArcGIS para publicar la encuesta.")
+
+
+# ---------------------------
+# TAB: Validación
+# ---------------------------
+with tabs[4]:
+    st.subheader("Validación básica")
+    errs = validate_unique_question_names(st.session_state.questions)
+
+    if errs:
+        st.error("Hay problemas que conviene corregir antes de exportar:")
+        for e in errs:
+            st.write(f"- {e}")
+    else:
+        st.success("OK: no hay 'name' duplicados (validación básica).")
+
+    st.info("Recomendación: evita espacios, acentos o símbolos raros en 'name'. Usa snake_case.")
 
 
 
