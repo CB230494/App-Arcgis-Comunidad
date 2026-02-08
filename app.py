@@ -916,229 +916,291 @@ if active_tab == "Preguntas":
 
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 4/10) ==============================
-# ============================ PÁGINA 6 — DELITOS (PERCEPCIÓN) =============================
+# ========================= Editor de Choices — Listas y Opciones ==========================
 # ==========================================================================================
 #
-# ✅ ESTA PARTE:
-# - Completa la Página 6 (Delitos) con preguntas reales (numeración continúa: 14+)
-# - Crea (si no existen) las listas de choices necesarias:
-#     - delitos_presentes
-#     - frecuencia_5
-#     - lugares_distrito
-#     - horarios_dia
-# - Reemplaza el placeholder de P6 SOLO si detecta "p6_placeholder"
-# - NO toca Word, NO pide subir nada, NO rompe páginas anteriores
+# ESTA PARTE 4/10 INCLUYE:
+# 1) Editor fácil de choices (hoja "choices") dentro de la app.
+# 2) Manejo de listas (list_name) y sus opciones (name/label + extras).
+# 3) Para Cantón→Distrito:
+#    - list_canton: opciones normales
+#    - list_distrito: incluye campo extra canton_key (para choice_filter)
+# 4) Agregar, editar, eliminar opciones sin tocar Excel.
 #
+# NOTA:
+# - Survey123 requiere que SI un select_one/select_multiple usa list_name, exista en choices.
+# - En Partes posteriores, el export valida listas/duplicados.
 # ==========================================================================================
 
-def _choices_list_exists(list_name: str) -> bool:
-    return any(str(r.get("list_name", "")).strip() == list_name for r in (st.session_state.choices_bank or []))
-
-def _ensure_choices_list_with_seed(list_name: str, labels: list[str]):
-    """
-    Crea la lista y opciones base si no existe (o si solo existe placeholder).
-    Mantiene lo que el usuario ya haya editado.
-    """
-    if not _choices_list_exists(list_name):
-        # crear placeholder mínimo
-        ensure_choice_list_exists_min(st.session_state.choices_bank, list_name)
-
-    # si solo hay placeholder_1, agregamos opciones seed
-    rows = [r for r in st.session_state.choices_bank if str(r.get("list_name", "")).strip() == list_name]
-    real = [r for r in rows if str(r.get("name", "")).strip() != "placeholder_1"]
-    if not real and labels:
-        add_choice_list(st.session_state.choices_bank, list_name, labels)
-
-def seed_choices_p6_if_needed():
-    """
-    Asegura choices necesarios para P6 (Delitos).
-    """
-    _ensure_choices_list_with_seed("delitos_presentes", [
-        "Asalto o robo a persona (en vía pública)",
-        "Arrebato (bolso/celular u objeto personal)",
-        "Robo a vivienda",
-        "Robo a comercio",
-        "Robo de vehículo",
-        "Robo de motocicleta",
-        "Robo de partes de vehículo (batería, llanta, accesorios)",
-        "Hurto (sin violencia, sin amenaza)",
-        "Daños/vandalismo a la propiedad",
-        "Amenazas o intimidación",
-        "Extorsión",
-        "Estafa o fraude",
-        "Receptación (compra/venta de artículos robados)",
-        "Venta o distribución de drogas",
-        "Consumo de drogas en espacios públicos",
-        "Consumo de alcohol en espacios públicos",
-        "Balaceras / detonaciones / disparos",
-        "Portación o uso de armas en la vía pública",
-        "Violencia intrafamiliar (se abordará en secciones posteriores)",
-        "Otro",
-        "No percibe delitos en el distrito"
-    ])
-
-    _ensure_choices_list_with_seed("frecuencia_5", [
-        "Nunca",
-        "Rara vez",
-        "Algunas veces",
-        "Frecuentemente",
-        "Muy frecuentemente"
-    ])
-
-    _ensure_choices_list_with_seed("lugares_distrito", [
-        "Calles principales",
-        "Calles secundarias",
-        "Parques o áreas recreativas",
-        "Paradas de bus / terminal",
-        "Centros educativos (alrededores)",
-        "Zonas comerciales",
-        "Bares / centros de entretenimiento",
-        "Zonas residenciales",
-        "Lotes baldíos / zonas abandonadas",
-        "Ríos / quebradas / zonas solitarias",
-        "Otro"
-    ])
-
-    _ensure_choices_list_with_seed("horarios_dia", [
-        "Madrugada (12:00 a.m. – 5:59 a.m.)",
-        "Mañana (6:00 a.m. – 11:59 a.m.)",
-        "Tarde (12:00 m.d. – 5:59 p.m.)",
-        "Noche (6:00 p.m. – 11:59 p.m.)",
-        "No sabe / No aplica"
-    ])
-
-def _page_has_placeholder(page_id: str, placeholder_name: str) -> bool:
-    for q in (st.session_state.questions_bank or []):
-        if q.get("page") == page_id:
-            nm = str((q.get("row", {}) or {}).get("name", "")).strip()
-            if nm == placeholder_name:
-                return True
-    return False
-
-def _replace_page_questions(page_id: str, new_items: list[dict]):
-    """
-    Reemplaza TODAS las preguntas de una página por new_items (lista de bank-items).
-    """
-    st.session_state.questions_bank = [q for q in st.session_state.questions_bank if q.get("page") != page_id] + new_items
-
-def seed_p6_delitos_bank(rel_si: str) -> list[dict]:
-    """
-    Construye bank-items (qid/page/order/row) para P6 (Delitos).
-    """
-    items = []
-
-    def add_q(order: int, row: dict):
-        items.append({"qid": _new_qid("q"), "page": "p6", "order": order, "row": row})
-
-    add_q(10, {
-        "type": "begin_group",
-        "name": "p6_delitos",
-        "label": "III. Delitos",
-        "appearance": "field-list",
-        "relevant": rel_si
+# ==========================================================================================
+# Helpers Choices (bank)
+# ==========================================================================================
+def cb_all_lists() -> list:
+    return sorted({
+        str(r.get("list_name", "")).strip()
+        for r in (st.session_state.choices_bank or [])
+        if str(r.get("list_name", "")).strip()
     })
 
-    # 14
-    add_q(20, {
-        "type": "select_multiple delitos_presentes",
-        "name": "p14_delitos_presentes",
-        "label": (
-            "14. Según su percepción, ¿cuáles de los siguientes delitos o situaciones delictivas "
-            "considera usted que ocurren en el distrito? (Marque todas las que correspondan)"
-        ),
-        "required": "no",
-        "appearance": "minimal",
-        "relevant": rel_si
-    })
+def cb_rows_for_list(list_name: str) -> list:
+    ln = str(list_name or "").strip()
+    return [
+        r for r in (st.session_state.choices_bank or [])
+        if str(r.get("list_name", "")).strip() == ln
+    ]
 
-    # 14.1 (si marcó Otro)
-    rel_141 = f"({rel_si}) and selected(${{p14_delitos_presentes}}, '{slugify_name('Otro')}')"
-    add_q(30, {
-        "type": "text",
-        "name": "p14_1_otro_delito",
-        "label": "14.1. Otro delito o situación delictiva (especifique):",
-        "required": "no",
-        "relevant": rel_141
-    })
+def cb_delete_row(list_name: str, name: str):
+    ln = str(list_name or "").strip()
+    nm = str(name or "").strip()
+    st.session_state.choices_bank = [
+        r for r in (st.session_state.choices_bank or [])
+        if not (str(r.get("list_name", "")).strip() == ln and str(r.get("name", "")).strip() == nm)
+    ]
 
-    # 15 (si NO marcó 'No percibe delitos...')
-    rel_15 = f"({rel_si}) and (not selected(${{p14_delitos_presentes}}, '{slugify_name('No percibe delitos en el distrito')}'))"
-    add_q(40, {
-        "type": "select_one frecuencia_5",
-        "name": "p15_frecuencia_delitos",
-        "label": "15. En general, ¿con qué frecuencia considera que ocurren estas situaciones en el distrito?",
-        "required": "yes",
-        "appearance": "minimal",
-        "relevant": rel_15
-    })
-
-    # 16 (lugares)
-    add_q(50, {
-        "type": "select_multiple lugares_distrito",
-        "name": "p16_lugares_delitos",
-        "label": "16. ¿En qué lugares del distrito percibe mayor ocurrencia de estas situaciones? (Seleccione todas las que correspondan)",
-        "required": "no",
-        "appearance": "minimal",
-        "relevant": rel_15
-    })
-
-    # 16.1 (otro lugar)
-    rel_161 = f"({rel_15}) and selected(${{p16_lugares_delitos}}, '{slugify_name('Otro')}')"
-    add_q(60, {
-        "type": "text",
-        "name": "p16_1_otro_lugar",
-        "label": "16.1. Otro lugar (especifique):",
-        "required": "no",
-        "relevant": rel_161
-    })
-
-    # 17 (horarios)
-    add_q(70, {
-        "type": "select_multiple horarios_dia",
-        "name": "p17_horarios_delitos",
-        "label": "17. ¿En qué horarios percibe mayor ocurrencia de estas situaciones? (Seleccione todas las que correspondan)",
-        "required": "no",
-        "appearance": "minimal",
-        "relevant": rel_15
-    })
-
-    # 18 (principal)
-    add_q(80, {
-        "type": "select_one delitos_presentes",
-        "name": "p18_principal_delito",
-        "label": "18. Si tuviera que seleccionar UNO, ¿cuál considera el principal delito o situación delictiva del distrito?",
-        "required": "yes",
-        "appearance": "minimal",
-        "relevant": rel_15
-    })
-
-    add_q(90, {"type": "end_group", "name": "p6_end", "label": ""})
-
-    return items
-
-def apply_seed_p6_update():
+def cb_upsert_row(row: dict):
     """
-    Reemplaza el placeholder de P6 por preguntas reales si detecta el placeholder.
-    Si P6 ya fue llenada (sin placeholder), no toca nada.
+    Inserta o actualiza una fila en choices_bank por llave (list_name, name).
     """
-    # asegurar choices de P6 (sin borrar ediciones del usuario)
-    seed_choices_p6_if_needed()
+    row = dict(row or {})
+    ln = str(row.get("list_name", "")).strip()
+    nm = str(row.get("name", "")).strip()
+    if not ln or not nm:
+        return
 
-    # lógica de relevancia base
-    v_si = slugify_name("Sí")
-    rel_si = f"${{acepta_participar}}='{v_si}'"
+    updated = False
+    for i, r in enumerate(st.session_state.choices_bank or []):
+        if str(r.get("list_name", "")).strip() == ln and str(r.get("name", "")).strip() == nm:
+            st.session_state.choices_bank[i] = row
+            updated = True
+            break
+    if not updated:
+        st.session_state.choices_bank.append(row)
 
-    # solo reemplazar si existe el placeholder original
-    if _page_has_placeholder("p6", "p6_placeholder"):
-        new_items = seed_p6_delitos_bank(rel_si=rel_si)
-        _replace_page_questions("p6", new_items)
+def cb_ensure_list_exists(list_name: str):
+    """
+    Asegura que exista al menos un placeholder en la lista (para evitar fallos Survey123).
+    """
+    ln = str(list_name or "").strip()
+    if not ln:
+        return
+    lists = cb_all_lists()
+    if ln not in lists:
+        cb_upsert_row({"list_name": ln, "name": "placeholder_1", "label": "—"})
 
-# Ejecutar automáticamente
-apply_seed_p6_update()
+def cb_rename_list(old: str, new: str):
+    """
+    Renombra list_name en choices_bank.
+    NOTA: Si quieres renombrar en survey(type), se hará en otra parte si lo pides.
+    """
+    old = str(old or "").strip()
+    new = str(new or "").strip()
+    if not old or not new or old == new:
+        return
+    for i, r in enumerate(st.session_state.choices_bank or []):
+        if str(r.get("list_name", "")).strip() == old:
+            st.session_state.choices_bank[i]["list_name"] = new
+
+def cb_rebuild_names_for_list(list_name: str):
+    """
+    Recalcula el campo 'name' usando slugify(label) para una lista.
+    Útil si el usuario pegó labels con espacios/acentos y quiere normalizar.
+    Respeta placeholder_1.
+    """
+    ln = str(list_name or "").strip()
+    rows = cb_rows_for_list(ln)
+    used = set()
+    for r in rows:
+        lab = str(r.get("label", "")).strip()
+        nm0 = str(r.get("name", "")).strip()
+        if lab == "—" and nm0 == "placeholder_1":
+            used.add("placeholder_1")
+            continue
+        base = slugify_name(lab) if lab else "opcion"
+        nm = asegurar_nombre_unico(base, usados=used)
+        used.add(nm)
+        r["name"] = nm
+
+def cb_dedupe_choices_by_key():
+    """
+    Elimina duplicados exactos por (list_name, name) dejando la primera ocurrencia.
+    Esto ayuda a evitar errores al exportar.
+    """
+    seen = set()
+    cleaned = []
+    for r in (st.session_state.choices_bank or []):
+        ln = str(r.get("list_name", "")).strip()
+        nm = str(r.get("name", "")).strip()
+        if not ln or not nm:
+            continue
+        key = (ln, nm)
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(r)
+    st.session_state.choices_bank = cleaned
+
+# ==========================================================================================
+# UI Choices
+# ==========================================================================================
+if active_tab == "Choices":
+    st.subheader("🧩 Editor de Choices (opciones) — fácil para cualquier persona")
+
+    # Asegurar listas base mínimas (sin sobrescribir lo que ya editaste)
+    cb_ensure_list_exists("yesno")
+    cb_ensure_list_exists("genero")
+    cb_ensure_list_exists("escolaridad")
+    cb_ensure_list_exists("relacion_zona")
+    cb_ensure_list_exists("seguridad_5")
+    cb_ensure_list_exists("list_canton")
+    cb_ensure_list_exists("list_distrito")
+
+    left, right = st.columns([1.2, 2.3])
+
+    with left:
+        st.markdown("### 📚 Listas")
+        lists = cb_all_lists()
+        if not lists:
+            st.info("No hay listas aún.")
+            lists = []
+
+        # Crear lista nueva
+        new_list_name = st.text_input("Crear nueva lista (list_name)", value="", key="cb_new_list")
+        if st.button("➕ Crear lista", type="primary", use_container_width=True, key="cb_create_list_btn"):
+            if not new_list_name.strip():
+                st.error("Indica un nombre de lista.")
+            else:
+                cb_ensure_list_exists(new_list_name.strip())
+                st.success("Lista creada.")
+                st.rerun()
+
+        # Seleccionar lista
+        lists = cb_all_lists()
+        default_list = "yesno" if "yesno" in lists else (lists[0] if lists else "yesno")
+        selected_list = st.selectbox(
+            "Selecciona lista",
+            options=lists if lists else [default_list],
+            index=(lists.index(default_list) if lists and default_list in lists else 0),
+            key="cb_selected_list"
+        )
+
+        st.markdown("### ⚙️ Acciones de lista")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🧼 Normalizar names", use_container_width=True, key="cb_norm_btn"):
+                cb_rebuild_names_for_list(selected_list)
+                st.success("Names normalizados.")
+                st.rerun()
+        with c2:
+            rename_to = st.text_input("Renombrar list_name a", value="", key="cb_rename_to")
+            if st.button("✏️ Renombrar", use_container_width=True, key="cb_rename_btn"):
+                if rename_to.strip():
+                    cb_rename_list(selected_list, rename_to.strip())
+                    st.success("Lista renombrada.")
+                    st.rerun()
+
+        if st.button("🧹 Quitar duplicados (list_name + name)", use_container_width=True, key="cb_dedupe_btn"):
+            cb_dedupe_choices_by_key()
+            st.success("Duplicados eliminados.")
+            st.rerun()
+
+        st.markdown("### ➕ Agregar opción")
+        opt_label = st.text_input("Texto visible (label)", value="", key="cb_add_label")
+
+        opt_canton_key = ""
+        if selected_list == "list_distrito":
+            opt_canton_key = st.text_input("canton_key (slug del cantón)", value="", key="cb_add_ck")
+
+        if st.button("Agregar opción", use_container_width=True, key="cb_add_opt_btn"):
+            if not opt_label.strip():
+                st.error("Indica el texto (label).")
+            else:
+                label = opt_label.strip()
+                existing = cb_rows_for_list(selected_list)
+                used_names = {str(r.get("name", "")).strip() for r in existing}
+                nm = asegurar_nombre_unico(slugify_name(label), usados=used_names)
+
+                row = {"list_name": selected_list, "name": nm, "label": label}
+                if selected_list == "list_distrito":
+                    row["canton_key"] = opt_canton_key.strip()
+
+                cb_upsert_row(row)
+                st.success("Opción agregada.")
+                st.rerun()
+
+    with right:
+        st.markdown(f"### 🧾 Opciones en: `{selected_list}`")
+
+        rows = cb_rows_for_list(selected_list)
+        if not rows:
+            st.info("Esta lista no tiene opciones.")
+        else:
+            st.caption("Edita texto y campos. Para borrar, usa el botón 🗑.")
+
+            for i, r in enumerate(rows):
+                ln = str(r.get("list_name", "")).strip()
+                nm = str(r.get("name", "")).strip()
+                lab = str(r.get("label", "")).strip()
+
+                # Keys únicas por list+name+index
+                base_key = f"cb_{slugify_name(ln)}_{slugify_name(nm)}_{i}"
+
+                with st.container(border=True):
+                    if selected_list == "list_distrito":
+                        top = st.columns([2.0, 1.6, 1.6, 1, 1])
+                    else:
+                        top = st.columns([2.4, 2.4, 1, 1])
+
+                    with top[0]:
+                        new_label = st.text_input("label (visible)", value=lab, key=f"{base_key}_lab")
+                    with top[1]:
+                        new_name = st.text_input("name (interno)", value=nm, key=f"{base_key}_nm")
+
+                    ck_val = ""
+                    if selected_list == "list_distrito":
+                        with top[2]:
+                            ck_val = st.text_input(
+                                "canton_key",
+                                value=str(r.get("canton_key", "")).strip(),
+                                key=f"{base_key}_ck"
+                            )
+
+                    # Guardar
+                    save_col = top[2] if selected_list != "list_distrito" else top[3]
+                    del_col = top[3] if selected_list != "list_distrito" else top[4]
+
+                    with save_col:
+                        if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
+                            new_nm = new_name.strip() if new_name.strip() else nm
+                            # Si cambió name, borrar viejo
+                            if new_nm != nm:
+                                cb_delete_row(ln, nm)
+
+                            row_new = dict(r)
+                            row_new["label"] = new_label.strip()
+                            row_new["name"] = new_nm
+                            row_new["list_name"] = ln
+                            if selected_list == "list_distrito":
+                                row_new["canton_key"] = str(ck_val).strip()
+
+                            cb_upsert_row(row_new)
+                            st.success("Guardado.")
+                            st.rerun()
+
+                    with del_col:
+                        if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
+                            cb_delete_row(ln, nm)
+                            st.success("Eliminado.")
+                            st.rerun()
+
+            # Asegurar placeholder si por alguna razón quedó vacía
+            if selected_list in ("list_canton", "list_distrito", "yesno", "genero", "escolaridad", "relacion_zona", "seguridad_5"):
+                if not cb_rows_for_list(selected_list):
+                    cb_ensure_list_exists(selected_list)
 
 # ==========================================================================================
 # FIN PARTE 4/10
 # ==========================================================================================
+
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 5/10) ==============================
 # ========== PÁGINA 7 — VICTIMIZACIÓN (APARTADO A: VIOLENCIA INTRAFAMILIAR) ================
@@ -2394,6 +2456,7 @@ if active_tab == "Exportar":
 # ==========================================================================================
 # FIN PARTE 10/10
 # ==========================================================================================
+
 
 
 
