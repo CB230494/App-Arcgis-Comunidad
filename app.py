@@ -999,262 +999,314 @@ if section == "Choices":
 # -*- coding: utf-8 -*-
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 6/10) ==============================
-# =================== Glosario por Página (editable) + Bloque generador ===================
+# ============ Editor Catálogo Cantón→Distrito (integrado a choices_bank) ==================
 # ==========================================================================================
 #
-# ✅ PARTE 6/10 (CORREGIDA) HACE:
-# 1) Define y mantiene un mapa editable de glosario por página (P1..P10).
-# 2) NO depende del orden de pegado del código:
-#    - Si `pages` aún no existe cuando se ejecuta esta parte, NO revienta.
-#    - Usa un fallback seguro ["p1".."p10"].
-# 3) Incluye funciones para:
-#    - asignar términos del glosario global a una página (page_glossary_map)
-#    - construir el bloque Survey123 (select_one yesno + group + notes)
-# 4) Incluye UI para asignación por página dentro de la pestaña "Glosario"
-#    (solo se muestra cuando active_tab == "Glosario").
+# ESTA PARTE 6/10 HACE:
+# 1) Editor amigable para cargar Cantón→Distrito "por lotes"
+#    e integrarlo DIRECTAMENTE en choices_bank, para que:
+#    ✅ Survey123 NO falle (listas existen y tienen filas reales)
+#    ✅ choice_filter "canton_key=${canton}" funcione
+#
+# 2) Permite:
+#    - Agregar cantón + múltiples distritos
+#    - Ver y editar tabla de cantones (list_canton)
+#    - Ver y editar tabla de distritos (list_distrito) con canton_key
+#    - Borrar cantones (y distritos asociados) / borrar distritos individuales
 #
 # IMPORTANTE:
-# - Esta parte NO exporta. Solo prepara funciones y UI.
-# - La inserción del glosario dentro del XLSForm se hace en Partes posteriores.
+# - Esta parte NO depende de "pages" ni de glosario. Solo usa:
+#   - st.session_state.choices_bank
+#   - helpers de choices ya definidos en PARTE 4:
+#       cb_all_lists(), cb_rows_for_list(), cb_delete_row(), cb_upsert_row(), cb_ensure_list_exists()
+#   - slugify_name() y asegurar_nombre_unico() (PARTE 1)
+# - La UI se muestra SOLO cuando la "Sección" activa es "Catálogo"
+#
 # ==========================================================================================
 
 # ==========================================================================================
-# 0) Helpers de seguridad (NO depender de orden de pegado)
+# Helpers Catálogo (sobre choices_bank)
 # ==========================================================================================
-def _safe_pages_list() -> list[str]:
+
+def cat_get_cantones() -> list[dict]:
     """
-    Retorna la lista de páginas aunque todavía no se haya definido `pages`.
-    - Si `pages` existe y es lista, lo usa.
-    - Si no existe, usa el estándar P1..P10 (Encuesta Comunidad 2026).
-    """
-    try:
-        _p = pages  # noqa: F821
-        if isinstance(_p, list) and _p:
-            return _p
-    except Exception:
-        pass
-    return ["p1","p2","p3","p4","p5","p6","p7","p8","p9","p10"]
-
-
-def _safe_pages_labels() -> dict:
-    """
-    Retorna labels de páginas aunque `pages_labels` no exista todavía.
-    """
-    try:
-        _pl = pages_labels  # noqa: F821
-        if isinstance(_pl, dict) and _pl:
-            return _pl
-    except Exception:
-        pass
-
-    # Fallback exacto al esquema 2026 (P1..P10)
-    return {
-        "p1": "P1 Introducción",
-        "p2": "P2 Consentimiento",
-        "p3": "P3 Datos demográficos",
-        "p4": "P4 Percepción ciudadana de seguridad en el distrito",
-        "p5": "P5 Riesgos sociales y situacionales en el distrito",
-        "p6": "P6 Delitos",
-        "p7": "P7 Victimización A: Violencia intrafamiliar",
-        "p8": "P8 Victimización B: Otros delitos",
-        "p9": "P9 Confianza Policial",
-        "p10": "P10 Propuestas ciudadanas para la mejora de la seguridad",
-    }
-
-
-# ==========================================================================================
-# 1) Estado: mapa de glosario por página (editable)
-# ==========================================================================================
-def init_page_glossary_map():
-    """
-    Inicializa el mapa de glosario por página sin depender de si `pages` ya existe.
-    También asegura que si luego agregas páginas nuevas, aparezcan en el mapa.
-    """
-    if "page_glossary_map" not in st.session_state:
-        # Seed razonable (editable desde UI)
-        st.session_state.page_glossary_map = {
-            "p1": [],
-            "p2": [],
-            "p3": [],
-            "p4": ["Extorsión", "Daños/vandalismo"],
-            "p5": ["Búnkeres", "Receptación", "Contrabando", "Trata de personas", "Explotación infantil", "Acoso callejero", "Tráfico de personas (coyotaje)", "Estafa", "Tacha"],
-            "p6": ["Receptación", "Contrabando", "Tráfico de personas (coyotaje)", "Acoso callejero", "Estafa", "Tacha", "Trata de personas", "Explotación infantil", "Extorsión", "Búnkeres"],
-            "p7": ["Ganzúa (pata de chancho)", "Boquete", "Arrebato", "Receptación", "Extorsión"],
-            "p8": ["Ganzúa (pata de chancho)", "Boquete", "Arrebato", "Receptación", "Extorsión"],
-            "p9": ["Patrullaje", "Acciones disuasivas", "Coordinación interinstitucional", "Integridad y credibilidad policial"],
-            "p10": ["Coordinación interinstitucional", "Acciones disuasivas"],
-        }
-
-    # Asegurar llaves para todas las páginas existentes (o fallback)
-    for p in _safe_pages_list():
-        if p not in st.session_state.page_glossary_map:
-            st.session_state.page_glossary_map[p] = []
-
-init_page_glossary_map()
-
-# ==========================================================================================
-# 2) Helpers: generar bloque de glosario para Survey123 (filas "survey")
-# ==========================================================================================
-def build_glossary_block_rows(page_id: str, relevant_base: str, v_si: str, terms: list[str]) -> list[dict]:
-    """
-    Construye filas 'survey' para un glosario por página.
-
-    - page_id: "p4", "p5", etc.
-    - relevant_base: expresión base de relevancia (ej. ${acepta_participar}='si')
-    - v_si: slug de "Sí" (ej. "si")
-    - terms: lista de términos seleccionados para esta página.
-
-    Retorna: lista de filas (dicts) para agregar a survey_rows.
+    Retorna cantones reales (sin placeholder) desde choices_bank para list_canton.
+    Formato: [{"name": "<slug>", "label": "Cantón"}, ...]
     """
     out = []
-
-    # Filtrar solo términos que existan en el glosario global
-    terms_ok = [t for t in (terms or []) if t in st.session_state.glossary_bank]
-    if not terms_ok:
-        return out
-
-    # Pregunta de acceso al glosario
-    out.append({
-        "type": "select_one yesno",
-        "name": f"{page_id}_accede_glosario",
-        "label": "¿Desea acceder al glosario de esta sección?",
-        "required": "no",
-        "appearance": "minimal",
-        "relevant": relevant_base
-    })
-
-    rel_glos = f"({relevant_base}) and (${{{page_id}_accede_glosario}}='{v_si}')"
-
-    out.append({
-        "type": "begin_group",
-        "name": f"{page_id}_glosario",
-        "label": "Glosario",
-        "relevant": rel_glos
-    })
-
-    out.append({
-        "type": "note",
-        "name": f"{page_id}_glosario_intro",
-        "label": "A continuación, se muestran definiciones de términos que aparecen en esta sección.",
-        "relevant": rel_glos,
-        "bind::esri:fieldType": "null"
-    })
-
-    for i, t in enumerate(terms_ok, start=1):
-        out.append({
-            "type": "note",
-            "name": f"{page_id}_glos_{i}",
-            "label": str(st.session_state.glossary_bank.get(t, "")).strip(),
-            "relevant": rel_glos,
-            "bind::esri:fieldType": "null"
-        })
-
-    out.append({
-        "type": "note",
-        "name": f"{page_id}_glosario_cierre",
-        "label": "Para continuar con la encuesta, desplácese hacia arriba y continúe con normalidad.",
-        "relevant": rel_glos,
-        "bind::esri:fieldType": "null"
-    })
-
-    out.append({
-        "type": "end_group",
-        "name": f"{page_id}_glosario_end",
-        "label": ""
-    })
-
-    return out
+    for r in st.session_state.get("choices_bank", []) or []:
+        if str(r.get("list_name", "")).strip() == "list_canton":
+            nm = str(r.get("name", "")).strip()
+            lb = str(r.get("label", "")).strip()
+            if nm and nm != "placeholder_1":
+                out.append({"name": nm, "label": lb})
+    return sorted(out, key=lambda x: (x["label"] or "").lower())
 
 
-def get_page_glossary_terms(page_id: str) -> list[str]:
-    return list(st.session_state.page_glossary_map.get(page_id, []) or [])
+def cat_get_distritos() -> list[dict]:
+    """
+    Retorna distritos reales (sin placeholder) desde choices_bank para list_distrito.
+    Formato: [{"name": "<slug>", "label": "Distrito", "canton_key": "<slug_canton>"}, ...]
+    """
+    out = []
+    for r in st.session_state.get("choices_bank", []) or []:
+        if str(r.get("list_name", "")).strip() == "list_distrito":
+            nm = str(r.get("name", "")).strip()
+            lb = str(r.get("label", "")).strip()
+            ck = str(r.get("canton_key", "")).strip()
+            if nm and nm != "placeholder_1":
+                out.append({"name": nm, "label": lb, "canton_key": ck})
+    return sorted(out, key=lambda x: ((x["canton_key"] or "").lower(), (x["label"] or "").lower()))
 
 
-def set_page_glossary_terms(page_id: str, terms: list[str]):
-    st.session_state.page_glossary_map[page_id] = list(terms or [])
+def cat_add_lote(canton_label: str, distritos_labels: list[str]) -> tuple[bool, str]:
+    """
+    Agrega un lote:
+      Cantón (label) => genera slug => name
+      Distritos (labels) => slugs => name únicos en list_distrito
+      Cada distrito guarda canton_key=<slug del cantón>
+
+    Retorna: (ok, mensaje)
+    """
+    canton_label = (canton_label or "").strip()
+    distritos_labels = [d.strip() for d in (distritos_labels or []) if d and d.strip()]
+
+    if not canton_label:
+        return False, "Debes indicar el Cantón."
+    if not distritos_labels:
+        return False, "Debes indicar al menos un Distrito (uno por línea)."
+
+    # Asegurar existencia mínima de listas
+    cb_ensure_list_exists("list_canton")
+    cb_ensure_list_exists("list_distrito")
+
+    slug_c = slugify_name(canton_label)
+
+    # Upsert cantón (si ya existe, solo actualiza label)
+    cb_upsert_row({"list_name": "list_canton", "name": slug_c, "label": canton_label})
+
+    # Distritos: name únicos dentro de list_distrito
+    existing_d = cb_rows_for_list("list_distrito")
+    used_names = {str(r.get("name", "")).strip() for r in existing_d if str(r.get("name", "")).strip()}
+
+    added = 0
+    for dlab in distritos_labels:
+        base = slugify_name(dlab)
+        nm = asegurar_nombre_unico(base, used_names)
+        used_names.add(nm)
+        cb_upsert_row({"list_name": "list_distrito", "name": nm, "label": dlab, "canton_key": slug_c})
+        added += 1
+
+    return True, f"Lote agregado/actualizado: {canton_label} → {added} distrito(s)."
 
 
-# ==========================================================================================
-# 3) UI: asignar términos del glosario a cada página (para cualquier persona)
-# ==========================================================================================
-# Nota: este bloque se integra dentro de la pestaña "Glosario" (active_tab == "Glosario")
-if "active_tab" in globals() and active_tab == "Glosario":
-    st.markdown("---")
-    st.subheader("🧷 Glosario por Página (P1–P10) — asignación editable")
+def cat_delete_canton(slug_canton: str, delete_children: bool = True):
+    """
+    Borra un cantón por su slug (name). Opcionalmente borra distritos asociados (canton_key).
+    """
+    slug_canton = (slug_canton or "").strip()
+    if not slug_canton:
+        return
 
-    st.caption(
-        "Aquí decides qué términos del glosario (global) se muestran como glosario en cada página. "
-        "Esto se traducirá a un bloque Survey123 que aparece solo si la persona marca “Sí”."
-    )
+    # Borra cantón
+    cb_delete_row("list_canton", slug_canton)
 
-    _pages = _safe_pages_list()
-    _labels = _safe_pages_labels()
+    # Borra distritos asociados
+    if delete_children:
+        st.session_state.choices_bank = [
+            r for r in (st.session_state.get("choices_bank", []) or [])
+            if not (
+                str(r.get("list_name", "")).strip() == "list_distrito"
+                and str(r.get("canton_key", "")).strip() == slug_canton
+            )
+        ]
 
-    gl_pages_cols = st.columns(2)
-    with gl_pages_cols[0]:
-        page_for_gl = st.selectbox(
-            "Página a configurar",
-            options=_pages,
-            format_func=lambda p: _labels.get(p, p),
-            key="gl_page_select"
+
+def cat_delete_distrito(name_distrito: str):
+    """
+    Borra un distrito por su name (slug) en list_distrito.
+    """
+    name_distrito = (name_distrito or "").strip()
+    if not name_distrito:
+        return
+    cb_delete_row("list_distrito", name_distrito)
+
+
+def cat_clear_all_keep_placeholders():
+    """
+    Limpia TODOS los cantones/distritos reales, mantiene placeholders.
+    """
+    st.session_state.choices_bank = [
+        r for r in (st.session_state.get("choices_bank", []) or [])
+        if not (
+            (str(r.get("list_name", "")).strip() == "list_canton" and str(r.get("name", "")).strip() != "placeholder_1")
+            or
+            (str(r.get("list_name", "")).strip() == "list_distrito" and str(r.get("name", "")).strip() != "placeholder_1")
         )
+    ]
+    cb_ensure_list_exists("list_canton")
+    cb_ensure_list_exists("list_distrito")
 
-    all_terms = gl_all_terms()
-    current_terms = get_page_glossary_terms(page_for_gl)
 
+# ==========================================================================================
+# UI Catálogo (solo cuando Sección activa == "Catálogo")
+# ==========================================================================================
+if "active_tab" in globals() and str(active_tab) == "Catálogo":
+    st.subheader("📚 Catálogo Cantón → Distrito (cascada) — fácil y sin Excel")
+
+    # Asegurar listas mínimas
+    cb_ensure_list_exists("list_canton")
+    cb_ensure_list_exists("list_distrito")
+
+    # ---------------------------
+    # Agregar por lotes
+    # ---------------------------
+    st.markdown("### ➕ Agregar por lote (Cantón y Distritos)")
     with st.container(border=True):
-        selected_terms = st.multiselect(
-            "Términos incluidos en el glosario de esta página",
-            options=all_terms,
-            default=[t for t in current_terms if t in all_terms],
-            key=f"gl_terms_{page_for_gl}"
+        col_c1, col_c2 = st.columns([2, 3])
+
+        canton_txt = col_c1.text_input("Cantón (una vez)", value="", key="cat_canton_txt")
+        distritos_txt = col_c2.text_area(
+            "Distritos del cantón (uno por línea)",
+            value="",
+            height=140,
+            key="cat_distritos_txt"
         )
 
-        st.caption("Orden del glosario (opcional). Si quieres ordenar manualmente, pega la lista en el orden deseado:")
-        order_text = st.text_area(
-            "Orden (uno por línea)",
-            value="\n".join(selected_terms),
-            height=120,
-            key=f"gl_order_{page_for_gl}"
-        )
+        b1, b2 = st.columns([1, 1])
+        with b1:
+            if st.button("Agregar lote", type="primary", use_container_width=True, key="cat_add_lote_btn"):
+                d_list = [d.strip() for d in (distritos_txt or "").splitlines() if d and d.strip()]
+                ok, msg = cat_add_lote(canton_txt, d_list)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("💾 Guardar asignación", type="primary", use_container_width=True, key=f"gl_save_map_{page_for_gl}"):
-                lines = [ln.strip() for ln in order_text.splitlines() if ln.strip()]
-                # Mantener solo términos válidos y sin duplicados
-                seen = set()
-                final = []
-                for t in lines:
-                    if t in all_terms and t not in seen:
-                        final.append(t)
-                        seen.add(t)
-
-                set_page_glossary_terms(page_for_gl, final)
-                st.success("Asignación guardada.")
+        with b2:
+            if st.button("Limpiar catálogo (cantones/distritos)", use_container_width=True, key="cat_clear_btn"):
+                cat_clear_all_keep_placeholders()
+                st.success("Catálogo limpiado (se mantuvieron placeholders).")
                 st.rerun()
 
-        with c2:
-            if st.button("🧹 Limpiar página", use_container_width=True, key=f"gl_clear_map_{page_for_gl}"):
-                set_page_glossary_terms(page_for_gl, [])
-                st.success("Glosario eliminado para esta página.")
-                st.rerun()
+    st.markdown("---")
 
-    st.markdown("### 👁️ Vista previa del glosario de esta página")
-    prev_terms = get_page_glossary_terms(page_for_gl)
-    if not prev_terms:
-        st.info("Esta página no tiene términos asignados.")
-    else:
-        with st.container(border=True):
-            for t in prev_terms:
-                st.write(f"**{t}**")
-                st.write(gl_get(t))
+    # ---------------------------
+    # Tablas de edición
+    # ---------------------------
+    cantones = cat_get_cantones()
+    distritos = cat_get_distritos()
+
+    t1, t2 = st.columns(2)
+
+    # ===== Cantones =====
+    with t1:
+        st.markdown("### 🏛 Cantones (list_canton)")
+        if not cantones:
+            st.info("No hay cantones cargados todavía.")
+        else:
+            for i, c in enumerate(cantones):
+                slug_c = c["name"]
+                lbl_c = c["label"]
+                base_key = f"cat_c_{slug_c}_{i}"
+
+                with st.container(border=True):
+                    top = st.columns([2.2, 2.2, 1, 1])
+                    with top[0]:
+                        new_label = st.text_input("label", value=lbl_c, key=f"{base_key}_lbl")
+                    with top[1]:
+                        new_slug = st.text_input("name (slug)", value=slug_c, key=f"{base_key}_slug")
+
+                    with top[2]:
+                        if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
+                            old = slug_c
+                            new = new_slug.strip() if new_slug.strip() else old
+                            new_lab = new_label.strip()
+
+                            # Si cambia slug, actualizar canton_key en distritos
+                            if new != old:
+                                # borrar viejo
+                                cb_delete_row("list_canton", old)
+
+                                # actualizar distritos asociados
+                                for j, r in enumerate(st.session_state.get("choices_bank", []) or []):
+                                    if (
+                                        str(r.get("list_name", "")).strip() == "list_distrito"
+                                        and str(r.get("canton_key", "")).strip() == old
+                                    ):
+                                        st.session_state.choices_bank[j]["canton_key"] = new
+
+                            cb_upsert_row({"list_name": "list_canton", "name": new, "label": new_lab})
+                            cb_ensure_list_exists("list_canton")
+                            cb_ensure_list_exists("list_distrito")
+                            st.success("Cantón guardado.")
+                            st.rerun()
+
+                    with top[3]:
+                        if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
+                            cat_delete_canton(slug_canton=slug_c, delete_children=True)
+                            cb_ensure_list_exists("list_canton")
+                            cb_ensure_list_exists("list_distrito")
+                            st.success("Cantón y distritos asociados eliminados.")
+                            st.rerun()
+
+    # ===== Distritos =====
+    with t2:
+        st.markdown("### 🧭 Distritos (list_distrito + canton_key)")
+        if not distritos:
+            st.info("No hay distritos cargados todavía.")
+        else:
+            for i, d in enumerate(distritos):
+                nm = d["name"]
+                lb = d["label"]
+                ck = d["canton_key"]
+                base_key = f"cat_d_{ck}_{nm}_{i}"
+
+                with st.container(border=True):
+                    top = st.columns([2.2, 2.2, 2.2, 1, 1])
+                    with top[0]:
+                        new_label = st.text_input("label", value=lb, key=f"{base_key}_lbl")
+                    with top[1]:
+                        new_name = st.text_input("name", value=nm, key=f"{base_key}_nm")
+                    with top[2]:
+                        new_ck = st.text_input("canton_key", value=ck, key=f"{base_key}_ck")
+
+                    with top[3]:
+                        if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
+                            old_nm = nm
+                            nn = new_name.strip() if new_name.strip() else old_nm
+
+                            # si cambia name, borrar viejo
+                            if nn != old_nm:
+                                cb_delete_row("list_distrito", old_nm)
+
+                            cb_upsert_row({
+                                "list_name": "list_distrito",
+                                "name": nn,
+                                "label": new_label.strip(),
+                                "canton_key": new_ck.strip()
+                            })
+                            cb_ensure_list_exists("list_canton")
+                            cb_ensure_list_exists("list_distrito")
+                            st.success("Distrito guardado.")
+                            st.rerun()
+
+                    with top[4]:
+                        if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
+                            cat_delete_distrito(nm)
+                            cb_ensure_list_exists("list_canton")
+                            cb_ensure_list_exists("list_distrito")
+                            st.success("Distrito eliminado.")
+                            st.rerun()
+
+    # Garantía final: nunca dejar listas críticas vacías (placeholders)
+    cb_ensure_list_exists("list_canton")
+    cb_ensure_list_exists("list_distrito")
 
 # ==========================================================================================
 # FIN PARTE 6/10
 # ==========================================================================================
-
-
 
 
 
