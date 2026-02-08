@@ -164,30 +164,24 @@ def ensure_choice_list_exists_min(choices_rows: list[dict], list_name: str):
 
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 2/10) ==============================
-# = Estado editable (bancos) + Seeds BASE (P1–P10) + Encabezado (logo + delegación)
+# = Estado editable (bancos) + Seeds base P1..P10 (NO quedan páginas vacías)               =
 # ==========================================================================================
 #
-# ✅ ESTA PARTE 2/10 HACE (ACTUALIZADA):
-# 1) Inicializa en st.session_state los bancos editables:
-#    - questions_bank: preguntas (survey rows) editables
-#    - choices_bank: opciones (choices rows) editables
-#    - glossary_bank: glosario (término -> definición) editable
-#    - choices_ext_rows: catálogo Cantón→Distrito por lotes (opcional)
-#    - page_glossary_map: términos por página (P1..P10)
-#
-# 2) Seeds (precarga) PARA QUE NO HAYA PÁGINAS VACÍAS:
-#    - Crea grupos begin_group/end_group por cada página P1..P10
-#    - Precarga P1, P2, P3 y P4 con contenido real base (consentimiento/demográficos/percepción)
-#    - Precarga P5..P10 con “placeholder” EDITABLE (para que NO salga “No hay preguntas”)
-#
-# 3) Encabezado (logo + delegación + media::image) como tu flujo original:
-#    - NO se sube Word
-#    - NO se pide docx
-#    - Solo logo opcional (como ya lo tenías)
+# ESTA PARTE 2/10 HACE:
+# 1) Inicializa st.session_state (bancos editables):
+#    - questions_bank: preguntas (survey) editables
+#    - choices_bank: opciones (choices) editables
+#    - glossary_bank: glosario global editable
+#    - page_glossary_map: glosario por página (P1..P10)
+# 2) Carga SEED base (solo si los bancos están vacíos) para que:
+#    ✅ P1..P10 tengan contenido mínimo y NO queden vacías
+#    ✅ Cantón→Distrito esté listo (list_canton / list_distrito + choice_filter)
+#    ✅ Consentimiento + end por No funcione
+# 3) Encabezado: logo + delegación (SIN pedir Word)
 #
 # IMPORTANTE:
-# - P5 te salía vacía porque en tu seed anterior NO había preguntas en P5.
-#   Aquí garantizamos que P1..P10 SIEMPRE tengan contenido (aunque sea placeholder).
+# - Las preguntas detalladas de P5..P10 se insertan en Partes posteriores (autocuración/seed extendido),
+#   pero aquí garantizamos que el flujo ya sea funcional y navegable.
 # ==========================================================================================
 
 # ==========================================================================================
@@ -201,11 +195,12 @@ def init_state():
     if "glossary_bank" not in st.session_state:
         st.session_state.glossary_bank = {}   # dict: { "Termino": "Definición..." }
     if "choices_ext_rows" not in st.session_state:
-        st.session_state.choices_ext_rows = []  # opcional: catálogo cantón/distrito por lotes
-    if "page_glossary_map" not in st.session_state:
-        st.session_state.page_glossary_map = {}  # dict: { "p1":[...], ... }
+        st.session_state.choices_ext_rows = []  # opcional
 
-    # Selección UI
+    if "page_glossary_map" not in st.session_state:
+        st.session_state.page_glossary_map = {p: [] for p in pages}
+
+    # UI
     if "active_page" not in st.session_state:
         st.session_state.active_page = "p1"
     if "selected_qid" not in st.session_state:
@@ -215,17 +210,24 @@ def init_state():
     if "show_advanced_fields" not in st.session_state:
         st.session_state.show_advanced_fields = False
 
+    # flags
+    if "_autocuracion_done" not in st.session_state:
+        st.session_state["_autocuracion_done"] = False
+
 init_state()
 
 # ==========================================================================================
-# 2) Textos base (SIN pedir Word, precargado en código)
+# 2) Textos base (P1 y P2) — iguales a tu lógica original
 # ==========================================================================================
 DEFAULT_LOGO_PATH = "001.png"
 
 INTRO_COMUNIDAD_EXACTA = (
-    "Con el fin de hacer más segura nuestra comunidad, deseamos concentrarnos en los problemas de seguridad más importantes. "
-    "Queremos trabajar en conjunto con el gobierno local, otras instituciones y la comunidad para reducir los delitos y riesgos que afectan a las personas.\n"
-    "Es importante recordarle que la información que usted nos proporcione es confidencial y se utilizará únicamente para mejorar la seguridad en nuestra área."
+    "Con el fin de hacer más segura nuestra comunidad, deseamos concentrarnos en los \n"
+    "problemas de seguridad más importantes. Queremos trabajar en conjunto con el gobierno \n"
+    "local, otras instituciones y la comunidad para reducir los delitos y riesgos que afectan a las \n"
+    "personas. \n"
+    "Es importante recordarle que la información que usted nos proporcione es confidencial y se \n"
+    "utilizará únicamente para mejorar la seguridad en nuestra área."
 )
 
 CONSENT_TITLE = "Consentimiento Informado para la Participación en la Encuesta"
@@ -234,7 +236,7 @@ CONSENT_PARRAFOS = [
     "Usted está siendo invitado(a) a participar de forma libre y voluntaria en una encuesta sobre seguridad, convivencia y percepción ciudadana, dirigida a personas mayores de 18 años.",
     "El objetivo de esta encuesta es recopilar información de carácter preventivo y estadístico, con el fin de apoyar la planificación de acciones de prevención, mejora de la convivencia y fortalecimiento de la seguridad en comunidades y zonas comerciales.",
     "La participación es totalmente voluntaria. Usted puede negarse a responder cualquier pregunta, así como retirarse de la encuesta en cualquier momento, sin que ello genere consecuencia alguna.",
-    "De conformidad con lo dispuesto en el artículo 5 de la Ley N.º 8968, Ley de Protección de la Persona frente al Tratamiento de sus Datos Personales, se le informa que:",
+    "De conformidad con lo dispuesto en el artículo 5 de la Ley N.º 8968, Ley de Protección de la Persona frente al Tratamiento de sus Datos Personales, se le informa que:"
 ]
 
 CONSENT_BULLETS = [
@@ -243,25 +245,16 @@ CONSENT_BULLETS = [
     "Tratamiento de los datos: Los datos serán almacenados, analizados y resguardados bajo criterios de confidencialidad y seguridad, conforme a la normativa vigente.",
     "Destinatarios y acceso: La información será conocida únicamente por el personal autorizado de la Fuerza Pública / Ministerio de Seguridad Pública, para los fines indicados. No será cedida a terceros ajenos a estos fines.",
     "Responsable de la base de datos: El Ministerio de Seguridad Pública, a través de la Dirección de Programas Policiales Preventivos, Oficina Estrategia Integral de Prevención para la Seguridad Pública (EIPSEP / Estrategia Sembremos Seguridad) será el responsable del tratamiento y custodia de la información recolectada.",
-    "Derechos de la persona participante: Usted conserva el derecho a la autodeterminación informativa y a decidir libremente sobre el suministro de sus datos.",
+    "Derechos de la persona participante: Usted conserva el derecho a la autodeterminación informativa y a decidir libremente sobre el suministro de sus datos."
 ]
 
 CONSENT_CIERRE = [
     "Las respuestas brindadas no constituyen denuncias formales, ni sustituyen los mecanismos legales correspondientes.",
-    "Al continuar con la encuesta, usted manifiesta haber leído y comprendido la información anterior y otorga su consentimiento informado para participar.",
+    "Al continuar con la encuesta, usted manifiesta haber leído y comprendido la información anterior y otorga su consentimiento informado para participar."
 ]
 
-P4_INTRO = (
-    "En esta sección le preguntaremos sobre cómo percibe la seguridad en su distrito. Las siguientes preguntas buscan conocer su opinión y experiencia "
-    "sobre la seguridad en el lugar donde vive o trabaja, así como en los distintos espacios que forman parte del distrito. Nos interesa saber cómo siente "
-    "y cómo observa la seguridad, cuáles lugares le generan mayor o menor tranquilidad y si considera que la situación ha mejorado, empeorado o se mantiene igual. "
-    "Sus respuestas nos ayudarán a identificar qué espacios generan mayor preocupación, entender por qué se perciben como inseguros y conocer la forma en que las personas "
-    "viven la seguridad en su entorno. Esta información se utilizará para apoyar el análisis de la situación del distrito y orientar acciones de mejora y prevención. "
-    "No hay respuestas correctas o incorrectas. Le pedimos responder con sinceridad, según su experiencia y percepción personal."
-)
-
 # ==========================================================================================
-# 3) Glosario base (editable)
+# 3) Glosario base (editable) — incluye Arrebato
 # ==========================================================================================
 GLOSARIO_BASE = {
     "Extorsión": (
@@ -291,10 +284,12 @@ GLOSARIO_BASE = {
 }
 
 # ==========================================================================================
-# 4) Seed de choices base (editable) + listas críticas
+# 4) Seeds de choices base (editable)
+#    - Garantiza yesno, list_canton, list_distrito con placeholder mínimo
 # ==========================================================================================
 def seed_choices_base():
     choices_rows = []
+
     add_choice_list(choices_rows, "yesno", ["Sí", "No"])
     add_choice_list(choices_rows, "genero", ["Femenino", "Masculino", "Persona No Binaria", "Prefiero no decir"])
     add_choice_list(choices_rows, "escolaridad", [
@@ -307,52 +302,21 @@ def seed_choices_base():
         "Universitaria incompleta",
         "Universitaria completa",
     ])
+
+    # relación con zona (comunidad)
     add_choice_list(choices_rows, "relacion_zona", ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"])
+
+    # escala 5
     add_choice_list(choices_rows, "seguridad_5", ["Muy inseguro", "Inseguro", "Ni seguro ni inseguro", "Seguro", "Muy seguro"])
 
-    # Edad por rangos (como el formato 2026)
-    add_choice_list(choices_rows, "edad_rango", ["18 a 29 años", "30 a 44 años", "45 a 64 años", "65 años o más"])
-
-    # Motivos de inseguridad (P4 7.1) — lista multiselección
-    add_choice_list(choices_rows, "p7_1_motivos", [
-        "Venta o distribución de drogas",
-        "Consumo de drogas en espacios públicos",
-        "Consumo de alcohol en espacios públicos",
-        "Riñas o peleas frecuentes",
-        "Asaltos o robos a personas",
-        "Robos a viviendas o comercios",
-        "Amenazas o extorsiones",
-        "Balaceras, detonaciones o ruidos similares",
-        "Presencia de grupos que generan temor",
-        "Vandalismo o daños intencionales",
-        "Poca iluminación en calles o espacios públicos",
-        "Lotes baldíos o abandonados",
-        "Casas o edificios abandonados",
-        "Calles en mal estado",
-        "Falta de limpieza o acumulación de basura",
-        "Paradas de bus inseguras",
-        "Falta de cámaras de seguridad",
-        "Comercios inseguros o sin control",
-        "Daños frecuentes a la propiedad",
-        "Presencia de personas en situación de calle que influye en su percepción de seguridad",
-        "Presencia de personas en situación de ocio (sin actividad laboral o educativa)",
-        "Ventas informales (ambulantes)",
-        "Problemas con transporte informal",
-        "Falta de patrullajes visibles",
-        "Falta de presencia policial en la zona",
-        "Situaciones de violencia intrafamiliar",
-        "Situaciones de violencia de género",
-        "Otro problema que considere importante",
-    ])
-
-    # ✅ listas canton/distrito siempre deben existir
+    # listas críticas para cascada
     ensure_choice_list_exists_min(choices_rows, "list_canton")
     ensure_choice_list_exists_min(choices_rows, "list_distrito")
 
     return choices_rows
 
 # ==========================================================================================
-# 5) Seed de preguntas (survey) por páginas (P1..P10)
+# 5) Seed mínimo de preguntas P1..P10 (para que NO queden páginas vacías)
 # ==========================================================================================
 def _new_qid(prefix: str = "q") -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
@@ -367,14 +331,14 @@ def seed_questions_base(form_title: str, logo_media_name: str):
     def add_q(page: str, order: int, row: dict):
         qb.append({"qid": _new_qid("q"), "page": page, "order": order, "row": row})
 
-    # ---------------------------- P1: Portada / Introducción ----------------------------
-    add_q("p1", 10, {"type": "begin_group", "name": "p1_portada", "label": "Portada / Introducción", "appearance": "field-list"})
+    # -------------------------------- P1: Introducción --------------------------------
+    add_q("p1", 10, {"type": "begin_group", "name": "p1_intro", "label": pages_labels["p1"], "appearance": "field-list"})
     add_q("p1", 20, {"type": "note", "name": "p1_logo", "label": form_title, "media::image": logo_media_name, "bind::esri:fieldType": "null"})
-    add_q("p1", 30, {"type": "note", "name": "p1_intro_txt", "label": INTRO_COMUNIDAD_EXACTA, "bind::esri:fieldType": "null"})
-    add_q("p1", 90, {"type": "end_group", "name": "p1_end", "label": ""})
+    add_q("p1", 30, {"type": "note", "name": "p1_texto", "label": INTRO_COMUNIDAD_EXACTA, "bind::esri:fieldType": "null"})
+    add_q("p1", 40, {"type": "end_group", "name": "p1_end", "label": ""})
 
-    # ---------------------------- P2: Consentimiento Informado ----------------------------
-    add_q("p2", 10, {"type": "begin_group", "name": "p2_consent", "label": "Consentimiento Informado", "appearance": "field-list"})
+    # -------------------------------- P2: Consentimiento --------------------------------
+    add_q("p2", 10, {"type": "begin_group", "name": "p2_consent", "label": pages_labels["p2"], "appearance": "field-list"})
     add_q("p2", 20, {"type": "note", "name": "p2_titulo", "label": CONSENT_TITLE, "bind::esri:fieldType": "null"})
 
     idx = 30
@@ -409,8 +373,8 @@ def seed_questions_base(form_title: str, logo_media_name: str):
         "relevant": f"${{acepta_participar}}='{v_no}'"
     })
 
-    # ---------------------------- P3: I. Datos Demográficos ----------------------------
-    add_q("p3", 10, {"type": "begin_group", "name": "p3_demograficos", "label": "I. Datos Demográficos", "appearance": "field-list", "relevant": rel_si})
+    # -------------------------------- P3: Datos demográficos --------------------------------
+    add_q("p3", 10, {"type": "begin_group", "name": "p3_demograficos", "label": pages_labels["p3"], "appearance": "field-list", "relevant": rel_si})
 
     add_q("p3", 20, {
         "type": "select_one list_canton",
@@ -433,11 +397,12 @@ def seed_questions_base(form_title: str, logo_media_name: str):
     })
 
     add_q("p3", 40, {
-        "type": "select_one edad_rango",
-        "name": "edad_rango",
-        "label": "3. Edad (en años cumplidos): marque una categoría que incluya su edad.",
+        "type": "integer",
+        "name": "edad_anos",
+        "label": "3. Edad:",
         "required": "yes",
-        "appearance": "minimal",
+        "constraint": ". >= 18 and . <= 120",
+        "constraint_message": "Debe ser un número entre 18 y 120.",
         "relevant": rel_si
     })
 
@@ -468,55 +433,30 @@ def seed_questions_base(form_title: str, logo_media_name: str):
         "relevant": rel_si
     })
 
-    add_q("p3", 90, {"type": "end_group", "name": "p3_end", "label": ""})
+    add_q("p3", 80, {"type": "end_group", "name": "p3_end", "label": ""})
 
-    # ---------------------------- P4: II. Percepción (base real) ----------------------------
-    add_q("p4", 10, {"type": "begin_group", "name": "p4_percepcion", "label": "II. Percepción ciudadana de seguridad en el distrito", "appearance": "field-list", "relevant": rel_si})
-    add_q("p4", 20, {"type": "note", "name": "p4_intro", "label": P4_INTRO, "bind::esri:fieldType": "null", "relevant": rel_si})
-
-    add_q("p4", 30, {
+    # -------------------------------- P4: Percepción (mínimo) --------------------------------
+    add_q("p4", 10, {"type": "begin_group", "name": "p4_percepcion", "label": pages_labels["p4"], "appearance": "field-list", "relevant": rel_si})
+    add_q("p4", 20, {
         "type": "select_one seguridad_5",
-        "name": "p7_seguridad_distrito",
-        "label": "7. ¿Qué tan seguro percibe usted el distrito donde reside o transita?",
+        "name": "p4_seguridad_distrito",
+        "label": "¿Qué tan seguro percibe usted el distrito donde reside o transita?",
         "required": "yes",
         "appearance": "minimal",
         "relevant": rel_si
     })
-
-    # 7.1 solo si Muy inseguro o Inseguro
-    v_muy_inseg = slugify_name("Muy inseguro")
-    v_inseg = slugify_name("Inseguro")
-    rel_71 = f"({rel_si}) and (${{p7_seguridad_distrito}}='{v_muy_inseg}' or ${{p7_seguridad_distrito}}='{v_inseg}')"
-
-    add_q("p4", 40, {
-        "type": "select_multiple p7_1_motivos",
-        "name": "p7_1_motivos_inseg",
-        "label": "7.1. Indique por qué considera el distrito inseguro (Marque todas las situaciones que usted percibe que ocurren con mayor frecuencia en su comunidad):",
-        "required": "no",
-        "relevant": rel_71
-    })
-
     add_q("p4", 90, {"type": "end_group", "name": "p4_end", "label": ""})
 
-    # ---------------------------- P5..P10: placeholders (NO páginas vacías) ----------------------------
-    placeholders = {
-        "p5": "III. Riesgos sociales y situacionales en el distrito",
-        "p6": "III. Delitos",
-        "p7": "III. Victimización A: Violencia intrafamiliar",
-        "p8": "III. Victimización B: Victimización por otros delitos",
-        "p9": "Confianza Policial",
-        "p10": "Propuestas ciudadanas para la mejora de la seguridad",
-    }
-
-    for p, titulo in placeholders.items():
-        add_q(p, 10, {"type": "begin_group", "name": f"{p}_grupo", "label": titulo, "appearance": "field-list", "relevant": rel_si})
-        add_q(p, 20, {"type": "note", "name": f"{p}_placeholder", "label": "Sección precargada (editable). Aquí se insertarán las preguntas completas de esta página.", "bind::esri:fieldType": "null", "relevant": rel_si})
+    # -------------------------------- P5..P10: contenedor mínimo (NO vacío) --------------------------------
+    for p in ["p5", "p6", "p7", "p8", "p9", "p10"]:
+        add_q(p, 10, {"type": "begin_group", "name": f"{p}_grupo", "label": pages_labels[p], "appearance": "field-list", "relevant": rel_si})
+        add_q(p, 20, {"type": "note", "name": f"{p}_pendiente_seed", "label": "Contenido de esta sección será cargado/actualizado desde el editor.", "bind::esri:fieldType": "null", "relevant": rel_si})
         add_q(p, 90, {"type": "end_group", "name": f"{p}_end", "label": ""})
 
     return qb
 
 # ==========================================================================================
-# 6) Glosario por página (seed editable)
+# 6) Seed de glosario por página (editable)
 # ==========================================================================================
 def seed_page_glossary_map():
     return {
@@ -526,14 +466,14 @@ def seed_page_glossary_map():
         "p4": ["Extorsión", "Daños/vandalismo"],
         "p5": ["Búnkeres", "Receptación", "Contrabando", "Trata de personas", "Explotación infantil", "Acoso callejero", "Tráfico de personas (coyotaje)", "Estafa", "Tacha"],
         "p6": ["Receptación", "Contrabando", "Tráfico de personas (coyotaje)", "Acoso callejero", "Estafa", "Tacha", "Trata de personas", "Explotación infantil", "Extorsión", "Búnkeres"],
-        "p7": ["Ganzúa (pata de chancho)", "Boquete", "Arrebato", "Receptación", "Extorsión"],
-        "p8": ["Arrebato", "Receptación", "Extorsión", "Estafa"],
+        "p7": ["Arrebato", "Ganzúa (pata de chancho)", "Boquete", "Receptación", "Extorsión"],
+        "p8": ["Arrebato", "Receptación", "Extorsión"],
         "p9": ["Patrullaje", "Acciones disuasivas", "Coordinación interinstitucional", "Integridad y credibilidad policial"],
         "p10": ["Coordinación interinstitucional"],
     }
 
 # ==========================================================================================
-# 7) Aplicar seed si los bancos están vacíos
+# 7) Aplicar seed si los bancos están vacíos (una sola vez)
 # ==========================================================================================
 def apply_seed_if_empty(form_title: str, logo_media_name: str):
     if not st.session_state.questions_bank:
@@ -545,15 +485,20 @@ def apply_seed_if_empty(form_title: str, logo_media_name: str):
     if not st.session_state.glossary_bank:
         st.session_state.glossary_bank = dict(GLOSARIO_BASE)
 
-    if not st.session_state.page_glossary_map:
+    if not st.session_state.page_glossary_map or not isinstance(st.session_state.page_glossary_map, dict):
         st.session_state.page_glossary_map = seed_page_glossary_map()
 
-    # Selección por defecto: primera pregunta
+    # Asegurar claves de páginas en page_glossary_map
+    for p in pages:
+        if p not in st.session_state.page_glossary_map:
+            st.session_state.page_glossary_map[p] = []
+
+    # Selección por defecto
     if st.session_state.questions_bank and not st.session_state.selected_qid:
         st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"]
 
 # ==========================================================================================
-# 8) Encabezado: logo + delegación (igual a tu flujo)
+# 8) Encabezado: logo + delegación (SIN Word)
 # ==========================================================================================
 col_logo, col_txt = st.columns([1, 3], vertical_alignment="center")
 
@@ -591,6 +536,7 @@ apply_seed_if_empty(form_title=form_title, logo_media_name=logo_media_name)
 # ==========================================================================================
 # FIN PARTE 2/10
 # ==========================================================================================
+
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 3/10) ==============================
 # ============ PÁGINA 5 — RIESGOS SOCIALES Y SITUACIONALES EN EL DISTRITO ===================
@@ -2194,6 +2140,7 @@ if active_tab == "Exportar":
 # ==========================================================================================
 # FIN PARTE 10/10
 # ==========================================================================================
+
 
 
 
