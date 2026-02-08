@@ -539,127 +539,381 @@ apply_seed_if_empty(form_title=form_title, logo_media_name=logo_media_name)
 
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 3/10) ==============================
-# ============ PÁGINA 5 — RIESGOS SOCIALES Y SITUACIONALES EN EL DISTRITO ===================
+# ========================= Editor de Preguntas (Survey) — Fácil ==========================
 # ==========================================================================================
 #
-# ESTA PARTE:
-# - Completa la Página 5 con preguntas reales de riesgos
-# - NO altera páginas anteriores
-# - Mantiene relevancia solo si acepta participar
+# ESTA PARTE 3/10 INCLUYE:
+# 1) Navegación por secciones (Preguntas / Choices / Glosario / Catálogo / Exportar)
+# 2) Editor de Preguntas:
+#    - Lista por páginas (P1..P10)
+#    - Vista legible tipo Survey123 (para cualquier persona)
+#    - Reordenar (↑ ↓), duplicar, eliminar
+#    - Editar en modo Simple (texto + requerido + tipo + lista)
+#    - Editar en modo Avanzado (XLSForm completo: relevant/constraint/choice_filter etc.)
+# 3) Agregar nueva pregunta (rápido)
 #
+# IMPORTANTE:
+# - Aquí NO exportamos todavía, solo editamos el banco (questions_bank).
+# - La exportación y validación van en Partes posteriores.
 # ==========================================================================================
 
-def seed_p5_riesgos(qb: list, rel_si: str):
-    """
-    Agrega preguntas reales de Riesgos sociales y situacionales (Página 5).
-    """
-
-    def add_q(order: int, row: dict):
-        qb.append({
-            "qid": _new_qid("q"),
-            "page": "p5",
-            "order": order,
-            "row": row
-        })
-
-    # --------------------------- GRUPO PRINCIPAL P5 ---------------------------
-    add_q(10, {
-        "type": "begin_group",
-        "name": "p5_riesgos",
-        "label": "III. Riesgos sociales y situacionales en el distrito",
-        "appearance": "field-list",
-        "relevant": rel_si
-    })
-
-    # 11
-    add_q(20, {
-        "type": "select_multiple riesgos_sociales",
-        "name": "p11_riesgos_sociales",
-        "label": (
-            "11. ¿Cuáles de los siguientes riesgos sociales considera usted que "
-            "están presentes en el distrito?"
-        ),
-        "required": "no",
-        "appearance": "minimal",
-        "relevant": rel_si
-    })
-
-    # 11.1
-    add_q(30, {
-        "type": "text",
-        "name": "p11_otros_riesgos_sociales",
-        "label": "11.1. Otros riesgos sociales presentes en el distrito (especifique):",
-        "required": "no",
-        "relevant": "${p11_riesgos_sociales}!=''"
-    })
-
-    # 12
-    add_q(40, {
-        "type": "select_multiple riesgos_situacionales",
-        "name": "p12_riesgos_situacionales",
-        "label": (
-            "12. ¿Cuáles de los siguientes riesgos situacionales considera usted "
-            "que afectan el distrito?"
-        ),
-        "required": "no",
-        "appearance": "minimal",
-        "relevant": rel_si
-    })
-
-    # 12.1
-    add_q(50, {
-        "type": "text",
-        "name": "p12_otros_riesgos_situacionales",
-        "label": "12.1. Otros riesgos situacionales presentes en el distrito (especifique):",
-        "required": "no",
-        "relevant": "${p12_riesgos_situacionales}!=''"
-    })
-
-    # 13
-    add_q(60, {
-        "type": "select_one seguridad_5",
-        "name": "p13_grado_afectacion_riesgos",
-        "label": (
-            "13. En general, ¿qué tanto considera usted que estos riesgos "
-            "afectan la seguridad del distrito?"
-        ),
-        "required": "yes",
-        "appearance": "minimal",
-        "relevant": rel_si
-    })
-
-    # --------------------------- CIERRE P5 ---------------------------
-    add_q(90, {
-        "type": "end_group",
-        "name": "p5_end",
-        "label": ""
-    })
-
+# ==========================================================================================
+# 1) Navegación principal
+# ==========================================================================================
+st.markdown("---")
+tabs = ["Preguntas", "Choices", "Glosario", "Catálogo", "Exportar"]
+active_tab = st.radio("Sección", options=tabs, horizontal=True, key="main_tabs")
 
 # ==========================================================================================
-# INTEGRACIÓN DE P5 AL SEED GENERAL
+# 2) Helpers de preguntas (bank)
 # ==========================================================================================
+def qb_sorted():
+    """Ordena questions_bank por page y order."""
+    order_map = {p: i for i, p in enumerate(pages)}
+    return sorted(
+        st.session_state.questions_bank,
+        key=lambda x: (order_map.get(x.get("page", ""), 999), int(x.get("order", 0)))
+    )
 
-def apply_seed_p5_if_missing():
+def get_q_by_id(qid: str):
+    return next((q for q in st.session_state.questions_bank if q.get("qid") == qid), None)
+
+def update_q(qid: str, new_q: dict):
+    qb = st.session_state.questions_bank
+    for i, q in enumerate(qb):
+        if q.get("qid") == qid:
+            qb[i] = new_q
+            break
+    st.session_state.questions_bank = qb
+
+def delete_q(qid: str):
+    st.session_state.questions_bank = [q for q in st.session_state.questions_bank if q.get("qid") != qid]
+    if st.session_state.questions_bank:
+        st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"]
+    else:
+        st.session_state.selected_qid = None
+
+def duplicate_q(qid: str):
+    src = get_q_by_id(qid)
+    if not src:
+        return
+    used_names = {q.get("row", {}).get("name", "") for q in st.session_state.questions_bank}
+    row = dict(src.get("row", {}) or {})
+    if row.get("name"):
+        row["name"] = asegurar_nombre_unico(row["name"], used_names)
+
+    st.session_state.questions_bank.append({
+        "qid": _new_qid("q"),
+        "page": src.get("page", "p1"),
+        "order": int(src.get("order", 0)) + 5,
+        "row": row
+    })
+
+def move_q_within_page(qid: str, direction: str):
     """
-    Inserta P5 solo si aún no existe (idempotente).
+    Reordena una pregunta dentro de su página usando swap de 'order'.
+    direction: 'up' o 'down'
     """
-    pages_existing = {q.get("page") for q in st.session_state.questions_bank}
-    if "p5" in pages_existing:
+    q = get_q_by_id(qid)
+    if not q:
+        return
+    page = q.get("page", "p1")
+
+    items = sorted([x for x in st.session_state.questions_bank if x.get("page") == page],
+                   key=lambda x: int(x.get("order", 0)))
+    idx = next((i for i, x in enumerate(items) if x.get("qid") == qid), None)
+    if idx is None:
         return
 
-    v_si = slugify_name("Sí")
-    rel_si = f"${{acepta_participar}}='{v_si}'"
+    if direction == "up" and idx > 0:
+        items[idx]["order"], items[idx - 1]["order"] = items[idx - 1]["order"], items[idx]["order"]
+    if direction == "down" and idx < len(items) - 1:
+        items[idx]["order"], items[idx + 1]["order"] = items[idx + 1]["order"], items[idx]["order"]
 
-    seed_p5_riesgos(st.session_state.questions_bank, rel_si)
+    others = [x for x in st.session_state.questions_bank if x.get("page") != page]
+    st.session_state.questions_bank = others + items
 
+def extract_list_name(tp: str) -> str:
+    """Devuelve list_name desde type: select_one X / select_multiple X."""
+    tp = (tp or "").strip()
+    if tp.startswith("select_one "):
+        return tp.replace("select_one ", "").strip()
+    if tp.startswith("select_multiple "):
+        return tp.replace("select_multiple ", "").strip()
+    return ""
 
-# Ejecutar automáticamente
-apply_seed_p5_if_missing()
+def all_choice_lists() -> list:
+    """Todas las listas list_name existentes en choices_bank."""
+    return sorted({str(r.get("list_name", "")).strip() for r in st.session_state.choices_bank if str(r.get("list_name", "")).strip()})
+
+def choice_labels_for_list(list_name: str) -> list:
+    """Labels de opciones de una lista."""
+    out = []
+    for r in st.session_state.choices_bank:
+        if str(r.get("list_name", "")).strip() == list_name:
+            out.append(str(r.get("label", "")).strip() or str(r.get("name", "")).strip())
+    return out
+
+def add_question(page: str, qtype: str, label: str):
+    """
+    Agrega pregunta al banco.
+    - Genera name único basado en label.
+    - Para 'note' agrega bind::esri:fieldType='null'.
+    """
+    used_names = {q.get("row", {}).get("name", "") for q in st.session_state.questions_bank}
+    base = slugify_name(label or "pregunta")
+    name = asegurar_nombre_unico(base, usados=used_names)
+
+    row = {
+        "type": qtype,
+        "name": name,
+        "label": label or "",
+        "required": "no",
+        "appearance": "",
+        "relevant": "",
+        "choice_filter": "",
+        "constraint": "",
+        "constraint_message": "",
+        "media::image": "",
+        "bind::esri:fieldType": "null" if qtype == "note" else "",
+    }
+
+    max_order = max([int(q.get("order", 0)) for q in st.session_state.questions_bank if q.get("page") == page] + [0])
+    st.session_state.questions_bank.append({"qid": _new_qid("q"), "page": page, "order": max_order + 10, "row": row})
+
+# ==========================================================================================
+# 3) UI Editor Preguntas
+# ==========================================================================================
+if active_tab == "Preguntas":
+    st.subheader("🧾 Editor de Preguntas (survey) — vista legible + edición")
+
+    left, right = st.columns([1.2, 2.3])
+
+    with left:
+        # página activa (P1..P10)
+        st.session_state.active_page = st.selectbox(
+            "Página",
+            options=pages,
+            format_func=lambda p: pages_labels.get(p, p),
+            index=pages.index(st.session_state.active_page) if st.session_state.active_page in pages else 0,
+            key="page_select"
+        )
+
+        search_text = st.text_input("Buscar en esta página", value="", key="q_search_text")
+        qs_page = [q for q in qb_sorted() if q.get("page") == st.session_state.active_page]
+
+        if search_text.strip():
+            s = search_text.strip().lower()
+            qs_page = [q for q in qs_page if s in str(q.get("row", {}).get("label", "")).lower()]
+
+        label_map = {}
+        display = []
+        for q in qs_page:
+            r = q.get("row", {}) or {}
+            t = str(r.get("type", "")).strip()
+            l = str(r.get("label", "")).strip() or "(sin texto)"
+            if t in ("begin_group", "end_group", "note", "end"):
+                txt = f"[{t}] {l}"
+            else:
+                txt = l
+            display.append(txt)
+            label_map[txt] = q.get("qid")
+
+        if display:
+            chosen = st.selectbox("Preguntas", options=display, key="q_list_select")
+            st.session_state.selected_qid = label_map.get(chosen)
+
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.button("⬆", on_click=move_q_within_page, args=(st.session_state.selected_qid, "up"), key="btn_up")
+            with c2:
+                st.button("⬇", on_click=move_q_within_page, args=(st.session_state.selected_qid, "down"), key="btn_down")
+            with c3:
+                st.button("📄", on_click=duplicate_q, args=(st.session_state.selected_qid,), key="btn_dup")
+            with c4:
+                st.button("🗑", on_click=delete_q, args=(st.session_state.selected_qid,), key="btn_del")
+        else:
+            st.info("No hay preguntas en esta página (aún).")
+
+        st.markdown("### ➕ Agregar pregunta")
+        new_type = st.selectbox(
+            "Tipo",
+            options=[
+                "note",
+                "text",
+                "integer",
+                "select_one yesno",
+                "select_one genero",
+                "select_one escolaridad",
+                "select_one relacion_zona",
+                "select_one seguridad_5",
+                "select_one list_canton",
+                "select_one list_distrito",
+                "select_multiple yesno",
+            ],
+            key="add_q_type"
+        )
+        new_label = st.text_input("Texto", value="", key="add_q_label")
+        if st.button("Agregar", type="primary", use_container_width=True, key="add_q_btn"):
+            add_question(st.session_state.active_page, new_type, new_label)
+            st.success("Pregunta agregada.")
+            st.rerun()
+
+    with right:
+        qid = st.session_state.selected_qid
+        q = get_q_by_id(qid)
+
+        if not q:
+            st.info("Selecciona una pregunta para editar.")
+        else:
+            row = dict(q.get("row", {}) or {})
+            qtype = str(row.get("type", "")).strip()
+            qlabel = str(row.get("label", "")).strip()
+            qname = str(row.get("name", "")).strip()
+            list_name = extract_list_name(qtype)
+
+            st.markdown("### 👁️ Vista legible (similar a Survey123)")
+            st.caption(f"Nombre interno: `{qname}`  |  Tipo: `{qtype}`")
+
+            with st.container(border=True):
+                st.markdown(f"#### {qlabel if qlabel else '(Pregunta sin texto)'}")
+
+                if qtype.startswith("select_one "):
+                    opts = choice_labels_for_list(list_name)
+                    if opts:
+                        st.radio(" ", options=opts, index=None, key=f"prev_radio_{qid}", label_visibility="collapsed")
+                    else:
+                        st.warning("Esta lista no tiene opciones. Ve a la pestaña Choices para agregarlas.")
+
+                elif qtype.startswith("select_multiple "):
+                    opts = choice_labels_for_list(list_name)
+                    if opts:
+                        for i, opt in enumerate(opts):
+                            st.checkbox(opt, value=False, key=f"prev_chk_{qid}_{i}")
+                    else:
+                        st.warning("Esta lista no tiene opciones. Ve a la pestaña Choices para agregarlas.")
+
+                elif qtype == "integer":
+                    st.number_input(" ", value=None, step=1, key=f"prev_int_{qid}", label_visibility="collapsed")
+                elif qtype == "text":
+                    st.text_area(" ", value="", height=90, key=f"prev_txt_{qid}", label_visibility="collapsed")
+                elif qtype == "note":
+                    st.info("ℹ️ Nota (no genera columna en resultados).")
+                elif qtype in ("begin_group", "end_group", "end"):
+                    st.warning(f"Elemento estructural: {qtype}")
+                else:
+                    st.info("Tipo no previsualizado, pero se exporta correctamente.")
+
+            st.markdown("---")
+
+            st.session_state.editor_mode = st.radio(
+                "Modo de edición",
+                options=["Simple", "Avanzado"],
+                horizontal=True,
+                index=0 if st.session_state.editor_mode == "Simple" else 1,
+                key="edit_mode_radio"
+            )
+
+            # =========================
+            # MODO SIMPLE
+            # =========================
+            if st.session_state.editor_mode == "Simple":
+                st.markdown("### ✏️ Editar (Simple)")
+                with st.form("simple_edit_form"):
+                    new_label = st.text_area("Texto de la pregunta", value=qlabel, height=120, key="simple_label")
+                    req = st.checkbox("Obligatoria (required)", value=(str(row.get("required", "")).strip() == "yes"), key="simple_req")
+
+                    simple_type = st.selectbox(
+                        "Tipo",
+                        options=["select_one", "select_multiple", "text", "integer", "note", "begin_group", "end_group", "end"],
+                        index=0 if qtype.startswith("select_one ") else
+                              1 if qtype.startswith("select_multiple ") else
+                              2 if qtype == "text" else
+                              3 if qtype == "integer" else
+                              4 if qtype == "note" else
+                              5 if qtype == "begin_group" else
+                              6 if qtype == "end_group" else
+                              7,
+                        key="simple_type"
+                    )
+
+                    chosen_list = list_name
+                    if simple_type in ("select_one", "select_multiple"):
+                        lists = all_choice_lists()
+                        if not lists:
+                            lists = ["yesno"]
+                        chosen_list = st.selectbox(
+                            "Lista de opciones",
+                            options=lists,
+                            index=lists.index(list_name) if list_name in lists else 0,
+                            key="simple_list"
+                        )
+                        st.caption("Opciones actuales de esa lista:")
+                        st.write(choice_labels_for_list(chosen_list))
+
+                    save = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+
+                if save:
+                    row["label"] = new_label.strip()
+                    row["required"] = "yes" if req else "no"
+
+                    if simple_type == "select_one":
+                        row["type"] = f"select_one {chosen_list}".strip()
+                    elif simple_type == "select_multiple":
+                        row["type"] = f"select_multiple {chosen_list}".strip()
+                    else:
+                        row["type"] = simple_type
+
+                    if row["type"] == "note":
+                        row["bind::esri:fieldType"] = "null"
+                    else:
+                        if row.get("bind::esri:fieldType", "") == "null":
+                            row["bind::esri:fieldType"] = ""
+
+                    q["row"] = row
+                    update_q(qid, q)
+                    st.success("Actualizado.")
+                    st.rerun()
+
+            # =========================
+            # MODO AVANZADO
+            # =========================
+            else:
+                st.markdown("### 🧠 Editar (Avanzado XLSForm)")
+                st.caption("Edita campos XLSForm: relevant, constraint, choice_filter, etc.")
+
+                with st.form("advanced_edit_form"):
+                    row["type"] = st.text_input("type", value=row.get("type", ""), key="adv_type")
+                    row["name"] = st.text_input("name", value=row.get("name", ""), key="adv_name")
+                    row["label"] = st.text_area("label", value=row.get("label", ""), height=120, key="adv_label")
+
+                    row["required"] = st.selectbox(
+                        "required",
+                        options=["", "yes", "no"],
+                        index=1 if str(row.get("required", "")).strip() == "yes" else (2 if str(row.get("required", "")).strip() == "no" else 0),
+                        key="adv_required"
+                    )
+
+                    row["appearance"] = st.text_input("appearance", value=row.get("appearance", ""), key="adv_app")
+                    row["relevant"] = st.text_area("relevant", value=row.get("relevant", ""), height=70, key="adv_rel")
+                    row["choice_filter"] = st.text_input("choice_filter", value=row.get("choice_filter", ""), key="adv_cf")
+                    row["constraint"] = st.text_area("constraint", value=row.get("constraint", ""), height=70, key="adv_con")
+                    row["constraint_message"] = st.text_area("constraint_message", value=row.get("constraint_message", ""), height=70, key="adv_conmsg")
+                    row["media::image"] = st.text_input("media::image", value=row.get("media::image", ""), key="adv_img")
+                    row["bind::esri:fieldType"] = st.text_input("bind::esri:fieldType", value=row.get("bind::esri:fieldType", ""), key="adv_bind")
+
+                    save_adv = st.form_submit_button("💾 Guardar (Avanzado)", use_container_width=True)
+
+                if save_adv:
+                    q["row"] = row
+                    update_q(qid, q)
+                    st.success("Guardado.")
+                    st.rerun()
 
 # ==========================================================================================
 # FIN PARTE 3/10
 # ==========================================================================================
+
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 4/10) ==============================
 # ============================ PÁGINA 6 — DELITOS (PERCEPCIÓN) =============================
@@ -2140,6 +2394,7 @@ if active_tab == "Exportar":
 # ==========================================================================================
 # FIN PARTE 10/10
 # ==========================================================================================
+
 
 
 
