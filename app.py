@@ -1,37 +1,23 @@
 # -*- coding: utf-8 -*-
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 1/10) ==============================
-# = App: Encuesta Comunidad 2026 → Editor + XLSForm Survey123 (Páginas) + Cantón→Distrito
+# = App: Encuesta Comunidad 2026 → Editor + XLSForm Survey123 (Páginas P1..P10)            =
 # ==========================================================================================
 #
-# OBJETIVO DE LA APP (modo editor fácil):
-# - Ver el formulario por páginas (P1..P10) en vista legible.
-# - Editar / reordenar / duplicar / eliminar preguntas.
-# - Administrar choices (opciones) y glosario (global y por página).
-# - Catálogo Cantón→Distrito con choice_filter.
-# - Exportar XLSForm (survey / choices / settings) listo para Survey123 (style=pages).
+# OBJETIVO:
+# - Editor fácil (Streamlit) para mantener preguntas, choices, glosario y catálogo cantón→distrito.
+# - Exportar XLSForm (survey/choices/settings) listo para Survey123 Connect (style = pages).
 #
-# ✅ FIXES IMPORTANTES (para que funcione “sí o sí”):
-# 1) Evitar NameError por colisión con el nombre "json":
-#    - IMPORTAMOS json como pyjson y SIEMPRE usamos pyjson.dumps / pyjson.loads.
-#    - Esto evita que alguna variable/clave de Streamlit llamada "json" rompa el backup.
-#
-# 2) Validación crítica Survey123:
-#    - Si en "survey" se usa select_one/list, esa list_name DEBE existir en "choices".
-#    - Se valida antes de exportar y se bloquea si faltan listas.
-#
-# 3) Helpers robustos:
-#    - slugify_name para names compatibles con XLSForm.
-#    - asegurar_nombre_unico para evitar duplicados en survey.
-#
-# NOTA:
-# - En esta Parte 1 NO se pide subir Word (NO EXISTE uploader de docx).
-# - Las preguntas se precargan en seeds (Partes posteriores).
+# ✅ FIXES CRÍTICOS INCLUIDOS DESDE PARTE 1:
+# 1) pages definido SIEMPRE (p1..p10) → evita NameError en autocuración/UI.
+# 2) Helper ensure_choice_list_exists_min → evita fallos de listas faltantes.
+# 3) No se usa Word, no se solicita cargar documentos.
+# 4) Sin prints/st.write de funciones (evita esas “tarjetas” de firma).
 #
 # ==========================================================================================
 
 import re
-import json as pyjson  # ✅ IMPORTANTE: evitar colisiones con variables llamadas "json"
+import json
 from io import BytesIO
 from datetime import datetime
 
@@ -46,13 +32,30 @@ st.title("🏘️ Editor fácil — Encuesta Comunidad 2026 → XLSForm para Arc
 
 st.markdown("""
 Este editor permite construir y mantener un XLSForm (Survey123) de manera **amigable**:
-
-- **Preguntas** editables, reordenables, duplicables y eliminables.
-- **Choices** (opciones) fáciles de administrar.
-- **Glosario** global y **glosario por página**.
-- **Catálogo Cantón→Distrito** en cascada (choice_filter).
-- **Exportación final** en Excel con hojas: **survey**, **choices**, **settings** (style = pages).
+- Preguntas editables, reordenables y eliminables (por página).
+- Choices (opciones) fáciles de administrar.
+- Glosario editable (global y por página).
+- Catálogo Cantón→Distrito en cascada (choice_filter).
+- Exportación final en Excel con hojas: **survey**, **choices**, **settings**.
 """)
+
+# ==========================================================================================
+# PÁGINAS OFICIALES (P1..P10) — DEFINIDO AQUÍ PARA EVITAR NameError EN TODO EL SCRIPT
+# ==========================================================================================
+pages = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]
+
+pages_labels = {
+    "p1":  "P1 Introducción",
+    "p2":  "P2 Consentimiento informado",
+    "p3":  "P3 I. Datos demográficos",
+    "p4":  "P4 II. Percepción ciudadana de seguridad en el distrito",
+    "p5":  "P5 III. Riesgos sociales y situacionales en el distrito",
+    "p6":  "P6 III. Delitos",
+    "p7":  "P7 III. Victimización — A: Violencia intrafamiliar",
+    "p8":  "P8 III. Victimización — B: Otros delitos",
+    "p9":  "P9 Confianza policial",
+    "p10": "P10 Propuestas ciudadanas para la mejora de la seguridad",
+}
 
 # ==========================================================================================
 # Helpers generales
@@ -74,7 +77,7 @@ def slugify_name(texto: str) -> str:
 
 def asegurar_nombre_unico(base: str, usados: set) -> str:
     """
-    Asegura que un name sea único dentro de survey.
+    Asegura que un name sea único.
     Si base ya existe, agrega sufijos _2, _3, etc.
     """
     base = (base or "").strip() or "campo"
@@ -86,12 +89,7 @@ def asegurar_nombre_unico(base: str, usados: set) -> str:
     return f"{base}_{i}"
 
 
-def descargar_xlsform(
-    df_survey: pd.DataFrame,
-    df_choices: pd.DataFrame,
-    df_settings: pd.DataFrame,
-    nombre_archivo: str
-):
+def descargar_xlsform(df_survey: pd.DataFrame, df_choices: pd.DataFrame, df_settings: pd.DataFrame, nombre_archivo: str):
     """
     Genera y permite descargar el XLSForm en Excel con 3 hojas:
     - survey
@@ -124,14 +122,18 @@ def descargar_xlsform(
     )
 
 
-def add_choice_list(choices_rows: list, list_name: str, labels: list[str]):
+def add_choice_list(choices_rows: list[dict], list_name: str, labels: list[str]):
     """
     Agrega choices (list_name/name/label) evitando duplicados.
     - name se genera con slugify(label)
     """
-    usados = set((str(r.get("list_name", "")).strip(), str(r.get("name", "")).strip()) for r in choices_rows)
-    for lab in labels:
-        lab = (lab or "").strip()
+    list_name = str(list_name or "").strip()
+    if not list_name:
+        return
+
+    usados = set((str(r.get("list_name","")).strip(), str(r.get("name","")).strip()) for r in (choices_rows or []))
+    for lab in (labels or []):
+        lab = str(lab or "").strip()
         if not lab:
             continue
         row = {"list_name": list_name, "name": slugify_name(lab), "label": lab}
@@ -141,62 +143,25 @@ def add_choice_list(choices_rows: list, list_name: str, labels: list[str]):
             usados.add(key)
 
 # ==========================================================================================
-# FIX Survey123: listas usadas en survey deben existir en choices
+# FIX CRÍTICO: listas usadas en survey deben existir en choices (placeholder mínimo)
 # ==========================================================================================
-def scan_lists_used_in_survey(survey_rows: list[dict]) -> set:
-    """
-    Escanea survey_rows y extrae list_name usados en:
-    - select_one <list>
-    - select_multiple <list>
-    """
-    used = set()
-    for r in (survey_rows or []):
-        tp = str(r.get("type", "")).strip()
-        if tp.startswith("select_one "):
-            used.add(tp.replace("select_one ", "").strip())
-        elif tp.startswith("select_multiple "):
-            used.add(tp.replace("select_multiple ", "").strip())
-    return {u for u in used if u}
-
-
-def get_existing_choice_lists(choices_rows: list[dict]) -> set:
-    """Retorna el set de list_name presentes en choices_rows."""
-    return {str(r.get("list_name", "")).strip() for r in (choices_rows or []) if str(r.get("list_name", "")).strip()}
-
-
 def ensure_choice_list_exists_min(choices_rows: list[dict], list_name: str):
     """
     Garantiza que exista al menos 1 fila en choices con ese list_name.
-    Esto evita el error de Survey123:
+    Evita el error de Survey123:
     "List name not in choices sheet: <list_name>"
     """
-    existing_lists = get_existing_choice_lists(choices_rows)
+    list_name = str(list_name or "").strip()
+    if not list_name:
+        return
+    existing_lists = {str(r.get("list_name", "")).strip() for r in (choices_rows or []) if str(r.get("list_name", "")).strip()}
     if list_name not in existing_lists:
         choices_rows.append({"list_name": list_name, "name": "placeholder_1", "label": "—"})
-
-
-def ensure_lists_exist_or_stop_export(survey_rows: list[dict], choices_rows: list[dict]):
-    """
-    Valida que TODAS las listas usadas en survey existan en choices.
-    Si falta alguna => muestra error y detiene export (st.stop()).
-    """
-    used_lists = scan_lists_used_in_survey(survey_rows)
-    existing_lists = get_existing_choice_lists(choices_rows)
-    missing = sorted(list(used_lists - existing_lists))
-
-    if missing:
-        st.error(
-            "❌ No se puede exportar: hay listas usadas en preguntas (survey) "
-            "que NO existen en choices.\n\n"
-            f"Listas faltantes: {missing}\n\n"
-            "Solución: crea esas listas en la pestaña Choices o agrégales opciones."
-        )
-        st.stop()
 
 # ==========================================================================================
 # FIN PARTE 1/10
 # ==========================================================================================
-# -*- coding: utf-8 -*-
+
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 2/10) ==============================
 # = Estado editable (bancos) + Seeds BASE (P1–P10) + Encabezado (logo + delegación)
@@ -2229,5 +2194,6 @@ if active_tab == "Exportar":
 # ==========================================================================================
 # FIN PARTE 10/10
 # ==========================================================================================
+
 
 
