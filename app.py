@@ -996,84 +996,124 @@ if section == "Choices":
 # ==========================================================================================
 # FIN PARTE 5/10
 # ==========================================================================================
+# -*- coding: utf-8 -*-
 # ==========================================================================================
 # ============================== CÓDIGO COMPLETO (PARTE 6/10) ==============================
-# ========================== Sección: Glosario (global + por página) =======================
+# =================== Glosario por Página (editable) + Bloque generador ===================
 # ==========================================================================================
 #
-# - Editor de glosario global (término -> definición)
-# - Asignación de términos por página (P1..P10)
-# - Función para generar el bloque de glosario (filas survey) por página (se inserta en Parte 8/10)
+# ✅ PARTE 6/10 (CORREGIDA) HACE:
+# 1) Define y mantiene un mapa editable de glosario por página (P1..P10).
+# 2) NO depende del orden de pegado del código:
+#    - Si `pages` aún no existe cuando se ejecuta esta parte, NO revienta.
+#    - Usa un fallback seguro ["p1".."p10"].
+# 3) Incluye funciones para:
+#    - asignar términos del glosario global a una página (page_glossary_map)
+#    - construir el bloque Survey123 (select_one yesno + group + notes)
+# 4) Incluye UI para asignación por página dentro de la pestaña "Glosario"
+#    (solo se muestra cuando active_tab == "Glosario").
 #
 # IMPORTANTE:
-# - NO se pide subir Word ni archivos extra.
-# - Todo se gestiona en memoria (st.session_state) como tu código original: editable.
+# - Esta parte NO exporta. Solo prepara funciones y UI.
+# - La inserción del glosario dentro del XLSForm se hace en Partes posteriores.
 # ==========================================================================================
 
-# ------------------------------------------------------------------------------------------
-# 0) Estado mínimo: glosario por página
-# ------------------------------------------------------------------------------------------
-def _init_page_glossary_map():
+# ==========================================================================================
+# 0) Helpers de seguridad (NO depender de orden de pegado)
+# ==========================================================================================
+def _safe_pages_list() -> list[str]:
     """
-    Mapa: page_id -> lista de términos del glosario global que se mostrarán en esa página.
+    Retorna la lista de páginas aunque todavía no se haya definido `pages`.
+    - Si `pages` existe y es lista, lo usa.
+    - Si no existe, usa el estándar P1..P10 (Encuesta Comunidad 2026).
+    """
+    try:
+        _p = pages  # noqa: F821
+        if isinstance(_p, list) and _p:
+            return _p
+    except Exception:
+        pass
+    return ["p1","p2","p3","p4","p5","p6","p7","p8","p9","p10"]
+
+
+def _safe_pages_labels() -> dict:
+    """
+    Retorna labels de páginas aunque `pages_labels` no exista todavía.
+    """
+    try:
+        _pl = pages_labels  # noqa: F821
+        if isinstance(_pl, dict) and _pl:
+            return _pl
+    except Exception:
+        pass
+
+    # Fallback exacto al esquema 2026 (P1..P10)
+    return {
+        "p1": "P1 Introducción",
+        "p2": "P2 Consentimiento",
+        "p3": "P3 Datos demográficos",
+        "p4": "P4 Percepción ciudadana de seguridad en el distrito",
+        "p5": "P5 Riesgos sociales y situacionales en el distrito",
+        "p6": "P6 Delitos",
+        "p7": "P7 Victimización A: Violencia intrafamiliar",
+        "p8": "P8 Victimización B: Otros delitos",
+        "p9": "P9 Confianza Policial",
+        "p10": "P10 Propuestas ciudadanas para la mejora de la seguridad",
+    }
+
+
+# ==========================================================================================
+# 1) Estado: mapa de glosario por página (editable)
+# ==========================================================================================
+def init_page_glossary_map():
+    """
+    Inicializa el mapa de glosario por página sin depender de si `pages` ya existe.
+    También asegura que si luego agregas páginas nuevas, aparezcan en el mapa.
     """
     if "page_glossary_map" not in st.session_state:
-        st.session_state.page_glossary_map = {p: [] for p in pages}
+        # Seed razonable (editable desde UI)
+        st.session_state.page_glossary_map = {
+            "p1": [],
+            "p2": [],
+            "p3": [],
+            "p4": ["Extorsión", "Daños/vandalismo"],
+            "p5": ["Búnkeres", "Receptación", "Contrabando", "Trata de personas", "Explotación infantil", "Acoso callejero", "Tráfico de personas (coyotaje)", "Estafa", "Tacha"],
+            "p6": ["Receptación", "Contrabando", "Tráfico de personas (coyotaje)", "Acoso callejero", "Estafa", "Tacha", "Trata de personas", "Explotación infantil", "Extorsión", "Búnkeres"],
+            "p7": ["Ganzúa (pata de chancho)", "Boquete", "Arrebato", "Receptación", "Extorsión"],
+            "p8": ["Ganzúa (pata de chancho)", "Boquete", "Arrebato", "Receptación", "Extorsión"],
+            "p9": ["Patrullaje", "Acciones disuasivas", "Coordinación interinstitucional", "Integridad y credibilidad policial"],
+            "p10": ["Coordinación interinstitucional", "Acciones disuasivas"],
+        }
 
-_init_page_glossary_map()
+    # Asegurar llaves para todas las páginas existentes (o fallback)
+    for p in _safe_pages_list():
+        if p not in st.session_state.page_glossary_map:
+            st.session_state.page_glossary_map[p] = []
 
-# ------------------------------------------------------------------------------------------
-# 1) Helpers Glosario Global
-# ------------------------------------------------------------------------------------------
-def _gl_all_terms() -> list[str]:
-    return sorted(list(st.session_state.glossary_bank.keys()), key=lambda x: x.lower())
+init_page_glossary_map()
 
-def _gl_get(term: str) -> str:
-    return str(st.session_state.glossary_bank.get(term, ""))
-
-def _gl_set(term: str, definition: str):
-    term = (term or "").strip()
-    definition = (definition or "").strip()
-    if not term:
-        return
-    st.session_state.glossary_bank[term] = definition
-
-def _gl_delete(term: str):
-    term = (term or "").strip()
-    if term in st.session_state.glossary_bank:
-        del st.session_state.glossary_bank[term]
-
-# ------------------------------------------------------------------------------------------
-# 2) Helpers Glosario por Página
-# ------------------------------------------------------------------------------------------
-def _get_page_terms(page_id: str) -> list[str]:
-    return list(st.session_state.page_glossary_map.get(page_id, []) or [])
-
-def _set_page_terms(page_id: str, terms: list[str]):
-    st.session_state.page_glossary_map[page_id] = list(terms or [])
-
+# ==========================================================================================
+# 2) Helpers: generar bloque de glosario para Survey123 (filas "survey")
+# ==========================================================================================
 def build_glossary_block_rows(page_id: str, relevant_base: str, v_si: str, terms: list[str]) -> list[dict]:
     """
-    Construye filas 'survey' para un glosario por página (Survey123):
-    - select_one yesno: acceso
-    - begin_group: glosario
-    - note: intro + definiciones
-    - end_group
+    Construye filas 'survey' para un glosario por página.
 
-    Se inserta dentro de la página ANTES del end_group de la página (Parte 8/10).
+    - page_id: "p4", "p5", etc.
+    - relevant_base: expresión base de relevancia (ej. ${acepta_participar}='si')
+    - v_si: slug de "Sí" (ej. "si")
+    - terms: lista de términos seleccionados para esta página.
+
+    Retorna: lista de filas (dicts) para agregar a survey_rows.
     """
     out = []
 
-    # Solo términos existentes y con definición
-    terms_ok = []
-    for t in (terms or []):
-        if t in st.session_state.glossary_bank and str(st.session_state.glossary_bank.get(t, "")).strip():
-            terms_ok.append(t)
-
+    # Filtrar solo términos que existan en el glosario global
+    terms_ok = [t for t in (terms or []) if t in st.session_state.glossary_bank]
     if not terms_ok:
         return out
 
-    # Pregunta de acceso
+    # Pregunta de acceso al glosario
     out.append({
         "type": "select_one yesno",
         "name": f"{page_id}_accede_glosario",
@@ -1125,149 +1165,96 @@ def build_glossary_block_rows(page_id: str, relevant_base: str, v_si: str, terms
 
     return out
 
-# ------------------------------------------------------------------------------------------
-# 3) UI Glosario (Global + por página)
-# ------------------------------------------------------------------------------------------
-if section == "Glosario":
-    st.subheader("📖 Glosario — editor global + asignación por página")
 
-    # ------------------ A) Glosario Global ------------------
-    st.markdown("### ✅ A) Glosario global (término → definición)")
+def get_page_glossary_terms(page_id: str) -> list[str]:
+    return list(st.session_state.page_glossary_map.get(page_id, []) or [])
 
-    left, right = st.columns([1.05, 1.95], vertical_alignment="top")
 
-    with left:
-        st.markdown("#### 🔎 Buscar")
-        q_search = st.text_input("Buscar término o definición", value="", key="gl_search_txt")
+def set_page_glossary_terms(page_id: str, terms: list[str]):
+    st.session_state.page_glossary_map[page_id] = list(terms or [])
 
-        terms = _gl_all_terms()
-        if q_search.strip():
-            s = q_search.strip().lower()
-            terms = [t for t in terms if s in t.lower() or s in _gl_get(t).lower()]
 
-        if not terms:
-            st.info("No hay términos que coincidan.")
-            selected_term = None
-        else:
-            selected_term = st.selectbox("Términos", options=terms, key="gl_term_select")
-
-        st.markdown("#### ➕ Agregar término")
-        new_term = st.text_input("Término", value="", key="gl_new_term")
-        new_def = st.text_area("Definición", value="", height=140, key="gl_new_def")
-
-        if st.button("Agregar / Actualizar", type="primary", use_container_width=True, key="gl_btn_add"):
-            if not new_term.strip():
-                st.error("Indica el término.")
-            else:
-                _gl_set(new_term.strip(), new_def.strip())
-                st.success("Término agregado/actualizado.")
-                st.rerun()
-
-    with right:
-        if not selected_term:
-            st.info("Selecciona un término para editar.")
-        else:
-            st.markdown(f"#### ✏️ Editar: **{selected_term}**")
-
-            base_key = f"gl_edit_{slugify_name(selected_term)}"
-            cur_def = _gl_get(selected_term)
-
-            edited_term = st.text_input("Término", value=selected_term, key=f"{base_key}_term")
-            edited_def = st.text_area("Definición", value=cur_def, height=170, key=f"{base_key}_def")
-
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("💾 Guardar cambios", use_container_width=True, key=f"{base_key}_save"):
-                    old = selected_term
-                    newt = edited_term.strip()
-                    newd = edited_def.strip()
-
-                    if not newt:
-                        st.error("El término no puede quedar vacío.")
-                    else:
-                        if newt != old:
-                            _gl_delete(old)
-                        _gl_set(newt, newd)
-                        st.success("Guardado.")
-                        st.rerun()
-
-            with c2:
-                if st.button("🗑 Eliminar", use_container_width=True, key=f"{base_key}_del"):
-                    _gl_delete(selected_term)
-                    st.success("Eliminado.")
-                    st.rerun()
-
-            st.markdown("#### 👁️ Vista previa")
-            with st.container(border=True):
-                st.write(f"**{edited_term.strip() if edited_term.strip() else selected_term}**")
-                st.write(edited_def.strip() if edited_def.strip() else "(Sin definición)")
-
-    # ------------------ B) Glosario por Página ------------------
+# ==========================================================================================
+# 3) UI: asignar términos del glosario a cada página (para cualquier persona)
+# ==========================================================================================
+# Nota: este bloque se integra dentro de la pestaña "Glosario" (active_tab == "Glosario")
+if "active_tab" in globals() and active_tab == "Glosario":
     st.markdown("---")
-    st.markdown("### ✅ B) Glosario por página (qué términos se muestran en cada página)")
+    st.subheader("🧷 Glosario por Página (P1–P10) — asignación editable")
 
-    colp1, colp2 = st.columns([1.05, 1.95], vertical_alignment="top")
-    with colp1:
+    st.caption(
+        "Aquí decides qué términos del glosario (global) se muestran como glosario en cada página. "
+        "Esto se traducirá a un bloque Survey123 que aparece solo si la persona marca “Sí”."
+    )
+
+    _pages = _safe_pages_list()
+    _labels = _safe_pages_labels()
+
+    gl_pages_cols = st.columns(2)
+    with gl_pages_cols[0]:
         page_for_gl = st.selectbox(
             "Página a configurar",
-            options=pages,
-            format_func=lambda p: pages_labels.get(p, p),
+            options=_pages,
+            format_func=lambda p: _labels.get(p, p),
             key="gl_page_select"
         )
 
-    all_terms = _gl_all_terms()
-    current_terms = _get_page_terms(page_for_gl)
+    all_terms = gl_all_terms()
+    current_terms = get_page_glossary_terms(page_for_gl)
 
-    with colp2:
+    with st.container(border=True):
+        selected_terms = st.multiselect(
+            "Términos incluidos en el glosario de esta página",
+            options=all_terms,
+            default=[t for t in current_terms if t in all_terms],
+            key=f"gl_terms_{page_for_gl}"
+        )
+
+        st.caption("Orden del glosario (opcional). Si quieres ordenar manualmente, pega la lista en el orden deseado:")
+        order_text = st.text_area(
+            "Orden (uno por línea)",
+            value="\n".join(selected_terms),
+            height=120,
+            key=f"gl_order_{page_for_gl}"
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("💾 Guardar asignación", type="primary", use_container_width=True, key=f"gl_save_map_{page_for_gl}"):
+                lines = [ln.strip() for ln in order_text.splitlines() if ln.strip()]
+                # Mantener solo términos válidos y sin duplicados
+                seen = set()
+                final = []
+                for t in lines:
+                    if t in all_terms and t not in seen:
+                        final.append(t)
+                        seen.add(t)
+
+                set_page_glossary_terms(page_for_gl, final)
+                st.success("Asignación guardada.")
+                st.rerun()
+
+        with c2:
+            if st.button("🧹 Limpiar página", use_container_width=True, key=f"gl_clear_map_{page_for_gl}"):
+                set_page_glossary_terms(page_for_gl, [])
+                st.success("Glosario eliminado para esta página.")
+                st.rerun()
+
+    st.markdown("### 👁️ Vista previa del glosario de esta página")
+    prev_terms = get_page_glossary_terms(page_for_gl)
+    if not prev_terms:
+        st.info("Esta página no tiene términos asignados.")
+    else:
         with st.container(border=True):
-            selected_terms = st.multiselect(
-                "Términos incluidos en el glosario de esta página",
-                options=all_terms,
-                default=[t for t in current_terms if t in all_terms],
-                key=f"gl_terms_{page_for_gl}"
-            )
-
-            st.caption("Orden del glosario (opcional). Si quieres ordenar manualmente, pega la lista en el orden deseado:")
-            order_text = st.text_area(
-                "Orden (uno por línea)",
-                value="\n".join(selected_terms),
-                height=120,
-                key=f"gl_order_{page_for_gl}"
-            )
-
-            b1, b2 = st.columns(2)
-            with b1:
-                if st.button("💾 Guardar asignación", type="primary", use_container_width=True, key=f"gl_save_map_{page_for_gl}"):
-                    lines = [ln.strip() for ln in order_text.splitlines() if ln.strip()]
-                    seen = set()
-                    final = []
-                    for t in lines:
-                        if t in all_terms and t not in seen:
-                            final.append(t)
-                            seen.add(t)
-                    _set_page_terms(page_for_gl, final)
-                    st.success("Asignación guardada.")
-                    st.rerun()
-
-            with b2:
-                if st.button("🧹 Limpiar página", use_container_width=True, key=f"gl_clear_map_{page_for_gl}"):
-                    _set_page_terms(page_for_gl, [])
-                    st.success("Glosario eliminado para esta página.")
-                    st.rerun()
-
-        st.markdown("#### 👁️ Vista previa del glosario de esta página")
-        prev_terms = _get_page_terms(page_for_gl)
-        if not prev_terms:
-            st.info("Esta página no tiene términos asignados.")
-        else:
-            with st.container(border=True):
-                for t in prev_terms:
-                    st.write(f"**{t}**")
-                    st.write(_gl_get(t))
+            for t in prev_terms:
+                st.write(f"**{t}**")
+                st.write(gl_get(t))
 
 # ==========================================================================================
 # FIN PARTE 6/10
 # ==========================================================================================
+
+
 
 
 
