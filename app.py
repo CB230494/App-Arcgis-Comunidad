@@ -587,6 +587,193 @@ apply_seed_if_empty()
 # ==========================================================================================
 # FIN PARTE 2/10
 # ==========================================================================================
+# ==========================================================================================
+# ============================== CÓDIGO COMPLETO (PARTE 3/10) ==============================
+# ========================= Navegación de Secciones + helpers UI ===========================
+# ==========================================================================================
+
+def _get_page_label(page_id: str) -> str:
+    return PAGES_LABELS.get(page_id, page_id)
+
+def _get_questions_for_page(page_id: str) -> list[dict]:
+    items = [q for q in st.session_state.questions_bank if q.get("page") == page_id]
+    return sorted(items, key=lambda x: int(x.get("order", 0)))
+
+def _set_selected_qid(qid: str):
+    st.session_state.selected_qid = qid
+
+# ------------------- Barra de Secciones (como tu UI) -------------------
+st.markdown("### Sección")
+section = st.radio(
+    "",
+    ["Preguntas", "Choices", "Glosario", "Catálogo", "Exportar"],
+    horizontal=True,
+    key="section_radio",
+    label_visibility="collapsed"
+)
+
+st.markdown("---")
+
+# ==========================================================================================
+# FIN PARTE 3/10
+# ==========================================================================================
+# ==========================================================================================
+# ============================== CÓDIGO COMPLETO (PARTE 4/10) ==============================
+# =============================== Sección: Preguntas (survey) ==============================
+# ==========================================================================================
+
+def _normalize_int(v, default=0):
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+def _delete_question(qid: str):
+    st.session_state.questions_bank = [q for q in st.session_state.questions_bank if q.get("qid") != qid]
+    if st.session_state.selected_qid == qid:
+        st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"] if st.session_state.questions_bank else None
+
+def _move_question(qid: str, direction: int, page_id: str):
+    items = _get_questions_for_page(page_id)
+    idx = next((i for i, it in enumerate(items) if it["qid"] == qid), None)
+    if idx is None:
+        return
+    new_idx = idx + direction
+    if new_idx < 0 or new_idx >= len(items):
+        return
+    # swap "order"
+    a = items[idx]
+    b = items[new_idx]
+    ao = _normalize_int(a.get("order", 0))
+    bo = _normalize_int(b.get("order", 0))
+    a["order"], b["order"] = bo, ao
+
+def _update_question_row(qid: str, new_row: dict):
+    for q in st.session_state.questions_bank:
+        if q.get("qid") == qid:
+            q["row"] = new_row
+            return
+
+def _add_new_question(page_id: str):
+    # Orden final: max + 10
+    items = _get_questions_for_page(page_id)
+    max_order = max([_normalize_int(i.get("order", 0)) for i in items], default=0)
+    order = max_order + 10
+    qid = _new_qid("q")
+    row = {
+        "type": "text",
+        "name": asegurar_nombre_unico(f"{page_id}_nuevo", {x.get("row", {}).get("name", "") for x in st.session_state.questions_bank}),
+        "label": "Nueva pregunta",
+        "required": "no"
+    }
+    st.session_state.questions_bank.append({"qid": qid, "page": page_id, "order": order, "row": row})
+    st.session_state.selected_qid = qid
+
+if section == "Preguntas":
+    st.markdown("## 🧾 Editor de Preguntas (survey) — vista legible + editar")
+
+    colA, colB = st.columns([1.1, 1.9], vertical_alignment="top")
+
+    with colA:
+        page_id = st.selectbox(
+            "Página",
+            PAGES,
+            index=PAGES.index(st.session_state.active_page) if st.session_state.active_page in PAGES else 0,
+            format_func=_get_page_label,
+            key="page_selectbox"
+        )
+        st.session_state.active_page = page_id
+
+        search_txt = st.text_input("Buscar en esta página", value="", key="q_search")
+
+        page_items = _get_questions_for_page(page_id)
+        if search_txt.strip():
+            s = search_txt.strip().lower()
+            page_items = [
+                it for it in page_items
+                if s in str(it.get("row", {}).get("label", "")).lower()
+                or s in str(it.get("row", {}).get("name", "")).lower()
+                or s in str(it.get("row", {}).get("type", "")).lower()
+            ]
+
+        if not page_items:
+            st.info("No hay preguntas en esta página (aún).")
+
+        st.markdown("### Lista (por orden)")
+        for it in page_items:
+            row = it.get("row", {})
+            label = row.get("label", "")
+            t = row.get("type", "")
+            nm = row.get("name", "")
+            is_sel = (st.session_state.selected_qid == it["qid"])
+
+            c1, c2, c3, c4 = st.columns([0.1, 0.7, 0.1, 0.1], vertical_alignment="center")
+            with c1:
+                if st.button("▶" if not is_sel else "✅", key=f"sel_{it['qid']}"):
+                    _set_selected_qid(it["qid"])
+            with c2:
+                st.caption(f"**{label}**\n\n`{t}` · `{nm}` · orden {it.get('order')}")
+            with c3:
+                if st.button("⬆", key=f"up_{it['qid']}"):
+                    _move_question(it["qid"], -1, page_id)
+            with c4:
+                if st.button("⬇", key=f"dn_{it['qid']}"):
+                    _move_question(it["qid"], +1, page_id)
+
+        st.markdown("---")
+        if st.button("➕ Agregar pregunta", use_container_width=True):
+            _add_new_question(page_id)
+
+    with colB:
+        st.markdown("### ✏️ Editor de la pregunta seleccionada")
+
+        qid = st.session_state.selected_qid
+        selected = next((q for q in st.session_state.questions_bank if q.get("qid") == qid), None)
+
+        if not selected:
+            st.warning("Seleccione una pregunta de la lista.")
+        else:
+            row = dict(selected.get("row", {}))  # copia editable
+
+            # Campos principales XLSForm
+            row["type"] = st.text_input("type", value=row.get("type", ""), key=f"type_{qid}")
+            row["name"] = st.text_input("name", value=row.get("name", ""), key=f"name_{qid}")
+            row["label"] = st.text_area("label", value=row.get("label", ""), height=90, key=f"label_{qid}")
+
+            colx1, colx2, colx3 = st.columns(3)
+            with colx1:
+                row["required"] = st.selectbox("required", ["no", "yes"], index=1 if row.get("required") == "yes" else 0, key=f"req_{qid}")
+            with colx2:
+                row["appearance"] = st.text_input("appearance", value=row.get("appearance", ""), key=f"app_{qid}")
+            with colx3:
+                row["relevant"] = st.text_input("relevant", value=row.get("relevant", ""), key=f"rel_{qid}")
+
+            row["constraint"] = st.text_input("constraint", value=row.get("constraint", ""), key=f"con_{qid}")
+            row["constraint_message"] = st.text_input("constraint_message", value=row.get("constraint_message", ""), key=f"conm_{qid}")
+            row["calculation"] = st.text_input("calculation", value=row.get("calculation", ""), key=f"calc_{qid}")
+            row["choice_filter"] = st.text_input("choice_filter", value=row.get("choice_filter", ""), key=f"cf_{qid}")
+
+            # media opcional
+            row["media::image"] = st.text_input("media::image", value=row.get("media::image", ""), key=f"img_{qid}")
+
+            csave, cdel = st.columns([0.7, 0.3])
+            with csave:
+                if st.button("💾 Guardar cambios", use_container_width=True, key=f"save_{qid}"):
+                    # asegurar name único si lo cambiaron
+                    used = {x.get("row", {}).get("name", "") for x in st.session_state.questions_bank if x.get("qid") != qid}
+                    base = slugify_name(row.get("name", "campo"))
+                    row["name"] = asegurar_nombre_unico(base, used)
+                    _update_question_row(qid, row)
+                    st.success("Guardado.")
+            with cdel:
+                if st.button("🗑️ Eliminar", use_container_width=True, key=f"del_{qid}"):
+                    _delete_question(qid)
+                    st.warning("Eliminado.")
+
+# ==========================================================================================
+# FIN PARTE 4/10
+# ==========================================================================================
+
 
 
 
