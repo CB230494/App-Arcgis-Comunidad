@@ -4,21 +4,21 @@
 # = App: Encuesta Comunidad → Editor + XLSForm Survey123 (Páginas) + Catálogo Cantón→Distrito
 # ==========================================================================================
 #
-# OBJETIVO DE LA APP (modo editor fácil):
+# OBJETIVO (modo editor fácil):
 # - Ver preguntas de forma legible y editable dentro de la app.
 # - Reordenar, agregar, eliminar preguntas.
 # - Editar condicionales (relevant), dependencias (choice_filter), validaciones (constraint).
-# - Editar choices (opciones) de manera fácil.
-# - Editar glosarios (término → significado) por página o global.
+# - Editar choices (opciones) fácilmente.
+# - Editar glosario (término → significado) global y por página.
 # - Exportar XLSForm (survey/choices/settings) listo para Survey123.
 #
 # ESTA PARTE 1/10 INCLUYE:
 # 1) Imports
 # 2) Configuración UI básica
-# 3) Helpers generales (slugify, únicos, descarga XLSForm, choices)
+# 3) Helpers generales (slugify, únicos, descarga XLSForm, helpers choices)
 # 4) FIX Survey123:
-#    - Evita error: "List name not in choices sheet: list_canton"
 #    - Valida que toda lista usada en survey exista en choices antes de exportar
+#    - (select_one/select_multiple) → list_name debe existir en "choices"
 #
 # NOTA IMPORTANTE:
 # - En Survey123, si en "survey" se usa: select_one list_canton
@@ -28,7 +28,6 @@
 # ==========================================================================================
 
 import re
-import json
 from io import BytesIO
 from datetime import datetime
 
@@ -45,7 +44,7 @@ st.markdown("""
 Este editor permite construir y mantener un XLSForm (Survey123) de manera **amigable**:
 - Preguntas editables, reordenables y eliminables.
 - Choices (opciones) fáciles de administrar.
-- Glosario editable.
+- Glosario editable (global + por página).
 - Catálogo Cantón→Distrito en cascada (choice_filter).
 - Exportación final en Excel con hojas: **survey**, **choices**, **settings**.
 """)
@@ -57,7 +56,7 @@ def slugify_name(texto: str) -> str:
     """Convierte texto a un slug válido para XLSForm (name)."""
     if not texto:
         return "campo"
-    t = texto.lower()
+    t = texto.lower().strip()
     t = re.sub(r"[áàäâ]", "a", t)
     t = re.sub(r"[éèëê]", "e", t)
     t = re.sub(r"[íìïî]", "i", t)
@@ -70,9 +69,10 @@ def slugify_name(texto: str) -> str:
 
 def asegurar_nombre_unico(base: str, usados: set) -> str:
     """
-    Asegura que un name sea único (por ejemplo, para no duplicar name en survey).
+    Asegura que un 'name' sea único (para no duplicar name en survey o en choices).
     Si base ya existe, agrega sufijos _2, _3, etc.
     """
+    base = (base or "").strip() or "campo"
     if base not in usados:
         return base
     i = 2
@@ -101,8 +101,10 @@ def descargar_xlsform(df_survey: pd.DataFrame, df_choices: pd.DataFrame, df_sett
             ws = writer.sheets[sheet]
             ws.freeze_panes(1, 0)
             ws.set_row(0, None, fmt_hdr)
+
             for col_idx, col_name in enumerate(df.columns):
-                ws.set_column(col_idx, col_idx, max(14, min(90, len(str(col_name)) + 10)))
+                width = max(14, min(90, len(str(col_name)) + 10))
+                ws.set_column(col_idx, col_idx, width)
 
     buffer.seek(0)
     st.download_button(
@@ -114,64 +116,26 @@ def descargar_xlsform(df_survey: pd.DataFrame, df_choices: pd.DataFrame, df_sett
     )
 
 
-def add_choice_list(choices_rows: list[dict], list_name: str, labels: list[str]):
+def add_choice_list(choices_rows: list, list_name: str, labels: list[str]):
     """
     Agrega choices (list_name/name/label) evitando duplicados.
     - name se genera con slugify(label)
     """
-    usados = set((r.get("list_name"), r.get("name")) for r in choices_rows)
-    for lab in labels:
+    usados = set((str(r.get("list_name","")).strip(), str(r.get("name","")).strip()) for r in (choices_rows or []))
+    for lab in (labels or []):
+        lab = (lab or "").strip()
+        if not lab:
+            continue
         row = {"list_name": list_name, "name": slugify_name(lab), "label": lab}
         key = (row["list_name"], row["name"])
         if key not in usados:
             choices_rows.append(row)
             usados.add(key)
 
+
 # ==========================================================================================
 # FIX Survey123: listas usadas en survey deben existir en choices
 # ==========================================================================================
-def sync_ext_catalog_into_choices_rows(choices_rows: list[dict]) -> int:
-    """
-    Si usas un catálogo externo por lotes (ej. st.session_state.choices_ext_rows),
-    esta función lo integra en choices_rows antes de exportar.
-
-    Retorna la cantidad de filas agregadas.
-    """
-    ext = st.session_state.get("choices_ext_rows", []) or []
-    if not ext:
-        return 0
-
-    existing = {(str(r.get("list_name", "")).strip(), str(r.get("name", "")).strip()) for r in choices_rows}
-    added = 0
-
-    for r in ext:
-        ln = str(r.get("list_name", "")).strip()
-        nm = str(r.get("name", "")).strip()
-        if not ln or not nm:
-            continue
-
-        key = (ln, nm)
-        if key not in existing:
-            choices_rows.append(dict(r))
-            existing.add(key)
-            added += 1
-
-    return added
-
-
-def ensure_choice_list_exists(choices_rows: list[dict], list_name: str):
-    """
-    Garantiza que exista al menos 1 fila en choices con ese list_name.
-    Esto evita el error de Survey123:
-    "List name not in choices sheet: <list_name>"
-
-    Se agrega un placeholder mínimo si no existe.
-    """
-    existing_lists = {str(r.get("list_name", "")).strip() for r in choices_rows if str(r.get("list_name", "")).strip()}
-    if list_name not in existing_lists:
-        choices_rows.append({"list_name": list_name, "name": "placeholder_1", "label": "—"})
-
-
 def scan_lists_used_in_survey(survey_rows: list[dict]) -> set:
     """
     Escanea survey_rows y extrae list_name usados en:
@@ -179,7 +143,7 @@ def scan_lists_used_in_survey(survey_rows: list[dict]) -> set:
     - select_multiple <list>
     """
     used = set()
-    for r in survey_rows:
+    for r in (survey_rows or []):
         tp = str(r.get("type", "")).strip()
         if tp.startswith("select_one "):
             used.add(tp.replace("select_one ", "").strip())
@@ -190,53 +154,37 @@ def scan_lists_used_in_survey(survey_rows: list[dict]) -> set:
 
 def get_existing_choice_lists(choices_rows: list[dict]) -> set:
     """Retorna el set de list_name presentes en choices_rows."""
-    return {str(r.get("list_name", "")).strip() for r in choices_rows if str(r.get("list_name", "")).strip()}
+    return {str(r.get("list_name", "")).strip() for r in (choices_rows or []) if str(r.get("list_name", "")).strip()}
+
+
+def ensure_choice_list_exists(choices_rows: list[dict], list_name: str):
+    """
+    Garantiza que exista al menos 1 fila en choices con ese list_name.
+    Esto evita el error de Survey123:
+    "List name not in choices sheet: <list_name>"
+    """
+    existing_lists = get_existing_choice_lists(choices_rows)
+    if list_name not in existing_lists:
+        choices_rows.append({"list_name": list_name, "name": "placeholder_1", "label": "—"})
 
 
 def ensure_lists_exist_or_block_export(survey_rows: list[dict], choices_rows: list[dict]):
     """
-    1) Integra catálogo externo (choices_ext_rows) si existe.
-    2) Asegura list_canton y list_distrito si se usan en survey.
-    3) Valida que TODAS las listas usadas existan en choices.
-       Si falta alguna, bloquea export (st.stop()) para no generar XLSForm roto.
+    Valida que TODAS las listas usadas existan en choices.
+    Si falta alguna, bloquea export (st.stop()) para no generar XLSForm roto.
     """
-    # 1) Sync catálogo externo si aplica
-    sync_ext_catalog_into_choices_rows(choices_rows)
-
-    # 2) Detectar listas usadas
     used_lists = scan_lists_used_in_survey(survey_rows)
     existing_lists = get_existing_choice_lists(choices_rows)
 
-    # Cantón/Distrito: si se usan, deben existir sí o sí
-    if "list_canton" in used_lists and "list_canton" not in existing_lists:
-        ensure_choice_list_exists(choices_rows, "list_canton")
-    if "list_distrito" in used_lists and "list_distrito" not in existing_lists:
-        ensure_choice_list_exists(choices_rows, "list_distrito")
-
-    # Recalcular
-    existing_lists = get_existing_choice_lists(choices_rows)
     missing = sorted(list(used_lists - existing_lists))
-
     if missing:
         st.error(
             "❌ No se puede exportar: hay listas usadas en preguntas (survey) "
             "que NO existen en choices.\n\n"
             f"Listas faltantes: {missing}\n\n"
-            "Solución: crea esas listas en el Editor de Choices o agrégales opciones."
+            "Solución: crea esas listas en la pestaña Choices o agrega opciones."
         )
         st.stop()
-
-    # Advertencia extra para list_distrito si hay choice_filter canton_key=${canton}
-    if "list_distrito" in existing_lists:
-        dist_rows = [r for r in choices_rows if str(r.get("list_name", "")).strip() == "list_distrito"]
-        dist_real = [r for r in dist_rows if str(r.get("name", "")).strip() != "placeholder_1"]
-        if dist_real:
-            sin_ck = [r for r in dist_real if not str(r.get("canton_key", "")).strip()]
-            if sin_ck:
-                st.warning(
-                    "⚠️ Hay distritos sin canton_key en list_distrito. "
-                    "Si usas choice_filter 'canton_key=${canton}', el filtrado podría fallar."
-                )
 
 # ==========================================================================================
 # FIN PARTE 1/10
@@ -271,11 +219,11 @@ def init_state():
     if "choices_bank" not in st.session_state:
         st.session_state.choices_bank = []    # lista de dicts: {"list_name","name","label",...}
     if "glossary_bank" not in st.session_state:
-        st.session_state.glossary_bank = {}   # dict: { "Termino": "Definición..." }
+        st.session_state.glossary_bank = {}   # dict: { "Término": "Definición..." }
     if "choices_ext_rows" not in st.session_state:
-        st.session_state.choices_ext_rows = []  # opcional: catálogo cantón/distrito por lotes
+        st.session_state.choices_ext_rows = []  # opcional: catálogo externo por lotes
 
-    # Selección UI
+    # UI state
     if "active_page" not in st.session_state:
         st.session_state.active_page = "p1"
     if "selected_qid" not in st.session_state:
@@ -288,7 +236,7 @@ def init_state():
 init_state()
 
 # ==========================================================================================
-# 2) Textos base (idénticos o equivalentes a tu código original)
+# 2) Textos base (introducción + consentimiento)
 # ==========================================================================================
 DEFAULT_LOGO_PATH = "001.png"
 
@@ -356,7 +304,7 @@ GLOSARIO_BASE = {
 
 # ==========================================================================================
 # 4) Seed de choices base (editable)
-#    - Aquí garantizamos que list_canton y list_distrito EXISTAN SIEMPRE (placeholder)
+#    - Garantiza list_canton y list_distrito (placeholder mínimo)
 # ==========================================================================================
 def seed_choices_base():
     choices_rows = []
@@ -375,23 +323,14 @@ def seed_choices_base():
     add_choice_list(choices_rows, "relacion_zona", ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"])
     add_choice_list(choices_rows, "seguridad_5", ["Muy inseguro", "Inseguro", "Ni seguro ni inseguro", "Seguro", "Muy seguro"])
 
-    # ✅ FIX CRÍTICO: listas canton/distrito deben existir en choices siempre
+    # FIX CRÍTICO: cantón/distrito deben existir en choices siempre
     ensure_choice_list_exists(choices_rows, "list_canton")
     ensure_choice_list_exists(choices_rows, "list_distrito")
 
-    # Para list_distrito agregamos canton_key en placeholder (no rompe)
-    # (si el placeholder ya existe sin canton_key, lo dejamos igual; canton_key se agregará al export si aplica)
     return choices_rows
 
 # ==========================================================================================
 # 5) Seed de preguntas (survey) por páginas en formato "bank"
-#    Cada pregunta se guarda como:
-#    {
-#      "qid": "...",
-#      "page": "p1",
-#      "order": 10,
-#      "row": { columnas XLSForm... }
-#    }
 # ==========================================================================================
 def _new_qid(prefix: str = "q") -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
@@ -406,13 +345,13 @@ def seed_questions_base(form_title: str, logo_media_name: str):
     def add_q(page: str, order: int, row: dict):
         qb.append({"qid": _new_qid("q"), "page": page, "order": order, "row": row})
 
-    # -------------------------------- P1: Introducción --------------------------------
+    # ------------------------------- P1: Introducción --------------------------------
     add_q("p1", 10, {"type": "begin_group", "name": "p1_intro", "label": "Introducción", "appearance": "field-list"})
     add_q("p1", 20, {"type": "note", "name": "p1_logo", "label": form_title, "media::image": logo_media_name, "bind::esri:fieldType": "null"})
     add_q("p1", 30, {"type": "note", "name": "p1_texto", "label": INTRO_COMUNIDAD_EXACTA, "bind::esri:fieldType": "null"})
     add_q("p1", 40, {"type": "end_group", "name": "p1_end", "label": ""})
 
-    # -------------------------------- P2: Consentimiento --------------------------------
+    # ------------------------------- P2: Consentimiento --------------------------------
     add_q("p2", 10, {"type": "begin_group", "name": "p2_consent", "label": "Consentimiento Informado", "appearance": "field-list"})
     add_q("p2", 20, {"type": "note", "name": "p2_titulo", "label": CONSENT_TITLE, "bind::esri:fieldType": "null"})
 
@@ -448,7 +387,7 @@ def seed_questions_base(form_title: str, logo_media_name: str):
         "relevant": f"${{acepta_participar}}='{v_no}'"
     })
 
-    # -------------------------------- P3: Datos demográficos --------------------------------
+    # ------------------------------- P3: Datos demográficos --------------------------------
     add_q("p3", 10, {"type": "begin_group", "name": "p3_datos_demograficos", "label": "Datos demográficos", "appearance": "field-list", "relevant": rel_si})
 
     add_q("p3", 20, {
@@ -510,7 +449,7 @@ def seed_questions_base(form_title: str, logo_media_name: str):
 
     add_q("p3", 80, {"type": "end_group", "name": "p3_end", "label": ""})
 
-    # -------------------------------- P4: Percepción (mínimo, editable luego) --------------------------------
+    # ------------------------------- P4: Percepción (mínimo) --------------------------------
     add_q("p4", 10, {"type": "begin_group", "name": "p4_percepcion_distrito", "label": "Percepción ciudadana de seguridad en el distrito", "appearance": "field-list", "relevant": rel_si})
     add_q("p4", 20, {
         "type": "select_one seguridad_5",
@@ -522,7 +461,7 @@ def seed_questions_base(form_title: str, logo_media_name: str):
     })
     add_q("p4", 90, {"type": "end_group", "name": "p4_end", "label": ""})
 
-    # -------------------------------- P8: Cierre mínimo (editable luego) --------------------------------
+    # ------------------------------- P8: Cierre mínimo --------------------------------
     add_q("p8", 10, {"type": "begin_group", "name": "p8_cierre", "label": "Cierre", "appearance": "field-list", "relevant": rel_si})
     add_q("p8", 20, {"type": "note", "name": "p8_fin", "label": "---------------------------------- Fin de la Encuesta ----------------------------------", "bind::esri:fieldType": "null", "relevant": rel_si})
     add_q("p8", 30, {"type": "end_group", "name": "p8_end", "label": ""})
@@ -547,7 +486,7 @@ def apply_seed_if_empty(form_title: str, logo_media_name: str):
         st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"]
 
 # ==========================================================================================
-# 7) Datos básicos de encabezado: logo + delegación (igual que tu flujo original)
+# 7) Datos básicos de encabezado: logo + delegación
 # ==========================================================================================
 col_logo, col_txt = st.columns([1, 3], vertical_alignment="center")
 
@@ -648,7 +587,6 @@ def update_q(qid: str, new_q: dict):
 
 def delete_q(qid: str):
     st.session_state.questions_bank = [q for q in st.session_state.questions_bank if q.get("qid") != qid]
-    # Reset selección
     if st.session_state.questions_bank:
         st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"]
     else:
@@ -680,8 +618,10 @@ def move_q_within_page(qid: str, direction: str):
         return
     page = q.get("page", "p1")
 
-    items = sorted([x for x in st.session_state.questions_bank if x.get("page") == page],
-                   key=lambda x: int(x.get("order", 0)))
+    items = sorted(
+        [x for x in st.session_state.questions_bank if x.get("page") == page],
+        key=lambda x: int(x.get("order", 0))
+    )
     idx = next((i for i, x in enumerate(items) if x.get("qid") == qid), None)
     if idx is None:
         return
@@ -705,7 +645,11 @@ def extract_list_name(tp: str) -> str:
 
 def all_choice_lists() -> list:
     """Todas las listas list_name existentes en choices_bank."""
-    return sorted({str(r.get("list_name", "")).strip() for r in st.session_state.choices_bank if str(r.get("list_name", "")).strip()})
+    return sorted({
+        str(r.get("list_name", "")).strip()
+        for r in st.session_state.choices_bank
+        if str(r.get("list_name", "")).strip()
+    })
 
 def choice_labels_for_list(list_name: str) -> list:
     """Labels de opciones de una lista."""
@@ -740,7 +684,12 @@ def add_question(page: str, qtype: str, label: str):
     }
 
     max_order = max([int(q.get("order", 0)) for q in st.session_state.questions_bank if q.get("page") == page] + [0])
-    st.session_state.questions_bank.append({"qid": _new_qid("q"), "page": page, "order": max_order + 10, "row": row})
+    st.session_state.questions_bank.append({
+        "qid": _new_qid("q"),
+        "page": page,
+        "order": max_order + 10,
+        "row": row
+    })
 
 # ==========================================================================================
 # 3) UI Editor Preguntas
@@ -792,6 +741,8 @@ if active_tab == "Preguntas":
                 st.button("📄", on_click=duplicate_q, args=(st.session_state.selected_qid,), key="btn_dup")
             with c4:
                 st.button("🗑", on_click=delete_q, args=(st.session_state.selected_qid,), key="btn_del")
+        else:
+            st.info("No hay preguntas en esta página (aún).")
 
         st.markdown("### ➕ Agregar pregunta")
         new_type = st.selectbox(
@@ -812,6 +763,7 @@ if active_tab == "Preguntas":
             key="add_q_type"
         )
         new_label = st.text_input("Texto", value="", key="add_q_label")
+
         if st.button("Agregar", type="primary", use_container_width=True, key="add_q_btn"):
             add_question(st.session_state.active_page, new_type, new_label)
             st.success("Pregunta agregada.")
@@ -881,7 +833,6 @@ if active_tab == "Preguntas":
                     new_label = st.text_area("Texto de la pregunta", value=qlabel, height=120, key="simple_label")
                     req = st.checkbox("Obligatoria (required)", value=(str(row.get("required", "")).strip() == "yes"), key="simple_req")
 
-                    # Tipo simple
                     simple_type = st.selectbox(
                         "Tipo",
                         options=["select_one", "select_multiple", "text", "integer", "note"],
@@ -923,7 +874,6 @@ if active_tab == "Preguntas":
                     if row["type"] == "note":
                         row["bind::esri:fieldType"] = "null"
                     else:
-                        # Si el usuario cambia de note a otro, no forzamos null
                         if row.get("bind::esri:fieldType", "") == "null":
                             row["bind::esri:fieldType"] = ""
 
@@ -992,7 +942,11 @@ if active_tab == "Preguntas":
 # Helpers Choices (bank)
 # ==========================================================================================
 def cb_all_lists() -> list:
-    return sorted({str(r.get("list_name", "")).strip() for r in st.session_state.choices_bank if str(r.get("list_name", "")).strip()})
+    return sorted({
+        str(r.get("list_name", "")).strip()
+        for r in st.session_state.choices_bank
+        if str(r.get("list_name", "")).strip()
+    })
 
 def cb_rows_for_list(list_name: str) -> list:
     return [r for r in st.session_state.choices_bank if str(r.get("list_name", "")).strip() == list_name]
@@ -1031,7 +985,7 @@ def cb_ensure_list_exists(list_name: str):
 
 def cb_rename_list(old: str, new: str):
     """
-    Renombra list_name en choices_bank (y opcionalmente el type en questions se hará en otra parte si quieres).
+    Renombra list_name en choices_bank.
     """
     if not old or not new or old == new:
         return
@@ -1041,8 +995,12 @@ def cb_rename_list(old: str, new: str):
 
 def cb_rebuild_names_for_list(list_name: str):
     """
-    Recalcula el campo 'name' usando slugify(label) para una lista (opcional).
+    Recalcula el campo 'name' usando slugify(label) para una lista.
     Útil si el usuario pegó labels con espacios/acentos y quiere normalizar.
+
+    IMPORTANTE:
+    - No toca el placeholder_1.
+    - Garantiza unicidad dentro de la lista.
     """
     rows = cb_rows_for_list(list_name)
     used = set()
@@ -1081,8 +1039,12 @@ if active_tab == "Choices":
                 st.rerun()
 
         # Seleccionar lista
-        default_list = "yesno" if "yesno" in lists else (lists[0] if lists else "")
-        selected_list = st.selectbox("Selecciona lista", options=lists if lists else [default_list], key="cb_selected_list")
+        default_list = "yesno" if "yesno" in lists else (lists[0] if lists else "yesno")
+        selected_list = st.selectbox(
+            "Selecciona lista",
+            options=lists if lists else [default_list],
+            key="cb_selected_list"
+        )
 
         # Acciones de lista
         st.markdown("### ⚙️ Acciones de lista")
@@ -1099,6 +1061,8 @@ if active_tab == "Choices":
                     cb_rename_list(selected_list, rename_to.strip())
                     st.success("Lista renombrada.")
                     st.rerun()
+                else:
+                    st.error("Indica el nuevo nombre para list_name.")
 
         st.markdown("### ➕ Agregar opción")
         opt_label = st.text_input("Texto visible (label)", value="", key="cb_add_label")
@@ -1132,26 +1096,35 @@ if active_tab == "Choices":
         if not rows:
             st.info("Esta lista no tiene opciones.")
         else:
-            # Mostrar tabla editable amigable (sin “excel feo”)
             st.caption("Edita texto y campos. Para borrar, usa el botón 🗑.")
             for i, r in enumerate(rows):
                 ln = str(r.get("list_name", "")).strip()
                 nm = str(r.get("name", "")).strip()
                 lab = str(r.get("label", "")).strip()
 
-                # Evitar StreamlitDuplicateElementKey: keys únicas por list+name
+                # Evitar StreamlitDuplicateElementKey: keys únicas por list+name+index
                 base_key = f"cb_{ln}_{nm}_{i}"
 
                 with st.container(border=True):
-                    top = st.columns([2.2, 2.2, 1, 1])
+                    if selected_list == "list_distrito":
+                        top = st.columns([2.0, 2.0, 2.0, 1, 1])
+                    else:
+                        top = st.columns([2.6, 2.6, 1, 1])
+
                     with top[0]:
                         new_label = st.text_input("label (visible)", value=lab, key=f"{base_key}_lab")
                     with top[1]:
                         new_name = st.text_input("name (interno)", value=nm, key=f"{base_key}_nm")
-                    with top[2]:
-                        # Guardar
+
+                    # canton_key editable si list_distrito
+                    if selected_list == "list_distrito":
+                        ck = str(r.get("canton_key", "")).strip()
+                        with top[2]:
+                            new_ck = st.text_input("canton_key", value=ck, key=f"{base_key}_ck")
+
+                    with top[-2]:
                         if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
-                            # Borrar fila vieja si cambió name
+                            # Si cambió name, borrar la fila vieja
                             if new_name.strip() and new_name.strip() != nm:
                                 cb_delete_row(ln, nm)
 
@@ -1159,29 +1132,21 @@ if active_tab == "Choices":
                             row_new["label"] = new_label.strip()
                             row_new["name"] = new_name.strip() if new_name.strip() else nm
 
-                            # canton_key editable si list_distrito
                             if selected_list == "list_distrito":
-                                ck_val = st.session_state.get(f"{base_key}_ck_val", str(r.get("canton_key", "")).strip())
-                                row_new["canton_key"] = str(ck_val).strip()
+                                row_new["canton_key"] = new_ck.strip()
 
                             cb_upsert_row(row_new)
                             st.success("Guardado.")
                             st.rerun()
 
-                    with top[3]:
-                        # Eliminar
+                    with top[-1]:
                         if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
                             cb_delete_row(ln, nm)
                             st.success("Eliminado.")
                             st.rerun()
 
-                    # Campo extra para distrito
-                    if selected_list == "list_distrito":
-                        ck = str(r.get("canton_key", "")).strip()
-                        st.text_input("canton_key (para choice_filter)", value=ck, key=f"{base_key}_ck_val")
-
-            # Asegurar que la lista no se quede vacía (placeholder)
-            if selected_list in ("list_canton", "list_distrito"):
+            # Asegurar que la lista no se quede vacía en listas críticas
+            if selected_list in ("list_canton", "list_distrito", "yesno"):
                 if not cb_rows_for_list(selected_list):
                     cb_ensure_list_exists(selected_list)
 
@@ -1197,12 +1162,12 @@ if active_tab == "Choices":
 # 1) Editor de Glosario global (término -> definición) dentro de la app.
 # 2) Búsqueda rápida.
 # 3) Agregar, editar y eliminar términos.
-# 4) Preparación para "glosario por página" (se conecta en partes posteriores).
+# 4) Vista previa del término seleccionado.
 #
 # IMPORTANTE:
 # - El glosario aquí es editable por cualquier persona.
-# - En el XLSForm final, el glosario se agregará como:
-#   select_one yesno (¿Desea acceder al glosario?) + begin_group con notes (definiciones).
+# - En el XLSForm final, el glosario por página se agregará como un bloque de "notes"
+#   (bind::esri:fieldType="null") para no crear columnas en resultados.
 # ==========================================================================================
 
 # ==========================================================================================
@@ -1237,6 +1202,7 @@ if active_tab == "Glosario":
     with left:
         st.markdown("### 🔎 Buscar")
         q_search = st.text_input("Buscar término", value="", key="gl_search")
+
         terms = gl_all_terms()
         if q_search.strip():
             s = q_search.strip().lower()
@@ -1276,7 +1242,6 @@ if active_tab == "Glosario":
             c1, c2 = st.columns([1, 1])
             with c1:
                 if st.button("💾 Guardar cambios", use_container_width=True, key=f"{base_key}_save"):
-                    # Si cambió el nombre del término, borramos el viejo y guardamos nuevo
                     old = selected_term
                     newt = edited_term.strip()
                     newd = edited_def.strip()
@@ -1311,19 +1276,19 @@ if active_tab == "Glosario":
 # ==========================================================================================
 #
 # ESTA PARTE 6/10 HACE:
-# 1) Editor amigable para cargar Cantón→Distrito "por lotes" (como tu app original),
-#    pero ahora lo INTEGRA directamente en choices_bank, para que:
+# 1) Editor amigable para cargar Cantón→Distrito "por lotes",
+#    pero INTEGRÁNDOLO directamente en choices_bank, para que:
 #    ✅ Survey123 NO falle (listas existen y tienen filas reales)
 #    ✅ choice_filter "canton_key=${canton}" funcione
 # 2) Permite:
 #    - Agregar cantón + múltiples distritos
-#    - Ver y editar tabla de cantones
-#    - Ver y editar tabla de distritos (incluye canton_key)
+#    - Ver y editar cantones (list_canton)
+#    - Ver y editar distritos (list_distrito) con canton_key
 #    - Borrar cantones/distritos
 #
 # IMPORTANTE:
 # - En choices_bank:
-#   list_canton: {list_name="list_canton", name="<slug_canton>", label="Cantón"}
+#   list_canton:   {list_name="list_canton", name="<slug_canton>",   label="Cantón"}
 #   list_distrito: {list_name="list_distrito", name="<slug_distrito>", label="Distrito", canton_key="<slug_canton>"}
 # ==========================================================================================
 
@@ -1338,8 +1303,7 @@ def cat_get_cantones():
             lb = str(r.get("label", "")).strip()
             if nm and nm != "placeholder_1":
                 out.append({"name": nm, "label": lb})
-    out = sorted(out, key=lambda x: x["label"].lower())
-    return out
+    return sorted(out, key=lambda x: x["label"].lower())
 
 def cat_get_distritos():
     out = []
@@ -1350,8 +1314,7 @@ def cat_get_distritos():
             ck = str(r.get("canton_key", "")).strip()
             if nm and nm != "placeholder_1":
                 out.append({"name": nm, "label": lb, "canton_key": ck})
-    out = sorted(out, key=lambda x: (x["canton_key"].lower(), x["label"].lower()))
-    return out
+    return sorted(out, key=lambda x: (x["canton_key"].lower(), x["label"].lower()))
 
 def cat_add_lote(canton_label: str, distritos_labels: list[str]):
     canton_label = (canton_label or "").strip()
@@ -1387,11 +1350,15 @@ def cat_delete_canton(slug_canton: str, delete_children: bool = True):
         return
     # Borra cantón
     cb_delete_row("list_canton", slug_canton)
+
     # Borra distritos asociados
     if delete_children:
         st.session_state.choices_bank = [
             r for r in st.session_state.choices_bank
-            if not (str(r.get("list_name", "")).strip() == "list_distrito" and str(r.get("canton_key", "")).strip() == slug_canton)
+            if not (
+                str(r.get("list_name", "")).strip() == "list_distrito"
+                and str(r.get("canton_key", "")).strip() == slug_canton
+            )
         ]
 
 def cat_delete_distrito(name_distrito: str):
@@ -1406,13 +1373,17 @@ def cat_delete_distrito(name_distrito: str):
 if active_tab == "Catálogo":
     st.subheader("📚 Catálogo Cantón → Distrito (cascada) — fácil y sin Excel")
 
-    # Cargar por lotes (como tu flujo original)
     st.markdown("### ➕ Agregar por lote (Cantón y Distritos)")
     with st.container(border=True):
         col_c1, col_c2 = st.columns([2, 3])
 
         canton_txt = col_c1.text_input("Cantón (una vez)", value="", key="cat_canton_txt")
-        distritos_txt = col_c2.text_area("Distritos del cantón (uno por línea)", value="", height=140, key="cat_distritos_txt")
+        distritos_txt = col_c2.text_area(
+            "Distritos del cantón (uno por línea)",
+            value="",
+            height=140,
+            key="cat_distritos_txt"
+        )
 
         b1, b2 = st.columns([1, 1])
         with b1:
@@ -1440,7 +1411,6 @@ if active_tab == "Catálogo":
 
     st.markdown("---")
 
-    # Tablas de edición
     cantones = cat_get_cantones()
     distritos = cat_get_distritos()
 
@@ -1464,17 +1434,18 @@ if active_tab == "Catálogo":
                         new_slug = st.text_input("name (slug)", value=slug_c, key=f"{base_key}_slug")
                     with top[2]:
                         if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
-                            # Si cambió slug, actualizamos también canton_key en distritos
                             old = slug_c
                             new = new_slug.strip() if new_slug.strip() else old
                             new_lab = new_label.strip()
 
-                            # Borrar viejo si slug cambia
+                            # Si cambió slug, actualizamos también canton_key en distritos
                             if new != old:
                                 cb_delete_row("list_canton", old)
-                                # Update distritos canton_key
                                 for j, r in enumerate(st.session_state.choices_bank):
-                                    if str(r.get("list_name", "")).strip() == "list_distrito" and str(r.get("canton_key", "")).strip() == old:
+                                    if (
+                                        str(r.get("list_name", "")).strip() == "list_distrito"
+                                        and str(r.get("canton_key", "")).strip() == old
+                                    ):
                                         st.session_state.choices_bank[j]["canton_key"] = new
 
                             cb_upsert_row({"list_name": "list_canton", "name": new, "label": new_lab})
@@ -1508,7 +1479,6 @@ if active_tab == "Catálogo":
                     with top[3]:
                         if st.button("💾", use_container_width=True, key=f"{base_key}_save"):
                             old_nm = nm
-                            # Si cambia name, borramos la fila vieja
                             if new_name.strip() and new_name.strip() != old_nm:
                                 cb_delete_row("list_distrito", old_nm)
 
@@ -1522,7 +1492,7 @@ if active_tab == "Catálogo":
                             st.rerun()
                     with top[4]:
                         if st.button("🗑", use_container_width=True, key=f"{base_key}_del"):
-                            cat_delete_distrito(old_nm := nm)
+                            cat_delete_distrito(nm)
                             st.success("Distrito eliminado.")
                             st.rerun()
 
@@ -1547,7 +1517,7 @@ if active_tab == "Catálogo":
 #    - end_group
 #
 # IMPORTANTÍSIMO:
-# - Esto NO lo inserta todavía en el XLSForm final (eso lo conectamos en la PARTE 9/10),
+# - Esto NO lo inserta todavía en el XLSForm final (eso lo conectamos en la PARTE 8/10),
 #   pero aquí dejamos:
 #   ✅ la UI editable
 #   ✅ las funciones que generan filas “survey” de glosario
@@ -1568,10 +1538,20 @@ def init_page_glossary_map():
             "p2": [],
             "p3": [],
             "p4": ["Extorsión", "Daños/vandalismo"],
-            "p5": ["Búnkeres", "Receptación", "Contrabando", "Trata de personas", "Explotación infantil", "Acoso callejero", "Tráfico de personas (coyotaje)", "Estafa", "Tacha"],
-            "p6": ["Receptación", "Contrabando", "Tráfico de personas (coyotaje)", "Acoso callejero", "Estafa", "Tacha", "Trata de personas", "Explotación infantil", "Extorsión", "Búnkeres"],
+            "p5": [
+                "Búnkeres", "Receptación", "Contrabando", "Trata de personas",
+                "Explotación infantil", "Acoso callejero", "Tráfico de personas (coyotaje)",
+                "Estafa", "Tacha",
+            ],
+            "p6": [
+                "Receptación", "Contrabando", "Tráfico de personas (coyotaje)", "Acoso callejero",
+                "Estafa", "Tacha", "Trata de personas", "Explotación infantil", "Extorsión", "Búnkeres",
+            ],
             "p7": ["Ganzúa (pata de chancho)", "Boquete", "Arrebato", "Receptación", "Extorsión"],
-            "p8": ["Patrullaje", "Acciones disuasivas", "Coordinación interinstitucional", "Integridad y credibilidad policial"],
+            "p8": [
+                "Patrullaje", "Acciones disuasivas", "Coordinación interinstitucional",
+                "Integridad y credibilidad policial",
+            ],
         }
 
 init_page_glossary_map()
@@ -1649,7 +1629,6 @@ def build_glossary_block_rows(page_id: str, relevant_base: str, v_si: str, terms
 
     return out
 
-
 def get_page_glossary_terms(page_id: str) -> list[str]:
     return list(st.session_state.page_glossary_map.get(page_id, []) or [])
 
@@ -1688,7 +1667,6 @@ if active_tab == "Glosario":
             key=f"gl_terms_{page_for_gl}"
         )
 
-        # Reordenar (muy simple): lista de texto separada por líneas
         st.caption("Orden del glosario (opcional). Si quieres ordenar manualmente, pega la lista en el orden deseado:")
         order_text = st.text_area(
             "Orden (uno por línea)",
@@ -1719,7 +1697,6 @@ if active_tab == "Glosario":
                 st.success("Glosario eliminado para esta página.")
                 st.rerun()
 
-    # Vista previa
     st.markdown("### 👁️ Vista previa del glosario de esta página")
     prev_terms = get_page_glossary_terms(page_for_gl)
     if not prev_terms:
@@ -1748,7 +1725,7 @@ if active_tab == "Glosario":
 #    - end_group
 #
 # IMPORTANTÍSIMO:
-# - Aún NO se muestra el botón de export (eso va en la PARTE 9/10).
+# - Aquí NO se muestra el botón de export (eso va en la PARTE 9/10).
 # - Aquí solo se define el "motor" que arma el XLSForm correctamente.
 # ==========================================================================================
 
@@ -1772,9 +1749,7 @@ def normalize_survey_row(row: dict) -> dict:
     for k, v in r.items():
         if k in out:
             out[k] = "" if v is None else v
-        else:
-            # Mantener campos extra si en futuro deseas, pero no los exportamos por defecto.
-            pass
+
     # Regla: notas no crean columna
     if str(out.get("type", "")).strip() == "note" and not str(out.get("bind::esri:fieldType", "")).strip():
         out["bind::esri:fieldType"] = "null"
@@ -1784,7 +1759,6 @@ def normalize_choices_rows(rows: list[dict]) -> list[dict]:
     """
     Normaliza choices (lista de dicts), conservando columnas extras (ej. canton_key).
     """
-    # Determinar todas las columnas presentes
     all_cols = set()
     for r in rows:
         all_cols.update((r or {}).keys())
@@ -1814,9 +1788,7 @@ def build_survey_rows_from_bank(form_title: str, logo_media_name: str) -> list[d
     NOTA:
     - questions_bank ya contiene begin_group/end_group, etc.
     - Aquí solo consolidamos y normalizamos.
-    - En parte 9 agregamos settings y export.
     """
-    # Ordenar questions
     ordered = qb_sorted()
 
     survey_rows = []
@@ -1836,13 +1808,13 @@ def build_choices_rows_from_bank() -> list[dict]:
     """
     choices_rows = [dict(r) for r in (st.session_state.choices_bank or [])]
 
-    # Integrar catálogo externo si alguien lo usa todavía
+    # Integrar catálogo externo (si alguien lo usa todavía)
     ext = st.session_state.get("choices_ext_rows", []) or []
     if ext:
-        existing = {(str(r.get("list_name","")).strip(), str(r.get("name","")).strip()) for r in choices_rows}
+        existing = {(str(r.get("list_name", "")).strip(), str(r.get("name", "")).strip()) for r in choices_rows}
         for r in ext:
-            ln = str(r.get("list_name","")).strip()
-            nm = str(r.get("name","")).strip()
+            ln = str(r.get("list_name", "")).strip()
+            nm = str(r.get("name", "")).strip()
             if not ln or not nm:
                 continue
             key = (ln, nm)
@@ -1869,17 +1841,11 @@ def insert_glossary_blocks_into_survey(survey_rows: list[dict], idioma: str = "e
     - Insertamos el bloque del glosario inmediatamente ANTES del end_group de esa página,
       para que quede DENTRO de la página (group).
     """
-    # Slugs de Sí/No (en choices yesno se guardan como slugify("Sí") etc.)
     v_si = slugify_name("Sí")
-
-    # relevant base para glosarios (siempre: solo si aceptó participar)
-    # Se mantiene la misma lógica de tu formulario original.
     rel_si = f"${{acepta_participar}}='{v_si}'"
 
-    # Mapa page_id -> términos asignados
     page_terms_map = dict(st.session_state.page_glossary_map or {})
 
-    # Construir bloques para cada página
     blocks = {}
     for page_id in pages:
         terms = page_terms_map.get(page_id, []) or []
@@ -1890,22 +1856,17 @@ def insert_glossary_blocks_into_survey(survey_rows: list[dict], idioma: str = "e
     if not blocks:
         return survey_rows
 
-    # Insertar antes del end_group de cada página
     new_rows = []
     for r in survey_rows:
         tp = str(r.get("type", "")).strip()
         nm = str(r.get("name", "")).strip()
 
-        # Detectar end_group por patrón: pX_end
-        inserted = False
+        # Insertar justo antes del end_group por página
         if tp == "end_group":
-            # page_id desde name: "p4_end" -> "p4"
-            if nm.endswith("_end") and nm[:2] == "p" and nm[2].isdigit():
+            if nm.endswith("_end") and nm[:2] == "p" and len(nm) >= 4 and nm[2].isdigit():
                 page_id = nm.split("_end")[0]  # "p4"
                 if page_id in blocks:
-                    # Insertar bloque antes del end_group
                     new_rows.extend(blocks[page_id])
-                    inserted = True
 
         new_rows.append(r)
 
@@ -1926,25 +1887,27 @@ def build_xlsform_dataframes(form_title: str, logo_media_name: str, idioma: str,
     - glosario por página insertado
     - choices desde bank
     - settings con style="pages"
-    - Validación FIX: si falta alguna lista usada en survey, se bloquea export.
+    - Validación FIX: si falta alguna lista usada en survey, se bloquea export (Parte 9).
     """
     survey_rows = build_survey_rows_from_bank(form_title=form_title, logo_media_name=logo_media_name)
     survey_rows = insert_glossary_blocks_into_survey(survey_rows, idioma=idioma)
 
     choices_rows = build_choices_rows_from_bank()
 
-    # ✅ FIX CRÍTICO: validar listas usadas en survey contra choices
+    # ✅ Validación de listas usadas vs choices (función está en Parte 1/Parte 9 según tu orden)
     ensure_lists_exist_or_block_export(survey_rows=survey_rows, choices_rows=choices_rows)
 
-    # DataFrames
-    df_survey = pd.DataFrame([normalize_survey_row(r) for r in survey_rows], columns=SURVEY_COLS).fillna("")
+    df_survey = pd.DataFrame(
+        [normalize_survey_row(r) for r in survey_rows],
+        columns=SURVEY_COLS
+    ).fillna("")
 
     choices_norm = normalize_choices_rows(choices_rows)
-    # columnas en choices (dinámicas: list_name,name,label + extras)
     if choices_norm:
         choice_cols = list(choices_norm[0].keys())
     else:
         choice_cols = ["list_name", "name", "label"]
+
     df_choices = pd.DataFrame(choices_norm, columns=choice_cols).fillna("")
 
     df_settings = pd.DataFrame([{
@@ -1972,7 +1935,7 @@ def build_xlsform_dataframes(form_title: str, logo_media_name: str, idioma: str,
 #    - Descargar XLSForm (.xlsx)
 #    - Descargar logo para carpeta media/
 #
-# 2) FIXS para errores típicos en Survey123 (los de tus screenshots):
+# 2) FIXS para errores típicos en Survey123:
 #    ✅ Listas usadas en survey deben existir en choices (list_name)
 #    ✅ (list_name, name) no pueden repetirse en choices
 #    ✅ name en survey debe ser único (para campos reales) y no vacío
@@ -2022,10 +1985,8 @@ def _find_duplicates_in_choices(choices_rows: list[dict]) -> list[tuple]:
 
 def _survey_name_duplicates(survey_rows: list[dict]) -> list[str]:
     """
-    Verifica duplicados en 'name' (solo para filas que generan campo real o referencia).
-    Permitimos repetición solo si está vacío en elementos estructurales (pero igual es mala práctica).
+    Verifica duplicados en 'name' (esto rompe Survey123).
     """
-    ignore_types = {"begin_group", "end_group"}  # esos también deberían tener name único, pero Survey123 suele tolerar.
     seen = set()
     dups = set()
     for r in survey_rows:
@@ -2033,33 +1994,28 @@ def _survey_name_duplicates(survey_rows: list[dict]) -> list[str]:
         nm = str(r.get("name", "")).strip()
         if not nm:
             continue
-        # END / NOTE / SELECT / TEXT / INTEGER etc. deben ser únicos
-        if tp not in ignore_types:
-            if nm in seen:
-                dups.add(nm)
-            else:
-                seen.add(nm)
+
+        # Aunque Survey123 a veces tolera begin_group/end_group, mejor que sean únicos igual.
+        if nm in seen:
+            dups.add(nm)
         else:
-            # también controlamos groups, por seguridad
-            if nm in seen:
-                dups.add(nm)
-            else:
-                seen.add(nm)
+            seen.add(nm)
+
     return sorted(list(dups))
 
 def _survey_empty_names(survey_rows: list[dict]) -> list[int]:
     """
     Detecta filas que deberían tener name pero no lo tienen.
+    (En práctica: casi todo debe tener name en XLSForm).
     """
     bad_idx = []
     for idx, r in enumerate(survey_rows, start=1):
         tp = str(r.get("type", "")).strip()
         nm = str(r.get("name", "")).strip()
-        # tipos que SI necesitan name
-        needs_name = True
-        if tp == "":
-            needs_name = False
-        if needs_name and not nm:
+
+        # Tipos que NO deberían ir sin name: casi ninguno.
+        # Aun así, si es vacío, lo reportamos.
+        if tp and not nm:
             bad_idx.append(idx)
     return bad_idx
 
@@ -2119,7 +2075,6 @@ def ensure_lists_exist_or_block_export(survey_rows: list[dict], choices_rows: li
         if len(empty_choices) > 40:
             errors.append(f"... y {len(empty_choices)-40} más")
 
-    # Resultado
     st.session_state["_export_errors"] = errors
     st.session_state["_export_blocked"] = True if errors else False
 
@@ -2135,9 +2090,7 @@ if active_tab == "Exportar":
 
     st.markdown("---")
 
-    # Construir (preview + validar)
     if st.button("🧮 Construir XLSForm", use_container_width=True, key="exp_build_btn"):
-        # Armamos dataframes desde el motor (Parte 8)
         df_survey, df_choices, df_settings = build_xlsform_dataframes(
             form_title=form_title,
             logo_media_name=logo_media_name,
@@ -2145,12 +2098,10 @@ if active_tab == "Exportar":
             version=version.strip() or version_auto
         )
 
-        # Guardar en session para evitar reconstrucción al descargar
         st.session_state["_df_survey"] = df_survey
         st.session_state["_df_choices"] = df_choices
         st.session_state["_df_settings"] = df_settings
 
-        # Mostrar errores si existieran (bloquea export)
         if st.session_state.get("_export_blocked"):
             st.error("Se detectaron problemas que pueden impedir cargar en Survey123. Corrige y vuelve a construir.")
             with st.expander("Ver detalle de errores (clic)"):
@@ -2159,7 +2110,6 @@ if active_tab == "Exportar":
         else:
             st.success("XLSForm construido correctamente. Puedes previsualizar y descargar.")
 
-    # Mostrar preview si ya existe
     df_survey = st.session_state.get("_df_survey")
     df_choices = st.session_state.get("_df_choices")
     df_settings = st.session_state.get("_df_settings")
@@ -2178,14 +2128,12 @@ if active_tab == "Exportar":
 
         st.markdown("---")
 
-        # Descargar SOLO si no está bloqueado
         if st.session_state.get("_export_blocked"):
             st.warning("Exportación bloqueada hasta corregir los errores.")
         else:
             nombre_archivo = slugify_name(form_title) + "_xlsform.xlsx"
             descargar_xlsform(df_survey, df_choices, df_settings, nombre_archivo)
 
-            # Descargar logo si se cargó
             if st.session_state.get("_logo_bytes"):
                 st.download_button(
                     "📥 Descargar logo para carpeta media/",
@@ -2219,18 +2167,15 @@ if active_tab == "Exportar":
 #    - Importar/Restaurar BACKUP (JSON)
 #    - Resetear a la plantilla base (seed) cuando quieran iniciar de nuevo
 #
-# 2) Indicación exacta del ORDEN de pegado final (cómo quedan las 10 partes).
+# 2) Limpieza de caché de export (dataframes / errores).
 #
 # IMPORTANTE:
 # - Este panel lo mostramos dentro de la pestaña "Exportar" (abajo),
 #   para que sea fácil de encontrar.
-# - NO omite ni una coma/punto de tu lógica: solo agrega herramientas.
 # ==========================================================================================
 
-import json
-
 # ==========================================================================================
-# 1) Helpers de backup/restore
+# Helpers de backup/restore
 # ==========================================================================================
 def _build_backup_payload() -> dict:
     return {
@@ -2246,7 +2191,6 @@ def _build_backup_payload() -> dict:
     }
 
 def _apply_backup_payload(payload: dict):
-    # Validaciones mínimas y asignación
     if not isinstance(payload, dict):
         raise ValueError("El backup no es un JSON válido (dict).")
 
@@ -2268,28 +2212,37 @@ def _apply_backup_payload(payload: dict):
     cb_ensure_list_exists("list_canton")
     cb_ensure_list_exists("list_distrito")
 
-def _reset_to_seed():
-    """
-    Reinicia todo a la plantilla base.
-    (Reutiliza tus seeds de Partes 1-2: aquí solo llamamos a la inicialización).
-    """
-    # Reset total
-    st.session_state.questions_bank = seed_questions_bank(form_title=form_title, logo_media_name=logo_media_name)
-    st.session_state.choices_bank = seed_choices_bank()
-    st.session_state.glossary_bank = seed_glossary_bank()
-    init_page_glossary_map()
-
-    # selección inicial
-    if st.session_state.questions_bank:
-        st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"]
-
-    # limpiar export cache
+def _clear_export_cache():
     for k in ["_df_survey", "_df_choices", "_df_settings", "_export_errors", "_export_blocked"]:
         if k in st.session_state:
             del st.session_state[k]
 
+def _reset_to_seed():
+    """
+    Reinicia todo a la plantilla base.
+
+    NOTA IMPORTANTE:
+    - Usamos tus funciones SEED que quedaron definidas en Partes 1-2.
+    - En tu código actual los nombres son:
+        seed_questions_base()
+        seed_choices_base()
+      y el glosario base se carga con dict(GLOSARIO_BASE)
+    """
+    st.session_state.questions_bank = seed_questions_base(form_title=form_title, logo_media_name=logo_media_name)
+    st.session_state.choices_bank = seed_choices_base()
+    st.session_state.glossary_bank = dict(GLOSARIO_BASE)
+    init_page_glossary_map()
+
+    # Selección inicial
+    if st.session_state.questions_bank:
+        st.session_state.selected_qid = st.session_state.questions_bank[0]["qid"]
+    else:
+        st.session_state.selected_qid = None
+
+    _clear_export_cache()
+
 # ==========================================================================================
-# 2) UI Panel de mantenimiento (lo ponemos al final de "Exportar")
+# UI Panel de mantenimiento (lo ponemos al final de "Exportar")
 # ==========================================================================================
 if active_tab == "Exportar":
     st.markdown("---")
@@ -2301,7 +2254,6 @@ if active_tab == "Exportar":
             "Puedes guardarlo y restaurarlo cuando quieras."
         )
 
-        # Exportar backup
         payload = _build_backup_payload()
         backup_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
@@ -2322,6 +2274,7 @@ if active_tab == "Exportar":
                 raw = up.getvalue().decode("utf-8", errors="replace")
                 data = json.loads(raw)
                 _apply_backup_payload(data)
+                _clear_export_cache()
                 st.success("Backup restaurado correctamente.")
                 st.rerun()
             except Exception as e:
@@ -2338,62 +2291,5 @@ if active_tab == "Exportar":
             st.rerun()
 
 # ==========================================================================================
-# 3) ORDEN DE PEGADO FINAL (cómo quedan las 10 partes en un solo app.py)
-# ==========================================================================================
-# ✅ Pegado recomendado:
-#
-# PARTE 1/10
-# - imports, UI base (set_page_config, title, markdown)
-# - helpers base: slugify_name, asegurar_nombre_unico, descargar_xlsform, add_choice_list
-#
-# PARTE 2/10
-# - Inicialización de session_state
-# - Seeds:
-#   seed_choices_bank()
-#   seed_glossary_bank()
-#   seed_questions_bank(form_title, logo_media_name)
-# - FIX StreamlitDuplicateElementKey (generador _new_qid)
-#
-# PARTE 3/10
-# - Navegación (radio tabs)
-# - Editor de Preguntas (questions_bank): vista legible + edición simple/avanzada + mover/duplicar/borrar + agregar
-#
-# PARTE 4/10
-# - Editor de Choices (choices_bank): listas + opciones + canton_key para list_distrito
-#
-# PARTE 5/10
-# - Editor de Glosario global (glossary_bank): agregar/editar/eliminar + búsqueda
-#
-# PARTE 6/10
-# - Editor Catálogo Cantón→Distrito: integrado a choices_bank (list_canton / list_distrito + canton_key)
-#
-# PARTE 7/10
-# - Glosario por página: page_glossary_map + UI asignación + build_glossary_block_rows()
-#
-# PARTE 8/10
-# - Constructor XLSForm desde bancos:
-#   build_xlsform_dataframes()
-#   insert_glossary_blocks_into_survey()
-#
-# PARTE 9/10
-# - Pestaña Exportar + VALIDADORES Survey123:
-#   ensure_lists_exist_or_block_export()
-#   preview + download XLSForm + download logo
-#
-# PARTE 10/10
-# - Panel Mantenimiento:
-#   backup/restore JSON + reset seed
-#
-# ==========================================================================================
 # FIN PARTE 10/10
 # ==========================================================================================
-
-
-
-
-
-
-
-
-
-
