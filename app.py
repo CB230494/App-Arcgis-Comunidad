@@ -1,3 +1,25 @@
+# ===== PARCHE ANTI-ESTADO CORRUPTO (OBLIGATORIO) =====
+def _force_dict_state(key: str):
+    """
+    Garantiza que session_state[key] sea dict.
+    Si por ejecuciones previas quedó como list/str/None, lo resetea a {}.
+    """
+    if key not in st.session_state or not isinstance(st.session_state.get(key), dict):
+        st.session_state[key] = {}
+
+def _force_list_state(key: str):
+    """
+    Garantiza que session_state[key] sea list.
+    """
+    if key not in st.session_state or not isinstance(st.session_state.get(key), list):
+        st.session_state[key] = []
+
+_force_list_state("pages")
+_force_dict_state("questions")
+_force_dict_state("choices_lists")
+_force_dict_state("glossary_terms")
+_force_dict_state("page_glossary_map")
+# =====================================================
 # ==========================================================================================
 # PARTE 1/10
 # App: Editor XLSForm — Encuesta Comunidad (Banco de preguntas + Editor + Choices + Glosario)
@@ -697,3 +719,4 @@ elif section == "Catálogo":
 
 elif section == "Exportar":
     render_placeholder("📤 Exportar (próxima parte)")
+
