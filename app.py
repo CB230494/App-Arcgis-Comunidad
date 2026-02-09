@@ -244,6 +244,7 @@ INTRO_COMUNIDAD = (
 )
 
 
+
 # ------------------------------------------------------------------------------------------
 # Precarga de preguntas (P2 incluida; SIN barrio)
 # ------------------------------------------------------------------------------------------
@@ -934,4 +935,5 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
 
