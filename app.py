@@ -12,6 +12,8 @@
 # - FIX: evita error "List name not in choices sheet: list_canton"
 # - MEJORA: no mostrar "— escoja un cantón —" cuando ya hay catálogo real
 # - FIX MATRIZ (table-list): todas las filas deben compartir el MISMO list_name
+# - FIX NUEVO: si el usuario tenía una sesión/JSON viejo, se “migran” automáticamente preguntas 12–28
+# - FIX NUEVO: finalización real del formulario cuando consentimiento = "No" (type = end)
 # ==========================================================================================
 
 import re
@@ -112,12 +114,6 @@ def xlsform_or_expr(conds):
     if len(conds) == 1:
         return conds[0]
     return "(" + " or ".join(conds) + ")"
-
-
-def xlsform_not(expr):
-    if not expr:
-        return None
-    return f"not({expr})"
 
 
 def build_relevant_expr(rules_for_target: List[Dict]):
@@ -358,16 +354,17 @@ INTRO_DELITOS = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Precarga de preguntas (con FIX de matriz table-list) — ahora hasta la 28
+# Precarga de preguntas base (seed) + MIGRACIÓN automática 12–28 si faltan
 # ------------------------------------------------------------------------------------------
-if "seed_cargado" not in st.session_state:
+def _definiciones_base_preguntas():
+    """Devuelve las preguntas base (consentimiento, demográficos, percepción, y riesgos/delitos 12–28)."""
     v_muy_inseguro = slugify_name("Muy inseguro")
     v_inseguro = slugify_name("Inseguro")
 
     # LISTA COMPARTIDA para la matriz (table-list)
     LISTA_MATRIZ_SEG = "list_matriz_seguridad"
 
-    seed = [
+    base = [
         # ---------------- Consentimiento ----------------
         {"tipo_ui": "Selección única",
          "label": "¿Acepta participar en esta encuesta?",
@@ -495,7 +492,7 @@ if "seed_cargado" not in st.session_state:
          "opciones": [],
          "appearance": None, "choice_filter": None, "relevant": "string-length(${cambio_seguridad_12m})>0"},
 
-        # 9. MATRIZ (todas comparten list_override = LISTA_MATRIZ_SEG)  ✅ FIX table-list
+        # 9. MATRIZ (todas comparten list_override = LISTA_MATRIZ_SEG)
         {"tipo_ui": "Selección única", "label": "Discotecas, bares, sitios de entretenimiento", "name": "seg_discotecas_bares",
          "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
          "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
@@ -579,7 +576,7 @@ if "seed_cargado" not in st.session_state:
          "opciones": [],
          "appearance": None, "choice_filter": None, "relevant": "string-length(${foco_inseguridad})>0"},
 
-        # ---------------- III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL (12–28) ----------------
+        # ---------------- III. RIESGOS / DELITOS (12–28) ----------------
         {"tipo_ui": "Selección múltiple",
          "label": "12. Según su conocimiento u observación, seleccione las problemáticas que afectan su distrito:",
          "name": "prob_distrito",
@@ -699,7 +696,7 @@ if "seed_cargado" not in st.session_state:
          "appearance": None, "choice_filter": None,
          "relevant": f"selected(${{inseg_transporte}}, '{slugify_name('Otro tipo de situación relacionada con el transporte')}')"},
 
-        # ---- Delitos (18–28) ----
+        # Delitos (18–28)
         {"tipo_ui": "Selección múltiple",
          "label": "18. Seleccione los delitos que, según su conocimiento u observación, se presentan en el distrito:",
          "name": "delitos_lista",
@@ -867,9 +864,28 @@ if "seed_cargado" not in st.session_state:
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
     ]
+    return base
 
-    st.session_state.preguntas = seed
+
+def _migrar_agregar_preguntas_faltantes():
+    """
+    Si el usuario venía con una sesión/JSON viejo (por ejemplo solo hasta la 11),
+    se agregan automáticamente las preguntas faltantes 12–28 (sin tocar las existentes).
+    """
+    base = _definiciones_base_preguntas()
+    existentes = {q.get("name") for q in st.session_state.preguntas}
+    for q in base:
+        if q["name"] not in existentes:
+            st.session_state.preguntas.append(q)
+
+
+# Seed inicial (solo la primera vez)
+if "seed_cargado" not in st.session_state:
+    st.session_state.preguntas = _definiciones_base_preguntas()
     st.session_state.seed_cargado = True
+else:
+    # MIGRACIÓN: si ya había seed, aseguramos que estén 12–28 para que se vean en Survey123
+    _migrar_agregar_preguntas_faltantes()
 
 # ------------------------------------------------------------------------------------------
 # Sidebar: Metadatos + Exportar/Importar proyecto
@@ -920,6 +936,10 @@ with st.sidebar:
             st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
 
             _asegurar_placeholders_catalogo()
+
+            # MIGRACIÓN también al importar JSON (para asegurar 12–28 siempre)
+            _migrar_agregar_preguntas_faltantes()
+
             _rerun()
         except Exception as e:
             st.error(f"No se pudo importar el JSON: {e}")
@@ -1068,12 +1088,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
             {"src": r["src"], "op": r.get("op", "="), "values": r.get("values", [])}
         )
 
-    fin_conds = []
-    for r in reglas_fin:
-        cond = build_relevant_expr([{"src": r["src"], "op": r.get("op", "="), "values": r.get("values", [])}])
-        if cond:
-            fin_conds.append((r["index_src"], cond))
-
     def add_q(q, idx):
         x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"])
 
@@ -1090,10 +1104,15 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         rel_manual = q.get("relevant") or None
         rel_panel = build_relevant_expr(vis_by_target.get(q["name"], []))
 
-        nots = [xlsform_not(cond) for idx_src, cond in fin_conds if idx_src < idx]
-        rel_fin = "(" + " and ".join(nots) + ")" if nots else None
+        # ✅ Consentimiento: todas las preguntas posteriores solo visibles si consentimiento != "No"
+        # (esto evita que queden “ocultas” por error, y asegura el flujo correcto)
+        rel_consent = None
+        if q.get("name") != "consentimiento":
+            # Solo aplica si la pregunta de consentimiento existe
+            if "consentimiento" in idx_by_name:
+                rel_consent = f"${{consentimiento}}!='{slugify_name('No')}'"
 
-        parts = [p for p in [rel_manual, rel_panel, rel_fin] if p]
+        parts = [p for p in [rel_manual, rel_panel, rel_consent] if p]
         rel_final = parts[0] if parts and len(parts) == 1 else ("(" + ") and (".join(parts) + ")" if parts else None)
 
         row = {"type": x_type, "name": q["name"], "label": q["label"]}
@@ -1135,15 +1154,23 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     ]
 
     # Página 2: Consentimiento
-    idx_consent = idx_by_name.get("consentimiento", None)
     survey_rows.append({"type": "begin_group", "name": "p2_consentimiento", "label": "Consentimiento informado", "appearance": "field-list"})
     survey_rows.append({"type": "note", "name": "cons_title", "label": CONSENTIMIENTO_TITULO})
     for i, txt in enumerate(CONSENTIMIENTO_BLOQUES, start=1):
         survey_rows.append({"type": "note", "name": f"cons_b{i:02d}", "label": txt})
 
+    # Pregunta consentimiento
+    idx_consent = idx_by_name.get("consentimiento", None)
     if idx_consent is not None:
         add_q(preguntas[idx_consent], idx_consent)
-        fin_conds.append((idx_consent, f"${{consentimiento}}='{slugify_name('No')}'"))
+
+        # ✅ FINALIZACIÓN REAL: si responde "No", se termina el formulario aquí
+        survey_rows.append({
+            "type": "end",
+            "name": "fin_por_no_consentimiento",
+            "label": "",
+            "relevant": f"${{consentimiento}}='{slugify_name('No')}'"
+        })
 
     survey_rows.append({"type": "end_group", "name": "p2_consentimiento_end"})
 
@@ -1173,32 +1200,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "razones_foco_inseguridad",
     }
 
-    p_riesgos_delitos = {
-        "prob_distrito",
-        "prob_distrito_otro",
-        "carencias_inversion_social",
-        "carencias_inversion_social_otro",
-        "consumo_drogas_donde",
-        "infra_vial_deficiencias",
-        "puntos_venta_drogas_espacios",
-        "puntos_venta_drogas_otro",
-        "inseg_transporte",
-        "inseg_transporte_otro",
-        "delitos_lista",
-        "delitos_otro",
-        "venta_drogas_forma",
-        "venta_drogas_forma_otro",
-        "delitos_vida",
-        "delitos_sexuales",
-        "asaltos",
-        "estafas",
-        "robo_fuerza",
-        "abandono_personas",
-        "explotacion_infantil",
-        "delitos_ambientales",
-        "trata_personas",
-    }
-
     def add_page(group_name, page_label, names_set, intro_note_text: str = None, group_appearance: str = "field-list"):
         survey_rows.append({"type": "begin_group", "name": group_name, "label": page_label, "appearance": group_appearance})
         if intro_note_text:
@@ -1210,7 +1211,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
     add_page("p3_demograficos", "I. DATOS DEMOGRÁFICOS", p_demograficos, intro_note_text=None, group_appearance="field-list")
 
-    # Percepción con intro
     add_page(
         "p4_percepcion_distrito",
         "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO",
@@ -1219,12 +1219,25 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         group_appearance="field-list"
     )
 
-    # III con intro (y además un bloque "Delitos" antes de la 18)
-    survey_rows.append({"type": "begin_group", "name": "p5_riesgos_delitos", "label": "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL", "appearance": "field-list"})
-    survey_rows.append({"type": "note", "name": "p5_riesgos_delitos_intro", "label": INTRO_RIESGOS_DISTRITO})
+    # --------------------------------------------------------------------------------------
+    # Página III: Riesgos + Delitos + Preguntas 12–28 (como pediste)
+    # --------------------------------------------------------------------------------------
+    survey_rows.append({
+        "type": "begin_group",
+        "name": "p5_riesgos_delitos",
+        "label": "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL",
+        "appearance": "field-list"
+    })
 
-    # Preguntas 12–17 primero
-    orden_12_17 = [
+    # Intro general de la página III
+    survey_rows.append({"type": "note", "name": "p5_intro_riesgos", "label": INTRO_RIESGOS_DISTRITO})
+
+    # Título + intro “Delitos”
+    survey_rows.append({"type": "note", "name": "p5_delitos_titulo", "label": "Delitos"})
+    survey_rows.append({"type": "note", "name": "p5_delitos_intro", "label": INTRO_DELITOS})
+
+    # Agregar TODAS las preguntas 12–28 (en orden exacto)
+    orden_12_28 = [
         "prob_distrito",
         "prob_distrito_otro",
         "carencias_inversion_social",
@@ -1235,18 +1248,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "puntos_venta_drogas_otro",
         "inseg_transporte",
         "inseg_transporte_otro",
-    ]
-    for name_q in orden_12_17:
-        i = idx_by_name.get(name_q)
-        if i is not None:
-            add_q(preguntas[i], i)
-
-    # Nota/intro “Delitos” (como en tu imagen)
-    survey_rows.append({"type": "note", "name": "p5_delitos_titulo", "label": "Delitos"})
-    survey_rows.append({"type": "note", "name": "p5_delitos_intro", "label": INTRO_DELITOS})
-
-    # Preguntas 18–28
-    orden_18_28 = [
         "delitos_lista",
         "delitos_otro",
         "venta_drogas_forma",
@@ -1261,8 +1262,8 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "delitos_ambientales",
         "trata_personas",
     ]
-    for name_q in orden_18_28:
-        i = idx_by_name.get(name_q)
+    for nm in orden_12_28:
+        i = idx_by_name.get(nm)
         if i is not None:
             add_q(preguntas[i], i)
 
