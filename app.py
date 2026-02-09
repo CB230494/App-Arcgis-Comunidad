@@ -320,7 +320,7 @@ CONSENTIMIENTO_BLOQUES = [
 ]
 
 # ------------------------------------------------------------------------------------------
-# Página: PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO (intro)
+# Página: II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO (intro)
 # ------------------------------------------------------------------------------------------
 INTRO_PERCEPCION_DISTRITO = (
     "En esta sección le preguntaremos sobre cómo percibe la seguridad en su distrito. "
@@ -336,7 +336,29 @@ INTRO_PERCEPCION_DISTRITO = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Precarga de preguntas (con FIX de matriz table-list)
+# Página: III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL (intro)
+# ------------------------------------------------------------------------------------------
+INTRO_RIESGOS_DISTRITO = (
+    "A continuación, en esta sección le preguntaremos sobre situaciones o condiciones que pueden representar "
+    "riesgos para la convivencia y la seguridad en el distrito.\n\n"
+    "Estas preguntas no se refieren necesariamente a delitos, sino a situaciones, comportamientos o problemas "
+    "sociales que usted haya observado y que puedan generar preocupación, afectar la tranquilidad o aumentar "
+    "el riesgo de que ocurran hechos de inseguridad.\n\n"
+    "Nos interesa conocer qué situaciones están presentes en el distrito, con qué frecuencia se observan y en "
+    "qué espacios se presentan, según su experiencia y percepción. Sus respuestas ayudarán a identificar factores "
+    "de riesgo y a orientar acciones de prevención y atención a nivel local.\n\n"
+    "No existen respuestas correctas o incorrectas. Le pedimos responder con sinceridad, de acuerdo con lo que "
+    "ha visto o vivido en su entorno."
+)
+
+INTRO_DELITOS = (
+    "A continuación, se presenta una lista de delitos para que indique aquellos que, según su conocimiento u "
+    "observación, considera que se presentan en el distrito. La información recopilada tiene fines de análisis "
+    "preventivo y territorial, y no constituye una denuncia formal ni la confirmación judicial de hechos delictivos."
+)
+
+# ------------------------------------------------------------------------------------------
+# Precarga de preguntas (con FIX de matriz table-list) — ahora hasta la 28
 # ------------------------------------------------------------------------------------------
 if "seed_cargado" not in st.session_state:
     v_muy_inseguro = slugify_name("Muy inseguro")
@@ -556,18 +578,295 @@ if "seed_cargado" not in st.session_state:
          "required": True,
          "opciones": [],
          "appearance": None, "choice_filter": None, "relevant": "string-length(${foco_inseguridad})>0"},
-    ]
 
-    # ---- TODO lo demás: se mantiene EXACTO a tu versión previa (incidencia, riesgos, info adicional, etc.) ----
-    # Para no tocar lo que ya está perfecto, aquí se cargan desde tu seed original (si ya los tienes),
-    # pero como en este mensaje solo estamos corrigiendo la parte que rompe table-list,
-    # tú puedes volver a pegar tus secciones completas debajo de este bloque si las ocupas exactamente.
-    #
-    # IMPORTANTE: si ya tenías todo el seed completo, mantenlo y SOLO agrega:
-    #   - list_override = LISTA_MATRIZ_SEG en las filas de la matriz 9
-    #   - el código add_q de más abajo que respeta list_override y dedup de choices
-    #
-    # Yo dejo el seed aquí solo hasta la 11 por claridad del fix.
+        # ---------------- III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL (12–28) ----------------
+        {"tipo_ui": "Selección múltiple",
+         "label": "12. Según su conocimiento u observación, seleccione las problemáticas que afectan su distrito:",
+         "name": "prob_distrito",
+         "required": True,
+         "opciones": [
+             "Problemas vecinales o conflictos entre vecinos",
+             "Presencia de personas en situación de calle (personas que viven permanentemente en la vía pública)",
+             "Zona donde se ejerce prostitución",
+             "Desvinculación escolar (deserción escolar)",
+             "Falta de oportunidades laborales",
+             "Acumulación de basura, aguas negras o mal alcantarillado",
+             "Carencia o inexistencia de alumbrado público",
+             "Lotes baldíos",
+             "Cuarterías",
+             "Asentamientos informales o precarios",
+             "Pérdida de espacios públicos (parques, polideportivos u otros)",
+             "Consumo de alcohol en vía pública",
+             "Consumo de drogas en espacios públicos",
+             "Ventas informales (ambulantes)",
+             "Escándalos musicales o ruidos excesivos",
+             "Otro problema que considere importante",
+             "No se observan estas problemáticas en el distrito",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "Indique cuál es ese otro problema importante:",
+         "name": "prob_distrito_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{prob_distrito}}, '{slugify_name('Otro problema que considere importante')}')"},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "13. En relación con la oferta de servicios y oportunidades en su distrito (Inversión social), indique cuáles de las siguientes carencias identifica:",
+         "name": "carencias_inversion_social",
+         "required": True,
+         "opciones": [
+             "Falta de oferta educativa",
+             "Falta de oferta deportiva",
+             "Falta de oferta recreativa",
+             "Falta de actividades culturales",
+             "Otro problema que considere importante",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "Indique cuál es ese otro problema importante:",
+         "name": "carencias_inversion_social_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{carencias_inversion_social}}, '{slugify_name('Otro problema que considere importante')}')"},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "14. En los casos en que se observa consumo de drogas en el distrito, indique dónde ocurre:",
+         "name": "consumo_drogas_donde",
+         "required": True,
+         "opciones": [
+             "Áreas públicas (calles, parques, paradas, espacios abiertos)",
+             "Áreas privadas (viviendas, locales, espacios cerrados)",
+             "No se observa consumo de drogas",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "15. Indique las principales deficiencias de infraestructura vial que afectan su distrito:",
+         "name": "infra_vial_deficiencias",
+         "required": True,
+         "opciones": [
+             "Calles en mal estado",
+             "Falta de señalización de tránsito",
+             "Carencia o inexistencia de aceras",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "16. Según su conocimiento u observación, indique en qué tipo de espacios se identifica la existencia de puntos de venta de drogas en el distrito:",
+         "name": "puntos_venta_drogas_espacios",
+         "required": True,
+         "opciones": [
+             "Casa de habitación (espacio cerrado)",
+             "Edificación abandonada",
+             "Lote baldío",
+             "Otro tipo de espacio",
+             "No se observa",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Texto (corto)",
+         "label": "Indique cuál es ese otro tipo de espacio:",
+         "name": "puntos_venta_drogas_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{puntos_venta_drogas_espacios}}, '{slugify_name('Otro tipo de espacio')}')"},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "17. Según su conocimiento u observación, indique si ha identificado situaciones de inseguridad asociadas al uso de los siguientes medios o modalidades de transporte en su distrito:",
+         "name": "inseg_transporte",
+         "required": True,
+         "opciones": [
+             "Transporte informal o no autorizado (taxis piratas)",
+             "Plataformas de transporte digital",
+             "Transporte público (buses)",
+             "Servicios de reparto o mensajería “exprés” (por ejemplo, repartidores en motocicleta o bicicleta)",
+             "Otro tipo de situación relacionada con el transporte",
+             "No se observa",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "Indique cuál es ese otro tipo de situación relacionada con el transporte:",
+         "name": "inseg_transporte_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{inseg_transporte}}, '{slugify_name('Otro tipo de situación relacionada con el transporte')}')"},
+
+        # ---- Delitos (18–28) ----
+        {"tipo_ui": "Selección múltiple",
+         "label": "18. Seleccione los delitos que, según su conocimiento u observación, se presentan en el distrito:",
+         "name": "delitos_lista",
+         "required": True,
+         "opciones": [
+             "Disturbios en vía pública (riñas o agresiones)",
+             "Daños a la propiedad (viviendas, comercios, vehículos u otros bienes)",
+             "Daños a la propiedad (perforaciones, tomas ilegales o vandalismo).",
+             "Extorsión (amenazas o intimidación para exigir dinero u otros beneficios)",
+             "Hurto (sustracción de artículos mediante el descuido)",
+             "Compra o venta de artículos robados (receptación)",
+             "Contrabando (licor, cigarrillos, medicinas, ropa, calzado, etc.)",
+             "Maltrato animal",
+             "Tráfico de personas (coyotaje)",
+             "Otro delito",
+             "No se observan delitos",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Texto (corto)",
+         "label": "Indique cuál es ese otro delito:",
+         "name": "delitos_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{delitos_lista}}, '{slugify_name('Otro delito')}')"},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "19. Según su conocimiento u observación, ¿de qué forma se presenta la venta de drogas en el distrito?",
+         "name": "venta_drogas_forma",
+         "required": True,
+         "opciones": [
+             "En espacios cerrados (casas, edificaciones u otros inmuebles)",
+             "En vía pública",
+             "De forma ocasional o móvil (sin punto fijo)",
+             "No se observa venta de drogas",
+             "Otro",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Texto (corto)",
+         "label": "Indique cuál es ese otro:",
+         "name": "venta_drogas_forma_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{venta_drogas_forma}}, '{slugify_name('Otro')}')"},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "20. Delitos contra la vida",
+         "name": "delitos_vida",
+         "required": True,
+         "opciones": [
+             "Homicidios (muerte intencional de una persona)",
+             "Personas heridas de forma intencional (heridos)",
+             "Femicidios (homicidio de una mujer por razones de género)",
+             "No se observan delitos contra la vida",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "21. Delitos sexuales",
+         "name": "delitos_sexuales",
+         "required": True,
+         "opciones": [
+             "Abuso sexual (tocamientos u otros actos sexuales sin consentimiento)",
+             "Violación (acceso sexual sin consentimiento)",
+             "Acoso sexual (insinuaciones, solicitudes o conductas sexuales no deseadas)",
+             "Acoso callejero (comentarios, gestos o conductas sexuales en espacios públicos)",
+             "No se observan delitos sexuales",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "22. Asaltos",
+         "name": "asaltos",
+         "required": True,
+         "opciones": [
+             "Asalto a personas",
+             "Asalto a comercio",
+             "Asalto a vivienda",
+             "Asalto a transporte público",
+             "No se observan asaltos",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "23. Estafas",
+         "name": "estafas",
+         "required": True,
+         "opciones": [
+             "Billetes falsos",
+             "Documentos falsos",
+             "Estafas relacionadas con la compra o venta de oro",
+             "Lotería falsa",
+             "Estafas informáticas (por internet, redes sociales o correos electrónicos)",
+             "Estafas telefónicas",
+             "Estafas con tarjetas (clonación, cargos no autorizados)",
+             "No se observan estafas",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "24. Robo (Sustracción de artículos mediante la utilización de la fuerza)",
+         "name": "robo_fuerza",
+         "required": True,
+         "opciones": [
+             "Robo a comercios",
+             "Robo a edificaciones",
+             "Robo a viviendas",
+             "Robo de vehículos completos",
+             "Robo a vehículos (tacha)",
+             "Robo de ganado (destace)",
+             "Robo de bienes agrícolas",
+             "Robo de cultivos",
+             "Robo de cable",
+             "No se observan robos",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "25. Abandono de personas",
+         "name": "abandono_personas",
+         "required": True,
+         "opciones": [
+             "Abandono de adulto mayor",
+             "Abandono de menor de edad",
+             "Abandono de incapaz",
+             "No se observan situaciones de abandono",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "26. Explotación infantil",
+         "name": "explotacion_infantil",
+         "required": True,
+         "opciones": [
+             "Sexual",
+             "Laboral",
+             "No se observan",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "27. Delitos ambientales",
+         "name": "delitos_ambientales",
+         "required": True,
+         "opciones": [
+             "Caza ilegal",
+             "Pesca ilegal",
+             "Tala ilegal",
+             "Extracción ilegal de material minero",
+             "No se observan delitos ambientales",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "28. Trata de personas",
+         "name": "trata_personas",
+         "required": True,
+         "opciones": [
+             "Con fines laborales",
+             "Con fines sexuales",
+             "No se observan situaciones de trata de personas",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+    ]
 
     st.session_state.preguntas = seed
     st.session_state.seed_cargado = True
@@ -874,6 +1173,32 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "razones_foco_inseguridad",
     }
 
+    p_riesgos_delitos = {
+        "prob_distrito",
+        "prob_distrito_otro",
+        "carencias_inversion_social",
+        "carencias_inversion_social_otro",
+        "consumo_drogas_donde",
+        "infra_vial_deficiencias",
+        "puntos_venta_drogas_espacios",
+        "puntos_venta_drogas_otro",
+        "inseg_transporte",
+        "inseg_transporte_otro",
+        "delitos_lista",
+        "delitos_otro",
+        "venta_drogas_forma",
+        "venta_drogas_forma_otro",
+        "delitos_vida",
+        "delitos_sexuales",
+        "asaltos",
+        "estafas",
+        "robo_fuerza",
+        "abandono_personas",
+        "explotacion_infantil",
+        "delitos_ambientales",
+        "trata_personas",
+    }
+
     def add_page(group_name, page_label, names_set, intro_note_text: str = None, group_appearance: str = "field-list"):
         survey_rows.append({"type": "begin_group", "name": group_name, "label": page_label, "appearance": group_appearance})
         if intro_note_text:
@@ -893,6 +1218,55 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         intro_note_text=INTRO_PERCEPCION_DISTRITO,
         group_appearance="field-list"
     )
+
+    # III con intro (y además un bloque "Delitos" antes de la 18)
+    survey_rows.append({"type": "begin_group", "name": "p5_riesgos_delitos", "label": "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL", "appearance": "field-list"})
+    survey_rows.append({"type": "note", "name": "p5_riesgos_delitos_intro", "label": INTRO_RIESGOS_DISTRITO})
+
+    # Preguntas 12–17 primero
+    orden_12_17 = [
+        "prob_distrito",
+        "prob_distrito_otro",
+        "carencias_inversion_social",
+        "carencias_inversion_social_otro",
+        "consumo_drogas_donde",
+        "infra_vial_deficiencias",
+        "puntos_venta_drogas_espacios",
+        "puntos_venta_drogas_otro",
+        "inseg_transporte",
+        "inseg_transporte_otro",
+    ]
+    for name_q in orden_12_17:
+        i = idx_by_name.get(name_q)
+        if i is not None:
+            add_q(preguntas[i], i)
+
+    # Nota/intro “Delitos” (como en tu imagen)
+    survey_rows.append({"type": "note", "name": "p5_delitos_titulo", "label": "Delitos"})
+    survey_rows.append({"type": "note", "name": "p5_delitos_intro", "label": INTRO_DELITOS})
+
+    # Preguntas 18–28
+    orden_18_28 = [
+        "delitos_lista",
+        "delitos_otro",
+        "venta_drogas_forma",
+        "venta_drogas_forma_otro",
+        "delitos_vida",
+        "delitos_sexuales",
+        "asaltos",
+        "estafas",
+        "robo_fuerza",
+        "abandono_personas",
+        "explotacion_infantil",
+        "delitos_ambientales",
+        "trata_personas",
+    ]
+    for name_q in orden_18_28:
+        i = idx_by_name.get(name_q)
+        if i is not None:
+            add_q(preguntas[i], i)
+
+    survey_rows.append({"type": "end_group", "name": "p5_riesgos_delitos_end"})
 
     # ✅ Encapsular matriz 9 en table-list SIN romper lists (ya comparten list_override)
     def _postprocesar_matriz_table_list(df_survey: pd.DataFrame) -> pd.DataFrame:
@@ -1033,4 +1407,3 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
-
