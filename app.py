@@ -139,6 +139,14 @@ def _append_choice_unique(row: Dict):
     if not exists:
         st.session_state.choices_ext_rows.append(row)
 
+# ✅ ARREGLO: asegurar placeholders SIEMPRE (aunque no agregues lotes)
+def ensure_catalog_placeholders():
+    # columnas extra usadas por filtros/placeholder
+    st.session_state.choices_extra_cols.update({"canton_key", "any"})
+    # Placeholders (una sola vez por lista)
+    _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
+    _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "— escoja un cantón —", "any": "1"})
+
 st.markdown("### 📚 Catálogo Cantón → Distrito (por lotes)")
 with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True):
     col_c1, col_c2 = st.columns(2)
@@ -151,6 +159,8 @@ with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True
 
     if clear_all:
         st.session_state.choices_ext_rows = []
+        # ✅ Mantener placeholders incluso si limpian
+        ensure_catalog_placeholders()
         st.success("Catálogo limpiado.")
 
     if add_lote:
@@ -179,6 +189,9 @@ with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True
                 _append_choice_unique({"list_name": "list_distrito", "name": slug_d, "label": d, "canton_key": slug_c})
 
             st.success(f"Lote agregado: {c} → {len(distritos)} distritos.")
+
+# ✅ ARREGLO: placeholders SIEMPRE (aunque no haya lotes)
+ensure_catalog_placeholders()
 
 # Vista previa de catálogo
 if st.session_state.choices_ext_rows:
@@ -590,6 +603,8 @@ with st.sidebar:
             st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
             st.session_state.choices_ext_rows = list(data.get("choices_ext_rows", []))
             st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
+            # ✅ Asegurar placeholders aunque el JSON venga sin ellos
+            ensure_catalog_placeholders()
             _rerun()
         except Exception as e:
             st.error(f"No se pudo importar el JSON: {e}")
@@ -795,6 +810,9 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     survey_rows = []
     choices_rows = []
 
+    # ✅ Asegurar placeholders antes de exportar (por si no se tocó el catálogo)
+    ensure_catalog_placeholders()
+
     # Index por name para acceso rápido
     idx_by_name = {q.get("name"): i for i, q in enumerate(preguntas)}
 
@@ -876,7 +894,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
     survey_rows.append({"type": "end_group", "name": "p2_consentimiento_end"})
 
-    # Sets por página (SIN barrio) — OJO: la numeración visual en Survey123 no depende del nombre p2/p3, solo del orden
+    # Sets por página (SIN barrio)
     p2 = {"canton", "distrito", "edad", "genero", "escolaridad", "relacion_zona"}
     p3 = {"se_siente_seguro", "motivo_inseguridad", "comparacion_anual", "motivo_comparacion"}
     p4 = {"lugar_entretenimiento", "espacios_recreativos", "lugar_residencia", "paradas_estaciones",
