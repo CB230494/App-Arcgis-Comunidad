@@ -234,12 +234,15 @@ if "reglas_finalizar" not in st.session_state:
 # Intro (Página 1)
 # ------------------------------------------------------------------------------------------
 INTRO_COMUNIDAD = (
-    "Con el fin de hacer más segura nuestra comunidad, queremos concentrarnos en los problemas de "
-    "seguridad más importantes. Por lo que debemos trabajar juntos, tanto con el gobierno local como "
-    "con otras instituciones y la comunidad, para reducir los delitos y riesgos que afectan a la gente. "
-    "Es importante recordar que la información que nos proporcionas es confidencial y solo se usará para "
-    "mejorar la seguridad en nuestra área."
+    "El presente formato corresponde a la Encuesta de Percepción de Comunidad 2026, diseñada para "
+    "recopilar información clave sobre seguridad ciudadana, convivencia y factores de riesgo en los "
+    "cantones del territorio nacional. Este documento se remite para su revisión y validación por parte "
+    "de las direcciones, departamentos u oficinas con competencia técnica en cada uno de los apartados, "
+    "con el fin de asegurar su coherencia metodológica, normativa y operativa con los lineamientos "
+    "institucionales vigentes. Las observaciones recibidas permitirán fortalecer el instrumento antes "
+    "de su aplicación en territorio."
 )
+
 
 # ------------------------------------------------------------------------------------------
 # Precarga de preguntas (P2 incluida; SIN barrio)
@@ -931,3 +934,4 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
