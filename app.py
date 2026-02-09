@@ -6,8 +6,9 @@
 # - Listas en cascada (choice_filter) Cantón→Distrito [CATÁLOGO MANUAL POR LOTES]
 # - Exportar/Importar proyecto (JSON)
 # - Exportar a XLSForm (survey/choices/settings)
-# - PÁGINAS reales (style="pages"): Intro + P2..P7
+# - PÁGINAS reales (style="pages"): Intro + Consentimiento + P2..P7
 # - Portada con logo (media::image) y texto de introducción
+# - Página de Consentimiento Informado: si marca "Sí" continúa; si marca "No" finaliza (oculta lo demás)
 # ==========================================================================================
 
 import re
@@ -34,6 +35,7 @@ Incluye:
 - **Listas en cascada** **Cantón→Distrito** (**catálogo manual por lotes**).
 - **Páginas** con navegación **Siguiente/Anterior** (`settings.style = pages`).
 - **Portada** con **logo** (`media::image`) e **introducción**.
+- **Consentimiento informado** (si NO acepta, la encuesta se corta).
 """)
 
 # ------------------------------------------------------------------------------------------
@@ -243,10 +245,44 @@ INTRO_COMUNIDAD = (
     "de su aplicación en territorio."
 )
 
+# ------------------------------------------------------------------------------------------
+# Consentimiento informado (Página después de Intro)
+# ------------------------------------------------------------------------------------------
+CONSENTIMIENTO_TITULO = "Consentimiento Informado para la Participación en la Encuesta"
 
+CONSENTIMIENTO_TEXTO = (
+    "Usted está siendo invitado(a) a participar de forma libre y voluntaria en una encuesta sobre seguridad,\n"
+    "convivencia y percepción ciudadana, dirigida a personas mayores de 18 años.\n\n"
+    "El objetivo de esta encuesta es recopilar información de carácter preventivo y estadístico, con el fin\n"
+    "de apoyar la planificación de acciones de prevención, mejora de la convivencia y fortalecimiento de\n"
+    "la seguridad en comunidades y zonas comerciales.\n\n"
+    "La participación es totalmente voluntaria. Usted puede negarse a responder cualquier pregunta, así\n"
+    "como retirarse de la encuesta en cualquier momento, sin que ello genere consecuencia alguna.\n\n"
+    "De conformidad con lo dispuesto en el artículo 5 de la Ley N.º 8968, Ley de Protección de la Persona\n"
+    "frente al Tratamiento de sus Datos Personales, se le informa que:\n\n"
+    "• Finalidad del tratamiento: La información recopilada será utilizada exclusivamente para fines\n"
+    "  estadísticos, analíticos y preventivos, y no para investigaciones penales, procesos judiciales,\n"
+    "  sanciones administrativas ni procedimientos disciplinarios.\n"
+    "• Datos personales: Algunos apartados permiten, de forma voluntaria, el suministro de datos\n"
+    "  personales o información de contacto.\n"
+    "• Tratamiento de los datos: Los datos serán almacenados, analizados y resguardados bajo criterios\n"
+    "  de confidencialidad y seguridad, conforme a la normativa vigente.\n"
+    "• Destinatarios y acceso: La información será conocida únicamente por el personal autorizado de\n"
+    "  la Fuerza Pública / Ministerio de Seguridad Pública, para los fines indicados. No será cedida a\n"
+    "  terceros ajenos a estos fines.\n"
+    "• Responsable de la base de datos: El Ministerio de Seguridad Pública, a través de la Dirección de\n"
+    "  Programas Policiales Preventivos, Oficina Estrategia Integral de Prevención para la Seguridad Pública\n"
+    "  (EIPESP / Estrategia Sembremos Seguridad) será el responsable del tratamiento y custodia de la\n"
+    "  información recolectada.\n"
+    "• Derechos de la persona participante: Usted conserva el derecho a la autodeterminación informativa\n"
+    "  y a decidir libremente sobre el suministro de sus datos.\n\n"
+    "Las respuestas brindadas no constituyen denuncias formales, ni sustituyen los mecanismos legales correspondientes.\n\n"
+    "Al continuar con la encuesta, usted manifiesta haber leído y comprendido la información anterior y\n"
+    "otorga su consentimiento informado para participar."
+)
 
 # ------------------------------------------------------------------------------------------
-# Precarga de preguntas (P2 incluida; SIN barrio)
+# Precarga de preguntas (P2 incluida; SIN barrio; + consentimiento)
 # ------------------------------------------------------------------------------------------
 if "seed_cargado" not in st.session_state:
     v_mas_seguro = slugify_name("Más seguro")
@@ -254,6 +290,16 @@ if "seed_cargado" not in st.session_state:
     v_menos_seg = slugify_name("Menos seguro")
 
     seed = [
+        # ---------------- Página nueva: Consentimiento informado ----------------
+        {"tipo_ui": "Selección única",
+         "label": "¿Acepta participar en esta encuesta?",
+         "name": "consentimiento",
+         "required": True,
+         "opciones": ["Sí", "No"],
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
         # ---------------- Página 2: Datos demográficos ----------------
         {"tipo_ui": "Selección única", "label": "Cantón", "name": "canton", "required": True,
          "opciones": [], "appearance": None, "choice_filter": None, "relevant": None},
@@ -513,6 +559,7 @@ with st.sidebar:
     st.markdown("---")
     st.caption("💾 Exporta/Importa tu proyecto (JSON)")
     col_exp, col_imp = st.columns(2)
+
     if col_exp.button("Exportar proyecto (JSON)", use_container_width=True):
         proj = {
             "form_title": form_title,
@@ -520,7 +567,9 @@ with st.sidebar:
             "version": version,
             "preguntas": st.session_state.preguntas,
             "reglas_visibilidad": st.session_state.reglas_visibilidad,
-            "reglas_finalizar": st.session_state.reglas_finalizar
+            "reglas_finalizar": st.session_state.reglas_finalizar,
+            "choices_ext_rows": st.session_state.choices_ext_rows,
+            "choices_extra_cols": list(st.session_state.choices_extra_cols),
         }
         jbuf = BytesIO(json.dumps(proj, ensure_ascii=False, indent=2).encode("utf-8"))
         st.download_button(
@@ -530,6 +579,7 @@ with st.sidebar:
             mime="application/json",
             use_container_width=True
         )
+
     up = col_imp.file_uploader("Importar JSON", type=["json"], label_visibility="collapsed")
     if up is not None:
         try:
@@ -538,6 +588,8 @@ with st.sidebar:
             st.session_state.preguntas = list(data.get("preguntas", []))
             st.session_state.reglas_visibilidad = list(data.get("reglas_visibilidad", []))
             st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
+            st.session_state.choices_ext_rows = list(data.get("choices_ext_rows", []))
+            st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
             _rerun()
         except Exception as e:
             st.error(f"No se pudo importar el JSON: {e}")
@@ -646,6 +698,7 @@ else:
                         st.session_state.preguntas[idx]["opciones"] = ne_opciones
                     st.success("Cambios guardados.")
                     _rerun()
+
                 if col_cancel.button("Cancelar", key=f"e_cancel_{idx}", use_container_width=True):
                     _rerun()
 
@@ -732,7 +785,7 @@ else:
                     _rerun()
 
 # ------------------------------------------------------------------------------------------
-# Construcción XLSForm (incluye P2) + constraints para placeholders
+# Construcción XLSForm (incluye Intro + Consentimiento + P2..P7)
 # ------------------------------------------------------------------------------------------
 def _get_logo_media_name():
     return logo_media_name
@@ -742,49 +795,33 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     survey_rows = []
     choices_rows = []
 
+    # Index por name para acceso rápido
+    idx_by_name = {q.get("name"): i for i, q in enumerate(preguntas)}
+
+    # Visibilidad por target
     vis_by_target = {}
     for r in reglas_vis:
         vis_by_target.setdefault(r["target"], []).append(
             {"src": r["src"], "op": r.get("op", "="), "values": r.get("values", [])}
         )
 
+    # Reglas de finalización (panel)
     fin_conds = []
     for r in reglas_fin:
         cond = build_relevant_expr([{"src": r["src"], "op": r.get("op", "="), "values": r.get("values", [])}])
         if cond:
             fin_conds.append((r["index_src"], cond))
 
-    # Página 1: Intro
-    survey_rows += [
-        {"type": "begin_group", "name": "p1_intro", "label": "Introducción", "appearance": "field-list"},
-        {"type": "note", "name": "intro_logo", "label": form_title, "media::image": _get_logo_media_name()},
-        {"type": "note", "name": "intro_texto", "label": INTRO_COMUNIDAD},
-        {"type": "end_group", "name": "p1_end"}
-    ]
-
-    # Sets por página (SIN barrio)
-    p2 = {"canton", "distrito", "edad", "genero", "escolaridad", "relacion_zona"}
-    p3 = {"se_siente_seguro", "motivo_inseguridad", "comparacion_anual", "motivo_comparacion"}
-    p4 = {"lugar_entretenimiento", "espacios_recreativos", "lugar_residencia", "paradas_estaciones",
-          "puentes_peatonales", "transporte_publico", "zona_bancaria", "zona_comercio",
-          "zonas_residenciales", "lugares_turisticos", "zona_mas_insegura", "porque_insegura"}
-    p5 = {"incidencia_delitos", "venta_drogas", "delitos_vida", "delitos_sexuales", "asaltos", "estafas",
-          "robo_fuerza", "abandono_personas", "explotacion_infantil", "delitos_ambientales", "trata_personas",
-          "vi", "vi_victima_ultimo_anno", "vi_tipos", "vi_fp_abordaje", "vi_fp_eval"}
-    p6 = {"riesgos_sociales", "falta_inversion_social", "consumo_drogas", "infra_vial", "bunker"}
-    p7 = {"info_grupo_delito", "desc_info_grupo", "victimizacion_12m",
-          "delito_victima_si", "modo_operar_si", "horario_hecho_si",
-          "delito_victima_no", "motivo_no_denuncia", "modo_operar_no", "horario_hecho_no",
-          "fp_calificacion", "fp_24m", "conoce_policias", "conversa_policias",
-          "sugerencia_fp", "sugerencia_muni", "otra_info", "contacto_voluntario"}
-
     def add_q(q, idx):
         x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"])
 
         rel_manual = q.get("relevant") or None
         rel_panel = build_relevant_expr(vis_by_target.get(q["name"], []))
+
+        # Fin temprano: NOT(conds) acumulado para preguntas posteriores
         nots = [xlsform_not(cond) for idx_src, cond in fin_conds if idx_src < idx]
         rel_fin = "(" + " and ".join(nots) + ")" if nots else None
+
         parts = [p for p in [rel_manual, rel_panel, rel_fin] if p]
         rel_final = parts[0] if parts and len(parts) == 1 else ("(" + ") and (".join(parts) + ")" if parts else None)
 
@@ -818,6 +855,43 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                 usados.add(opt_name)
                 choices_rows.append({"list_name": list_name, "name": opt_name, "label": str(opt_label)})
 
+    # Página 1: Intro
+    survey_rows += [
+        {"type": "begin_group", "name": "p1_intro", "label": "Introducción", "appearance": "field-list"},
+        {"type": "note", "name": "intro_logo", "label": form_title, "media::image": _get_logo_media_name()},
+        {"type": "note", "name": "intro_texto", "label": INTRO_COMUNIDAD},
+        {"type": "end_group", "name": "p1_end"}
+    ]
+
+    # Página nueva: Consentimiento informado (después de Intro)
+    idx_consent = idx_by_name.get("consentimiento", None)
+    survey_rows.append({"type": "begin_group", "name": "p2_consentimiento", "label": "Consentimiento informado", "appearance": "field-list"})
+    survey_rows.append({"type": "note", "name": "cons_title", "label": CONSENTIMIENTO_TITULO})
+    survey_rows.append({"type": "note", "name": "cons_text", "label": CONSENTIMIENTO_TEXTO})
+
+    if idx_consent is not None:
+        add_q(preguntas[idx_consent], idx_consent)
+        # Si marca NO, se oculta todo lo que sigue
+        fin_conds.append((idx_consent, f"${{consentimiento}}='{slugify_name('No')}'"))
+
+    survey_rows.append({"type": "end_group", "name": "p2_consentimiento_end"})
+
+    # Sets por página (SIN barrio) — OJO: la numeración visual en Survey123 no depende del nombre p2/p3, solo del orden
+    p2 = {"canton", "distrito", "edad", "genero", "escolaridad", "relacion_zona"}
+    p3 = {"se_siente_seguro", "motivo_inseguridad", "comparacion_anual", "motivo_comparacion"}
+    p4 = {"lugar_entretenimiento", "espacios_recreativos", "lugar_residencia", "paradas_estaciones",
+          "puentes_peatonales", "transporte_publico", "zona_bancaria", "zona_comercio",
+          "zonas_residenciales", "lugares_turisticos", "zona_mas_insegura", "porque_insegura"}
+    p5 = {"incidencia_delitos", "venta_drogas", "delitos_vida", "delitos_sexuales", "asaltos", "estafas",
+          "robo_fuerza", "abandono_personas", "explotacion_infantil", "delitos_ambientales", "trata_personas",
+          "vi", "vi_victima_ultimo_anno", "vi_tipos", "vi_fp_abordaje", "vi_fp_eval"}
+    p6 = {"riesgos_sociales", "falta_inversion_social", "consumo_drogas", "infra_vial", "bunker"}
+    p7 = {"info_grupo_delito", "desc_info_grupo", "victimizacion_12m",
+          "delito_victima_si", "modo_operar_si", "horario_hecho_si",
+          "delito_victima_no", "motivo_no_denuncia", "modo_operar_no", "horario_hecho_no",
+          "fp_calificacion", "fp_24m", "conoce_policias", "conversa_policias",
+          "sugerencia_fp", "sugerencia_muni", "otra_info", "contacto_voluntario"}
+
     def add_page(group_name, page_label, names_set):
         survey_rows.append({"type": "begin_group", "name": group_name, "label": page_label, "appearance": "field-list"})
         for i, q in enumerate(preguntas):
@@ -825,12 +899,12 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                 add_q(q, i)
         survey_rows.append({"type": "end_group", "name": f"{group_name}_end"})
 
-    add_page("p2_demograficos", "Datos demográficos", p2)
-    add_page("p3_sentimiento", "Sentimiento de inseguridad en el barrio", p3)
-    add_page("p4_lugares", "Indique cómo se siente en los siguientes lugares de su barrio", p4)
-    add_page("p5_incidencia", "Incidencia relacionada a delitos", p5)
-    add_page("p6_riesgos", "Riesgos Sociales", p6)
-    add_page("p7_info_adicional", "Información adicional", p7)
+    add_page("p3_demograficos", "Datos demográficos", p2)
+    add_page("p4_sentimiento", "Sentimiento de inseguridad en el barrio", p3)
+    add_page("p5_lugares", "Indique cómo se siente en los siguientes lugares de su barrio", p4)
+    add_page("p6_incidencia", "Incidencia relacionada a delitos", p5)
+    add_page("p7_riesgos", "Riesgos Sociales", p6)
+    add_page("p8_info_adicional", "Información adicional", p7)
 
     # Choices del catálogo manual (con unicidad por list+name)
     for r in st.session_state.choices_ext_rows:
@@ -935,5 +1009,3 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
-
-
