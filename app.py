@@ -8,7 +8,11 @@
 # - Exportar a XLSForm (survey/choices/settings)
 # - PÁGINAS reales (style="pages"): Intro + Consentimiento + P2..P7
 # - Portada con logo (media::image) y texto de introducción
-# - Página de Consentimiento Informado: si marca "Sí" continúa; si marca "No" finaliza (oculta lo demás)
+# - Página de Consentimiento Informado:
+#     - Texto en BLOQUES (notes separados) para que se vea ordenado en Survey123
+#     - Si marca "No" ⇒ se corta la encuesta (oculta todo lo demás)
+# - FIX crítico: evita error "List name not in choices sheet: list_canton"
+#     - Siempre crea placeholders de list_canton/list_distrito aunque no se agregue catálogo
 # ==========================================================================================
 
 import re
@@ -35,7 +39,7 @@ Incluye:
 - **Listas en cascada** **Cantón→Distrito** (**catálogo manual por lotes**).
 - **Páginas** con navegación **Siguiente/Anterior** (`settings.style = pages`).
 - **Portada** con **logo** (`media::image`) e **introducción**.
-- **Consentimiento informado** (si NO acepta, la encuesta se corta).
+- **Consentimiento informado** (si NO acepta, la encuesta se corta) con texto ordenado por bloques.
 """)
 
 # ------------------------------------------------------------------------------------------
@@ -125,6 +129,16 @@ def build_relevant_expr(rules_for_target: List[Dict]):
     return xlsform_or_expr(or_parts)
 
 # ------------------------------------------------------------------------------------------
+# Estado base (session_state)
+# ------------------------------------------------------------------------------------------
+if "preguntas" not in st.session_state:
+    st.session_state.preguntas = []
+if "reglas_visibilidad" not in st.session_state:
+    st.session_state.reglas_visibilidad = []
+if "reglas_finalizar" not in st.session_state:
+    st.session_state.reglas_finalizar = []
+
+# ------------------------------------------------------------------------------------------
 # Catálogo manual por lotes: Cantón → Distritos
 # ------------------------------------------------------------------------------------------
 if "choices_ext_rows" not in st.session_state:
@@ -139,13 +153,17 @@ def _append_choice_unique(row: Dict):
     if not exists:
         st.session_state.choices_ext_rows.append(row)
 
-# ✅ ARREGLO: asegurar placeholders SIEMPRE (aunque no agregues lotes)
-def ensure_catalog_placeholders():
-    # columnas extra usadas por filtros/placeholder
+def _asegurar_placeholders_catalogo():
+    """
+    FIX: Survey123 exige que existan list_canton/list_distrito en choices si se usan en survey.
+    Esto garantiza placeholders aun cuando el usuario NO agregue lotes.
+    """
     st.session_state.choices_extra_cols.update({"canton_key", "any"})
-    # Placeholders (una sola vez por lista)
     _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
     _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "— escoja un cantón —", "any": "1"})
+
+# Asegurar placeholders desde el inicio (evita "List name not in choices sheet: list_canton")
+_asegurar_placeholders_catalogo()
 
 st.markdown("### 📚 Catálogo Cantón → Distrito (por lotes)")
 with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True):
@@ -159,9 +177,9 @@ with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True
 
     if clear_all:
         st.session_state.choices_ext_rows = []
-        # ✅ Mantener placeholders incluso si limpian
-        ensure_catalog_placeholders()
-        st.success("Catálogo limpiado.")
+        st.session_state.choices_extra_cols = set()
+        _asegurar_placeholders_catalogo()
+        st.success("Catálogo limpiado (placeholders conservados).")
 
     if add_lote:
         c = canton_txt.strip()
@@ -175,8 +193,7 @@ with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True
             st.session_state.choices_extra_cols.update({"canton_key", "any"})
 
             # Placeholders (una sola vez por lista)
-            _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
-            _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "— escoja un cantón —", "any": "1"})
+            _asegurar_placeholders_catalogo()
 
             # Cantón
             _append_choice_unique({"list_name": "list_canton", "name": slug_c, "label": c})
@@ -189,9 +206,6 @@ with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True
                 _append_choice_unique({"list_name": "list_distrito", "name": slug_d, "label": d, "canton_key": slug_c})
 
             st.success(f"Lote agregado: {c} → {len(distritos)} distritos.")
-
-# ✅ ARREGLO: placeholders SIEMPRE (aunque no haya lotes)
-ensure_catalog_placeholders()
 
 # Vista previa de catálogo
 if st.session_state.choices_ext_rows:
@@ -236,16 +250,6 @@ with col_txt:
     st.markdown(f"<h5 style='text-align:center;margin:4px 0'>📋 {titulo_compuesto}</h5>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------------------
-# Estado
-# ------------------------------------------------------------------------------------------
-if "preguntas" not in st.session_state:
-    st.session_state.preguntas = []
-if "reglas_visibilidad" not in st.session_state:
-    st.session_state.reglas_visibilidad = []
-if "reglas_finalizar" not in st.session_state:
-    st.session_state.reglas_finalizar = []
-
-# ------------------------------------------------------------------------------------------
 # Intro (Página 1)
 # ------------------------------------------------------------------------------------------
 INTRO_COMUNIDAD = (
@@ -259,40 +263,24 @@ INTRO_COMUNIDAD = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Consentimiento informado (Página después de Intro)
+# Consentimiento informado (Página después de Intro) — TEXTO EN BLOQUES (se ve bien en Survey123)
 # ------------------------------------------------------------------------------------------
 CONSENTIMIENTO_TITULO = "Consentimiento Informado para la Participación en la Encuesta"
 
-CONSENTIMIENTO_TEXTO = (
-    "Usted está siendo invitado(a) a participar de forma libre y voluntaria en una encuesta sobre seguridad,\n"
-    "convivencia y percepción ciudadana, dirigida a personas mayores de 18 años.\n\n"
-    "El objetivo de esta encuesta es recopilar información de carácter preventivo y estadístico, con el fin\n"
-    "de apoyar la planificación de acciones de prevención, mejora de la convivencia y fortalecimiento de\n"
-    "la seguridad en comunidades y zonas comerciales.\n\n"
-    "La participación es totalmente voluntaria. Usted puede negarse a responder cualquier pregunta, así\n"
-    "como retirarse de la encuesta en cualquier momento, sin que ello genere consecuencia alguna.\n\n"
-    "De conformidad con lo dispuesto en el artículo 5 de la Ley N.º 8968, Ley de Protección de la Persona\n"
-    "frente al Tratamiento de sus Datos Personales, se le informa que:\n\n"
-    "• Finalidad del tratamiento: La información recopilada será utilizada exclusivamente para fines\n"
-    "  estadísticos, analíticos y preventivos, y no para investigaciones penales, procesos judiciales,\n"
-    "  sanciones administrativas ni procedimientos disciplinarios.\n"
-    "• Datos personales: Algunos apartados permiten, de forma voluntaria, el suministro de datos\n"
-    "  personales o información de contacto.\n"
-    "• Tratamiento de los datos: Los datos serán almacenados, analizados y resguardados bajo criterios\n"
-    "  de confidencialidad y seguridad, conforme a la normativa vigente.\n"
-    "• Destinatarios y acceso: La información será conocida únicamente por el personal autorizado de\n"
-    "  la Fuerza Pública / Ministerio de Seguridad Pública, para los fines indicados. No será cedida a\n"
-    "  terceros ajenos a estos fines.\n"
-    "• Responsable de la base de datos: El Ministerio de Seguridad Pública, a través de la Dirección de\n"
-    "  Programas Policiales Preventivos, Oficina Estrategia Integral de Prevención para la Seguridad Pública\n"
-    "  (EIPESP / Estrategia Sembremos Seguridad) será el responsable del tratamiento y custodia de la\n"
-    "  información recolectada.\n"
-    "• Derechos de la persona participante: Usted conserva el derecho a la autodeterminación informativa\n"
-    "  y a decidir libremente sobre el suministro de sus datos.\n\n"
-    "Las respuestas brindadas no constituyen denuncias formales, ni sustituyen los mecanismos legales correspondientes.\n\n"
-    "Al continuar con la encuesta, usted manifiesta haber leído y comprendido la información anterior y\n"
-    "otorga su consentimiento informado para participar."
-)
+CONSENTIMIENTO_BLOQUES = [
+    "Usted está siendo invitado(a) a participar de forma libre y voluntaria en una encuesta sobre seguridad, convivencia y percepción ciudadana, dirigida a personas mayores de 18 años.",
+    "El objetivo de esta encuesta es recopilar información de carácter preventivo y estadístico, con el fin de apoyar la planificación de acciones de prevención, mejora de la convivencia y fortalecimiento de la seguridad en comunidades y zonas comerciales.",
+    "La participación es totalmente voluntaria. Usted puede negarse a responder cualquier pregunta, así como retirarse de la encuesta en cualquier momento, sin que ello genere consecuencia alguna.",
+    "De conformidad con lo dispuesto en el artículo 5 de la Ley N.º 8968 (Protección de la Persona frente al Tratamiento de sus Datos Personales), se le informa que:",
+    "Finalidad del tratamiento: La información recopilada será utilizada exclusivamente para fines estadísticos, analíticos y preventivos, y no para investigaciones penales, procesos judiciales, sanciones administrativas ni procedimientos disciplinarios.",
+    "Datos personales: Algunos apartados permiten, de forma voluntaria, el suministro de datos personales o información de contacto.",
+    "Tratamiento de los datos: Los datos serán almacenados, analizados y resguardados bajo criterios de confidencialidad y seguridad, conforme a la normativa vigente.",
+    "Destinatarios y acceso: La información será conocida únicamente por el personal autorizado de la Fuerza Pública / Ministerio de Seguridad Pública, para los fines indicados. No será cedida a terceros ajenos a estos fines.",
+    "Responsable de la base de datos: El Ministerio de Seguridad Pública, a través de la Dirección de Programas Policiales Preventivos, Oficina Estrategia Integral de Prevención para la Seguridad Pública (EIPESP / Estrategia Sembremos Seguridad), será responsable del tratamiento y custodia de la información recolectada.",
+    "Derechos de la persona participante: Usted conserva el derecho a la autodeterminación informativa y a decidir libremente sobre el suministro de sus datos.",
+    "Las respuestas brindadas no constituyen denuncias formales, ni sustituyen los mecanismos legales correspondientes.",
+    "Al continuar con la encuesta, usted manifiesta haber leído y comprendido la información anterior y otorga su consentimiento informado para participar."
+]
 
 # ------------------------------------------------------------------------------------------
 # Precarga de preguntas (P2 incluida; SIN barrio; + consentimiento)
@@ -603,8 +591,10 @@ with st.sidebar:
             st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
             st.session_state.choices_ext_rows = list(data.get("choices_ext_rows", []))
             st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
-            # ✅ Asegurar placeholders aunque el JSON venga sin ellos
-            ensure_catalog_placeholders()
+
+            # Por seguridad, si importan un JSON sin placeholders, los reponemos.
+            _asegurar_placeholders_catalogo()
+
             _rerun()
         except Exception as e:
             st.error(f"No se pudo importar el JSON: {e}")
@@ -810,9 +800,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     survey_rows = []
     choices_rows = []
 
-    # ✅ Asegurar placeholders antes de exportar (por si no se tocó el catálogo)
-    ensure_catalog_placeholders()
-
     # Index por name para acceso rápido
     idx_by_name = {q.get("name"): i for i, q in enumerate(preguntas)}
 
@@ -885,7 +872,10 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     idx_consent = idx_by_name.get("consentimiento", None)
     survey_rows.append({"type": "begin_group", "name": "p2_consentimiento", "label": "Consentimiento informado", "appearance": "field-list"})
     survey_rows.append({"type": "note", "name": "cons_title", "label": CONSENTIMIENTO_TITULO})
-    survey_rows.append({"type": "note", "name": "cons_text", "label": CONSENTIMIENTO_TEXTO})
+
+    # BLOQUES (notes separados) -> se ve ordenado en Survey123
+    for i, txt in enumerate(CONSENTIMIENTO_BLOQUES, start=1):
+        survey_rows.append({"type": "note", "name": f"cons_b{i:02d}", "label": txt})
 
     if idx_consent is not None:
         add_q(preguntas[idx_consent], idx_consent)
@@ -925,6 +915,8 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     add_page("p8_info_adicional", "Información adicional", p7)
 
     # Choices del catálogo manual (con unicidad por list+name)
+    # (incluye placeholders SIEMPRE, por el fix)
+    _asegurar_placeholders_catalogo()
     for r in st.session_state.choices_ext_rows:
         choices_rows.append(dict(r))
 
@@ -1027,3 +1019,5 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
+
