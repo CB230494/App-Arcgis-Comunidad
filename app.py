@@ -13,6 +13,9 @@
 #     - Si marca "No" ⇒ se corta la encuesta (oculta todo lo demás)
 # - FIX crítico: evita error "List name not in choices sheet: list_canton"
 #     - Siempre crea placeholders de list_canton/list_distrito aunque no se agregue catálogo
+# - MEJORA UI Survey123:
+#     - Los placeholders NO se muestran en el desplegable (se filtran con choice_filter)
+# - ACTUALIZACIÓN PÁGINA: Datos demográficos (estructura nueva, sin notas)
 # ==========================================================================================
 
 import re
@@ -157,10 +160,13 @@ def _asegurar_placeholders_catalogo():
     """
     FIX: Survey123 exige que existan list_canton/list_distrito en choices si se usan en survey.
     Esto garantiza placeholders aun cuando el usuario NO agregue lotes.
+
+    IMPORTANTE: Estos placeholders NO se mostrarán en los desplegables (se filtran con choice_filter),
+    por eso la label va vacía.
     """
     st.session_state.choices_extra_cols.update({"canton_key", "any"})
-    _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
-    _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "— escoja un cantón —", "any": "1"})
+    _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": ""})
+    _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "", "any": "1"})
 
 # Asegurar placeholders desde el inicio (evita "List name not in choices sheet: list_canton")
 _asegurar_placeholders_catalogo()
@@ -301,26 +307,55 @@ if "seed_cargado" not in st.session_state:
          "choice_filter": None,
          "relevant": None},
 
-        # ---------------- Página 2: Datos demográficos ----------------
-        {"tipo_ui": "Selección única", "label": "Cantón", "name": "canton", "required": True,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": None},
+        # ---------------- Página 2: Datos demográficos (estructura nueva) ----------------
+        {"tipo_ui": "Selección única", "label": "Cantón:", "name": "canton", "required": True,
+         "opciones": [], "appearance": None,
+         # Oculta placeholder interno
+         "choice_filter": "name != '__pick_canton__'",
+         "relevant": None},
 
-        {"tipo_ui": "Selección única", "label": "Distrito", "name": "distrito", "required": True,
-         "opciones": [], "appearance": None, "choice_filter": "canton_key=${canton} or any='1'", "relevant": None},
+        {"tipo_ui": "Selección única", "label": "Distrito:", "name": "distrito", "required": True,
+         "opciones": [], "appearance": None,
+         # Cascada + oculta placeholder interno (sin mostrar “escoja…”)
+         "choice_filter": "canton_key=${canton} and name != '__pick_distrito__'",
+         "relevant": None},
 
-        {"tipo_ui": "Número", "label": "Edad", "name": "edad", "required": True,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección única", "label": "Género", "name": "genero", "required": True,
-         "opciones": ["Masculino", "Femenino", "LGTBQ+"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección única", "label": "Escolaridad", "name": "escolaridad", "required": True,
-         "opciones": ["Ninguna", "Primaria", "Primaria incompleta", "Secundaria completa", "Secundaria incompleta",
-                      "Universitaria", "Universitaria incompleta", "Técnico"],
+        {"tipo_ui": "Selección única",
+         "label": "Edad (en años cumplidos): marque una categoría que incluya su edad.",
+         "name": "edad",
+         "required": True,
+         "opciones": ["18 a 29 años", "30 a 44 años", "45 a 64 años", "65 años o más"],
          "appearance": None, "choice_filter": None, "relevant": None},
 
-        {"tipo_ui": "Selección múltiple", "label": "¿Cuál es su relación con la zona?", "name": "relacion_zona", "required": True,
-         "opciones": ["Vivo en la zona", "Trabajo en la zona", "Visito la zona"], "appearance": None, "choice_filter": None, "relevant": None},
+        {"tipo_ui": "Selección única",
+         "label": "¿Con cuál de estas opciones se identifica?",
+         "name": "genero",
+         "required": True,
+         "opciones": ["Femenino", "Masculino", "Persona no Binaria", "Prefiero no decir"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "Escolaridad:",
+         "name": "escolaridad",
+         "required": True,
+         "opciones": [
+             "Ninguna",
+             "Primaria incompleta",
+             "Primaria completa",
+             "Secundaria incompleta",
+             "Secundaria completa",
+             "Técnico",
+             "Universitaria incompleta",
+             "Universitaria completa"
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "¿Cuál es su relación con la zona?",
+         "name": "relacion_zona",
+         "required": True,
+         "opciones": ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"],
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         # ---------------- Página 3: Sentimiento de inseguridad ----------------
         {"tipo_ui": "Selección única", "label": "¿Se siente seguro en su barrio?", "name": "se_siente_seguro", "required": True,
@@ -836,18 +871,13 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         app = q.get("appearance") or default_app
         if app:
             row["appearance"] = app
+
+        # IMPORTANTE: respetamos choice_filter del seed/edición.
         if q.get("choice_filter"):
             row["choice_filter"] = q["choice_filter"]
+
         if rel_final:
             row["relevant"] = rel_final
-
-        # Constraints placeholders (SOLO Cantón y Distrito)
-        if q["name"] == "canton":
-            row["constraint"] = ". != '__pick_canton__'"
-            row["constraint_message"] = "Seleccione un cantón válido."
-        if q["name"] == "distrito":
-            row["constraint"] = ". != '__pick_distrito__'"
-            row["constraint_message"] = "Seleccione un distrito válido."
 
         survey_rows.append(row)
 
@@ -1019,5 +1049,3 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
-
-
