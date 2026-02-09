@@ -12,10 +12,16 @@
 #     - Texto en BLOQUES (notes separados) para que se vea ordenado en Survey123
 #     - Si marca "No" ⇒ se corta la encuesta (oculta todo lo demás)
 # - FIX crítico: evita error "List name not in choices sheet: list_canton"
-#     - Siempre crea list_canton/list_distrito aunque no se agregue catálogo
-# - MEJORA: NO mostrar placeholders "— escoja un cantón —" cuando ya hay catálogo real
-# - ACTUALIZACIÓN: Datos demográficos con estructura solicitada (sin notas)
-# - ACTUALIZACIÓN: Página "PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO" con introducción + preguntas 7–11
+#     - Siempre crea placeholders de list_canton/list_distrito aunque no se agregue catálogo
+# - FIX crítico (MATRIZ / table-list): permite forzar un list_name común para varias preguntas
+#     - Evita: "Badly formatted table list, list names don't match ..."
+# - Mejora estética: NO mostrar "— escoja un cantón —" / "— escoja un cantón —" en el desplegable
+#     - Placeholders quedan con label vacío (se ve como línea vacía, no texto feo)
+# - Actualización de preguntas y estructura por página:
+#     - I. DATOS DEMOGRÁFICOS (según tu estructura)
+#     - II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO (título + introducción + preguntas 7-11)
+#     - III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL (título + introducción + 12-17)
+#     - Delitos (título + introducción + 18-28)
 # ==========================================================================================
 
 import re
@@ -59,27 +65,21 @@ TIPOS = [
     "GPS (ubicación)"
 ]
 
-
 def _rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
         st.experimental_rerun()
 
-
 def slugify_name(texto: str) -> str:
     if not texto:
         return "campo"
     t = texto.lower()
-    t = re.sub(r"[áàäâ]", "a", t)
-    t = re.sub(r"[éèëê]", "e", t)
-    t = re.sub(r"[íìïî]", "i", t)
-    t = re.sub(r"[óòöô]", "o", t)
-    t = re.sub(r"[úùüû]", "u", t)
-    t = re.sub(r"ñ", "n", t)
+    t = re.sub(r"[áàäâ]", "a", t); t = re.sub(r"[éèëê]", "e", t)
+    t = re.sub(r"[íìïî]", "i", t); t = re.sub(r"[óòöô]", "o", t)
+    t = re.sub(r"[úùüû]", "u", t); t = re.sub(r"ñ", "n", t)
     t = re.sub(r"[^a-z0-9]+", "_", t).strip("_")
     return t or "campo"
-
 
 def asegurar_nombre_unico(base: str, usados: set) -> str:
     if base not in usados:
@@ -89,8 +89,11 @@ def asegurar_nombre_unico(base: str, usados: set) -> str:
         i += 1
     return f"{base}_{i}"
 
-
-def map_tipo_to_xlsform(tipo_ui: str, name: str):
+def map_tipo_to_xlsform(tipo_ui: str, qname: str, forced_list_name: str = None):
+    """
+    forced_list_name: si viene, se usa en vez de list_{name} para select_one/select_multiple.
+    Esto es CLAVE para matrices/table-list, donde todas las filas deben compartir el mismo list_name.
+    """
     if tipo_ui == "Texto (corto)":
         return ("text", None, None)
     if tipo_ui == "Párrafo (texto largo)":
@@ -98,9 +101,11 @@ def map_tipo_to_xlsform(tipo_ui: str, name: str):
     if tipo_ui == "Número":
         return ("integer", None, None)
     if tipo_ui == "Selección única":
-        return (f"select_one list_{name}", None, f"list_{name}")
+        ln = forced_list_name or f"list_{qname}"
+        return (f"select_one {ln}", None, ln)
     if tipo_ui == "Selección múltiple":
-        return (f"select_multiple list_{name}", None, f"list_{name}")
+        ln = forced_list_name or f"list_{qname}"
+        return (f"select_multiple {ln}", None, ln)
     if tipo_ui == "Fecha":
         return ("date", None, None)
     if tipo_ui == "Hora":
@@ -109,7 +114,6 @@ def map_tipo_to_xlsform(tipo_ui: str, name: str):
         return ("geopoint", None, None)
     return ("text", None, None)
 
-
 def xlsform_or_expr(conds):
     if not conds:
         return None
@@ -117,22 +121,17 @@ def xlsform_or_expr(conds):
         return conds[0]
     return "(" + " or ".join(conds) + ")"
 
-
 def xlsform_not(expr):
     if not expr:
         return None
     return f"not({expr})"
 
-
 def build_relevant_expr(rules_for_target: List[Dict]):
     or_parts = []
     for r in rules_for_target:
-        src = r["src"]
-        op = r.get("op", "=")
-        vals = r.get("values", [])
+        src = r["src"]; op = r.get("op", "="); vals = r.get("values", [])
         if not vals:
             continue
-
         if op == "=":
             segs = [f"${{{src}}}='{v}'" for v in vals]
         elif op == "selected":
@@ -141,10 +140,8 @@ def build_relevant_expr(rules_for_target: List[Dict]):
             segs = [f"${{{src}}}!='{v}'" for v in vals]
         else:
             segs = [f"${{{src}}}='{v}'" for v in vals]
-
         or_parts.append(xlsform_or_expr(segs))
     return xlsform_or_expr(or_parts)
-
 
 # ------------------------------------------------------------------------------------------
 # Estado base (session_state)
@@ -164,7 +161,6 @@ if "choices_ext_rows" not in st.session_state:
 if "choices_extra_cols" not in st.session_state:
     st.session_state.choices_extra_cols = set()
 
-
 def _append_choice_unique(row: Dict):
     """Inserta fila en choices evitando duplicados por (list_name,name)."""
     key = (row.get("list_name"), row.get("name"))
@@ -172,48 +168,21 @@ def _append_choice_unique(row: Dict):
     if not exists:
         st.session_state.choices_ext_rows.append(row)
 
-
 def _asegurar_placeholders_catalogo():
     """
     FIX: Survey123 exige que existan list_canton/list_distrito en choices si se usan en survey.
     Esto garantiza placeholders aun cuando el usuario NO agregue lotes.
+
+    Mejora estética:
+    - label vacío para que NO se vea el texto "— escoja un cantón —" en el desplegable.
     """
     st.session_state.choices_extra_cols.update({"canton_key", "any"})
-    _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
-    _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "— escoja un cantón —", "any": "1"})
 
+    # Cantón: placeholder silencioso
+    _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": ""})
 
-def _hay_catalogo_real() -> bool:
-    """Retorna True si existe al menos 1 cantón real y 1 distrito real (no placeholders)."""
-    cantones_reales = any(
-        r.get("list_name") == "list_canton" and r.get("name") not in (None, "", "__pick_canton__")
-        for r in st.session_state.choices_ext_rows
-    )
-    distritos_reales = any(
-        r.get("list_name") == "list_distrito" and r.get("name") not in (None, "", "__pick_distrito__")
-        for r in st.session_state.choices_ext_rows
-    )
-    return bool(cantones_reales and distritos_reales)
-
-
-def _filtrar_placeholders_si_hay_catalogo(rows: List[Dict]) -> List[Dict]:
-    """
-    Si ya hay catálogo real, quitamos placeholders para que NO aparezca "— escoja un cantón —"
-    en los desplegables. Si NO hay catálogo real, dejamos placeholders para evitar el error
-    "List name not in choices sheet: list_canton".
-    """
-    if not _hay_catalogo_real():
-        return rows
-
-    filtradas = []
-    for r in rows:
-        if r.get("list_name") == "list_canton" and r.get("name") == "__pick_canton__":
-            continue
-        if r.get("list_name") == "list_distrito" and r.get("name") == "__pick_distrito__":
-            continue
-        filtradas.append(r)
-    return filtradas
-
+    # Distrito: placeholder silencioso (y any=1 se mantiene por compatibilidad)
+    _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "", "any": "1"})
 
 # Asegurar placeholders desde el inicio (evita "List name not in choices sheet: list_canton")
 _asegurar_placeholders_catalogo()
@@ -242,7 +211,10 @@ with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True
         else:
             slug_c = slugify_name(c)
 
+            # columnas extra usadas por filtros/placeholder
             st.session_state.choices_extra_cols.update({"canton_key", "any"})
+
+            # Placeholders (una sola vez por lista)
             _asegurar_placeholders_catalogo()
 
             # Cantón
@@ -313,7 +285,7 @@ INTRO_COMUNIDAD = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Consentimiento informado (Página después de Intro) — TEXTO EN BLOQUES
+# Consentimiento informado (Página después de Intro) — TEXTO EN BLOQUES (se ve bien en Survey123)
 # ------------------------------------------------------------------------------------------
 CONSENTIMIENTO_TITULO = "Consentimiento Informado para la Participación en la Encuesta"
 
@@ -333,9 +305,10 @@ CONSENTIMIENTO_BLOQUES = [
 ]
 
 # ------------------------------------------------------------------------------------------
-# Página: PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO (introducción solicitada)
+# Textos de introducción por sección (título + intro antes de preguntas)
 # ------------------------------------------------------------------------------------------
-INTRO_PERCEPCION_DISTRITO = (
+TITULO_PERC_DISTRITO = "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO"
+INTRO_PERC_DISTRITO = (
     "En esta sección le preguntaremos sobre cómo percibe la seguridad en su distrito. "
     "Las siguientes preguntas buscan conocer su opinión y experiencia sobre la seguridad en el lugar "
     "donde vive o trabaja, así como en los distintos espacios que forman parte del distrito. "
@@ -348,14 +321,38 @@ INTRO_PERCEPCION_DISTRITO = (
     "según su experiencia y percepción personal."
 )
 
+TITULO_RIESGOS = "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL"
+SUBTITULO_RIESGOS_SOCIALES = "Riesgos sociales y situacionales en el distrito"
+INTRO_RIESGOS_SOCIALES = (
+    "A continuación, en esta sección le preguntaremos sobre situaciones o condiciones que pueden "
+    "representar riesgos para la convivencia y la seguridad en el distrito.\n\n"
+    "Estas preguntas no se refieren necesariamente a delitos, sino a situaciones, comportamientos o "
+    "problemas sociales que usted haya observado y que puedan generar preocupación, afectar la tranquilidad "
+    "o aumentar el riesgo de que ocurran hechos de inseguridad.\n\n"
+    "Nos interesa conocer qué situaciones están presentes en el distrito, con qué frecuencia se observan "
+    "y en qué espacios se presentan, según su experiencia y percepción. Sus respuestas ayudarán a identificar "
+    "factores de riesgo y a orientar acciones de prevención y atención a nivel local.\n\n"
+    "No existen respuestas correctas o incorrectas. Le pedimos responder con sinceridad, de acuerdo con lo "
+    "que ha visto o vivido en su entorno."
+)
+
+TITULO_DELITOS = "Delitos"
+INTRO_DELITOS = (
+    "A continuación, se presenta una lista de delitos para que indique aquellos que, según su conocimiento "
+    "u observación, considere que se presentan en el distrito. La información recopilada tiene fines de "
+    "análisis preventivo y territorial, y no constituye una denuncia formal ni la confirmación judicial de "
+    "hechos delictivos."
+)
+
 # ------------------------------------------------------------------------------------------
-# Precarga de preguntas (actualizadas)
+# Precarga de preguntas (actualizada según tu estructura y capturas)
 # ------------------------------------------------------------------------------------------
 if "seed_cargado" not in st.session_state:
     # Slugs útiles
     v_si = slugify_name("Sí")
     v_no = slugify_name("No")
 
+    # Valores para Q7 (percepción)
     v_muy_inseguro = slugify_name("Muy inseguro")
     v_inseguro = slugify_name("Inseguro")
 
@@ -370,15 +367,15 @@ if "seed_cargado" not in st.session_state:
          "choice_filter": None,
          "relevant": None},
 
-        # ---------------- Página: Datos demográficos ----------------
-        {"tipo_ui": "Selección única", "label": "1. Cantón:", "name": "canton", "required": True,
+        # ---------------- I. DATOS DEMOGRÁFICOS ----------------
+        {"tipo_ui": "Selección única", "label": "Cantón:", "name": "canton", "required": True,
          "opciones": [], "appearance": None, "choice_filter": None, "relevant": None},
 
-        {"tipo_ui": "Selección única", "label": "2. Distrito:", "name": "distrito", "required": True,
-         "opciones": [], "appearance": None, "choice_filter": "canton_key=${canton}", "relevant": None},
+        {"tipo_ui": "Selección única", "label": "Distrito:", "name": "distrito", "required": True,
+         "opciones": [], "appearance": None, "choice_filter": "canton_key=${canton} or any='1'", "relevant": None},
 
         {"tipo_ui": "Selección única",
-         "label": "3. Edad (en años cumplidos): marque una categoría que incluya su edad.",
+         "label": "Edad (en años cumplidos): marque una categoría que incluya su edad.",
          "name": "edad_rango",
          "required": True,
          "opciones": ["18 a 29 años", "30 a 44 años", "45 a 64 años", "65 años o más"],
@@ -387,7 +384,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": None},
 
         {"tipo_ui": "Selección única",
-         "label": "4. ¿Con cuál de estas opciones se identifica?",
+         "label": "¿Con cuál de estas opciones se identifica?",
          "name": "genero",
          "required": True,
          "opciones": ["Femenino", "Masculino", "Persona no Binaria", "Prefiero no decir"],
@@ -396,25 +393,17 @@ if "seed_cargado" not in st.session_state:
          "relevant": None},
 
         {"tipo_ui": "Selección única",
-         "label": "5. Escolaridad:",
+         "label": "Escolaridad:",
          "name": "escolaridad",
          "required": True,
-         "opciones": [
-             "Ninguna",
-             "Primaria incompleta",
-             "Primaria completa",
-             "Secundaria incompleta",
-             "Secundaria completa",
-             "Técnico",
-             "Universitaria incompleta",
-             "Universitaria completa",
-         ],
+         "opciones": ["Ninguna", "Primaria incompleta", "Primaria completa", "Secundaria incompleta",
+                      "Secundaria completa", "Técnico", "Universitaria incompleta", "Universitaria completa"],
          "appearance": None,
          "choice_filter": None,
          "relevant": None},
 
         {"tipo_ui": "Selección única",
-         "label": "6. ¿Cuál es su relación con la zona?",
+         "label": "¿Cuál es su relación con la zona?",
          "name": "relacion_zona",
          "required": True,
          "opciones": ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"],
@@ -422,10 +411,10 @@ if "seed_cargado" not in st.session_state:
          "choice_filter": None,
          "relevant": None},
 
-        # ---------------- Página: PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO ----------------
+        # ---------------- II. PERCEPCIÓN CIUDADANA (7-11) ----------------
         {"tipo_ui": "Selección única",
-         "label": "7. ¿Qué tan seguro percibe usted el distrito donde reside o transita?",
-         "name": "percep_seg_distrito",
+         "label": "¿Qué tan seguro percibe usted el distrito donde reside o transita?",
+         "name": "p7_seguridad_distrito",
          "required": True,
          "opciones": ["Muy inseguro", "Inseguro", "Ni seguro ni inseguro", "Seguro", "Muy seguro"],
          "appearance": None,
@@ -433,8 +422,8 @@ if "seed_cargado" not in st.session_state:
          "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "7.1. Indique por qué considera el distrito inseguro (Marque todas las situaciones que usted percibe que ocurren con mayor frecuencia en su comunidad):",
-         "name": "motivos_inseguridad_distrito",
+         "label": "Indique por qué considera el distrito inseguro (Marque todas las situaciones que usted percibe que ocurren con mayor frecuencia en su comunidad):",
+         "name": "p7_1_por_que_inseguro",
          "required": True,
          "opciones": [
              "Venta o distribución de drogas",
@@ -443,7 +432,7 @@ if "seed_cargado" not in st.session_state:
              "Riñas o peleas frecuentes",
              "Asaltos o robos a personas",
              "Robos a viviendas o comercios",
-             "Amenazas y extorsiones",
+             "Amenazas o extorsiones",
              "Balaceras, detonaciones o ruidos similares",
              "Presencia de grupos que generan temor",
              "Vandalismo o daños intencionales",
@@ -465,130 +454,157 @@ if "seed_cargado" not in st.session_state:
              "Falta de presencia policial en la zona",
              "Situaciones de violencia intrafamiliar",
              "Situaciones de violencia de género",
-             "Otro problema que considere importante",
+             "Otro problema que considere importante"
          ],
          "appearance": None,
          "choice_filter": None,
          "relevant": xlsform_or_expr([
-             f"${{percep_seg_distrito}}='{v_muy_inseguro}'",
-             f"${{percep_seg_distrito}}='{v_inseguro}'"
+             f"${{p7_seguridad_distrito}}='{v_muy_inseguro}'",
+             f"${{p7_seguridad_distrito}}='{v_inseguro}'"
          ])},
 
-        {"tipo_ui": "Párrafo (texto largo)",
-         "label": "Indique cuál es ese otro problema importante:",
-         "name": "otro_problema_inseg_distrito",
-         "required": True,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"selected(${{motivos_inseguridad_distrito}}, '{slugify_name('Otro problema que considere importante')}')"},
-
         {"tipo_ui": "Selección única",
-         "label": "8. En comparación con los 12 meses anteriores, ¿cómo percibe que ha cambiado la seguridad en este distrito?",
-         "name": "cambio_seguridad_12m",
+         "label": "En comparación con los 12 meses anteriores, ¿cómo percibe que ha cambiado la seguridad en este distrito?",
+         "name": "p8_cambio_seguridad_12m",
          "required": True,
-         "opciones": ["Mucho menos seguro (1)", "Menos seguro (2)", "Se mantiene igual (3)", "Más seguro (4)", "Mucho más seguro (5)"],
+         "opciones": ["1 (Mucho menos seguro)", "2 (Menos seguro)", "3 (Se mantiene igual)", "4 (Más seguro)", "5 (Mucho más seguro)"],
          "appearance": None,
          "choice_filter": None,
          "relevant": None},
 
         {"tipo_ui": "Párrafo (texto largo)",
-         "label": "8.1. Indique por qué (explique brevemente la razón de su respuesta anterior):",
-         "name": "motivo_cambio_12m",
+         "label": "Indique por qué (explique brevemente la razón de su respuesta anterior):",
+         "name": "p8_1_por_que_cambio",
          "required": True,
          "opciones": [],
          "appearance": None,
          "choice_filter": None,
-         "relevant": "string-length(${cambio_seguridad_12m})>0"},
+         "relevant": None},
 
-        # Matriz 9 (cada fila es select_one; en XLSForm se puede mostrar en tabla con table-list)
+        # MATRIZ (Q9): todas las filas deben compartir el MISMO list_name → usamos xls_list_name
         {"tipo_ui": "Selección única",
          "label": "Discotecas, bares, sitios de entretenimiento",
          "name": "seg_discotecas_bares",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Espacios recreativos (parques, play, plaza de deportes)",
          "name": "seg_espacios_recreativos",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Lugar de residencia (casa de habitación)",
          "name": "seg_lugar_residencia",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Paradas y/o estaciones de buses, taxis, trenes",
          "name": "seg_paradas_estaciones",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Puentes peatonales",
          "name": "seg_puentes_peatonales",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Transporte público",
          "name": "seg_transporte_publico",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Zona bancaria",
          "name": "seg_zona_bancaria",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Zona de comercio",
          "name": "seg_zona_comercio",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Zonas residenciales (calles y barrios, distinto a su casa)",
          "name": "seg_zonas_residenciales",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Zonas francas",
          "name": "seg_zonas_francas",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Lugares de interés turístico",
          "name": "seg_lugares_turisticos",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
          "label": "Centros educativos",
          "name": "seg_centros_educativos",
          "required": True,
          "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None,
+         "xls_list_name": "list_seguridad_escala"},
 
         {"tipo_ui": "Selección única",
-         "label": "10. Desde su percepción ¿cuál considera que es el principal foco de inseguridad en el distrito?",
-         "name": "foco_inseguridad",
+         "label": "Desde su percepción ¿cuál considera que es el principal foco de inseguridad en el distrito?",
+         "name": "p10_foco_inseguridad",
          "required": True,
          "opciones": [
              "Discotecas, bares, sitios de entretenimiento",
@@ -603,193 +619,258 @@ if "seed_cargado" not in st.session_state:
              "Zonas residenciales (calles y barrios, distinto a su casa)",
              "Lugares de interés turístico",
              "Centros educativos",
-             "Otros",
+             "Otros"
          ],
          "appearance": None,
          "choice_filter": None,
          "relevant": None},
 
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro foco de inseguridad:",
-         "name": "foco_inseguridad_otro",
-         "required": True,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"${{foco_inseguridad}}='{slugify_name('Otros')}'"},
-
         {"tipo_ui": "Párrafo (texto largo)",
-         "label": "11. Describa brevemente las razones por las cuales considera inseguro el tipo de espacio seleccionado en la pregunta anterior:",
-         "name": "razones_foco_inseguridad",
+         "label": "Describa brevemente las razones por las cuales considera inseguro el tipo de espacio seleccionado en la pregunta anterior.",
+         "name": "p11_razones_foco",
          "required": True,
          "opciones": [],
          "appearance": None,
          "choice_filter": None,
-         "relevant": "string-length(${foco_inseguridad})>0"},
+         "relevant": None},
 
-        # ---------------- Páginas posteriores (se mantienen como estaban) ----------------
-        {"tipo_ui": "Selección múltiple", "label": "Incidencia relacionada a delitos", "name": "incidencia_delitos", "required": False,
+        # ---------------- III. RIESGOS SOCIALES Y SITUACIONALES (12-17) ----------------
+        {"tipo_ui": "Selección múltiple",
+         "label": "Según su conocimiento u observación, seleccione las problemáticas que afectan su distrito:",
+         "name": "p12_problematicas",
+         "required": True,
          "opciones": [
-             "Disturbios en vía pública.(Riñas o Agresión)",
-             "Daños a la propiedad. (Destruir, inutilizar o desaparecer).",
-             "Extorsión (intimidar o amenazar a otras personas con fines de lucro).",
-             "Hurto. (sustracción de artículos mediante el descuido).",
-             "Receptación (persona que adquiere, recibe u oculta artículos provenientes de un delito en el que no participó).",
+             "Problemas vecinales o conflictos entre vecinos",
+             "Presencia de personas en situación de calle (personas que viven permanentemente en la vía pública)",
+             "Zona donde se ejerce prostitución",
+             "Desvinculación escolar (deserción escolar)",
+             "Falta de oportunidades laborales",
+             "Acumulación de basura, aguas negras o mal alcantarillado",
+             "Carencia o inexistencia de alumbrado público",
+             "Lotes baldíos",
+             "Cuarterías",
+             "Asentamientos informales o precarios",
+             "Pérdida de espacios públicos (parques, polideportivos u otros)",
+             "Consumo de alcohol en vía pública",
+             "Consumo de drogas en espacios públicos",
+             "Ventas informales (ambulantes)",
+             "Escándalos musicales o ruidos excesivos",
+             "Otro problema que considere importante",
+             "No se observan estas problemáticas en el distrito"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "En relación con la oferta de servicios y oportunidades en su distrito (Inversión social), indique cuáles de las siguientes carencias identifica:",
+         "name": "p13_inversion_social",
+         "required": True,
+         "opciones": ["Falta de oferta educativa", "Falta de oferta deportiva", "Falta de oferta recreativa", "Falta de actividades culturales", "Otro problema que considere importante"],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "En los casos en que se observa consumo de drogas en el distrito, indique dónde ocurre:",
+         "name": "p14_consumo_drogas_donde",
+         "required": True,
+         "opciones": [
+             "Áreas públicas (calles, parques, paradas, espacios abiertos)",
+             "Áreas privadas (viviendas, locales, espacios cerrados)",
+             "No se observa consumo de drogas"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "Indique las principales deficiencias de infraestructura vial que afectan su distrito:",
+         "name": "p15_infra_vial",
+         "required": True,
+         "opciones": ["Calles en mal estado", "Falta de señalización de tránsito", "Carencia o inexistencia de aceras"],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "Según su conocimiento u observación, indique en qué tipo de espacios se identifica la existencia de puntos de venta de drogas en el distrito:",
+         "name": "p16_puntos_venta",
+         "required": True,
+         "opciones": ["Casa de habitación (espacio cerrado)", "Edificación abandonada", "Lote baldío", "Otro tipo de espacio", "No se observa"],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "Según su conocimiento u observación, indique si ha identificado situaciones de inseguridad asociadas al uso de los siguientes medios o modalidades de transporte en su distrito:",
+         "name": "p17_transporte",
+         "required": True,
+         "opciones": [
+             "Transporte informal o no autorizado (taxis piratas)",
+             "Plataformas de transporte digital",
+             "Transporte público (buses)",
+             "Servicios de reparto o mensajería “exprés” (por ejemplo, repartidores en motocicleta o bicimoto)",
+             "Otro tipo de situación relacionada con el transporte",
+             "No se observa"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
+
+        # ---------------- Delitos (18-28) ----------------
+        {"tipo_ui": "Selección múltiple",
+         "label": "Seleccione los delitos que, según su conocimiento u observación, se presentan en el distrito:",
+         "name": "p18_delitos_presentes",
+         "required": True,
+         "opciones": [
+             "Disturbios en vía pública (riñas o agresiones)",
+             "Daños a la propiedad (viviendas, comercios, vehículos u otros bienes)",
+             "Daños a la salud (perforaciones, tomas ilegales o vandalismo)",
+             "Extorsión (amenazas o intimidación para exigir dinero u otros beneficios)",
+             "Hurto (sustracción de artículos mediante el descuido)",
+             "Compra o venta de artículos robados (receptación)",
              "Contrabando (licor, cigarrillos, medicinas, ropa, calzado, etc.)",
              "Maltrato animal",
-             "Tráfico ilegal de personas (coyotaje)"
-         ], "appearance": None, "choice_filter": None, "relevant": None},
+             "Tráfico de personas (coyotaje)",
+             "Otro delito",
+             "No se observan delitos"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Selección múltiple", "label": "Venta de drogas", "name": "venta_drogas", "required": False,
-         "opciones": ["bunker espacio cerrado", "vía pública", "exprés"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Delitos contra la vida", "name": "delitos_vida", "required": False,
-         "opciones": ["Homicidios", "Heridos"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Delitos sexuales", "name": "delitos_sexuales", "required": False,
-         "opciones": ["Abuso sexual", "Acoso sexual", "Violación"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Asaltos", "name": "asaltos", "required": False,
-         "opciones": ["Asalto a personas", "Asalto a comercio", "Asalto a vivienda", "Asalto a transporte público"],
-         "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Estafas", "name": "estafas", "required": False,
-         "opciones": ["Billetes falso", "Documentos falsos", "Estafa (Oro)", "Lotería falsos",
-                      "Estafas informáticas", "Estafa telefónica", "Estafa con tarjetas"],
-         "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Robo (sustracción con fuerza)", "name": "robo_fuerza", "required": False,
-         "opciones": ["Tacha a comercio", "Tacha a edificaciones", "Tacha a vivienda", "Tacha de vehículos",
-                      "Robo de Ganado Abigeato (Destace de ganado)", "Robo de bienes agrícola", "Robo de vehículos",
-                      "Robo de cable", "Robo de combustible"],
-         "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Abandono de personas", "name": "abandono_personas", "required": False,
-         "opciones": ["Abandono de adulto mayor", "Abandono de menor de edad", "Abandono de incapaz"],
-         "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Explotación infantil", "name": "explotacion_infantil", "required": False,
-         "opciones": ["Sexual", "Laboral"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Delitos ambientales", "name": "delitos_ambientales", "required": False,
-         "opciones": ["Caza ilegal", "Pesca ilegal", "Tala ilegal"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección múltiple", "label": "Trata de personas", "name": "trata_personas", "required": False,
-         "opciones": ["Con fines laborales", "Con fines sexuales"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección única", "label": "Violencia Intrafamiliar", "name": "vi", "required": False,
-         "opciones": ["Si", "No"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección única", "label": "¿Ha sido víctima o conoce a alguien que haya sido víctima de VI en el último año?", "name": "vi_victima_ultimo_anno", "required": True,
-         "opciones": ["Si", "No"], "appearance": None, "choice_filter": None, "relevant": f"${{vi}}='{slugify_name('Si')}'"},
-
-        {"tipo_ui": "Selección múltiple", "label": "Tipos de Violencia Intrafamiliar (marque todos los que correspondan)", "name": "vi_tipos", "required": True,
-         "opciones": ["Violencia psicológica (gritos, amenazas, burlas, maltratos, etc)",
-                      "Violencia física (golpes, empujones, etc)",
-                      "Violencia patrimonial (destrucción o retención de artículos, documentos, dinero, etc)",
-                      "Violencia sexual (actos sexuales no consentido)"],
-         "appearance": None, "choice_filter": None, "relevant": f"${{vi}}='{slugify_name('Si')}'"},
-
-        {"tipo_ui": "Selección única", "label": "¿Fue abordado por Fuerza Pública?", "name": "vi_fp_abordaje", "required": True,
-         "opciones": ["Si", "No"], "appearance": None, "choice_filter": None, "relevant": f"${{vi}}='{slugify_name('Si')}'"},
-
-        {"tipo_ui": "Selección única", "label": "¿Cómo fue el abordaje de la Fuerza Pública?", "name": "vi_fp_eval", "required": True,
-         "opciones": ["Excelente", "Bueno", "Regular", "Malo"], "appearance": None, "choice_filter": None, "relevant": f"${{vi_fp_abordaje}}='{slugify_name('Si')}'"},
-
-        # ---------------- Página: Riesgos Sociales ----------------
-        {"tipo_ui": "Selección múltiple", "label": "Riesgos Sociales", "name": "riesgos_sociales", "required": False,
+        {"tipo_ui": "Selección múltiple",
+         "label": "Según su conocimiento u observación, ¿de qué forma se presenta la venta de drogas en el distrito?",
+         "name": "p19_venta_drogas_forma",
+         "required": True,
          "opciones": [
-             "Escándalos musicales.", "Falta de oportunidades laborales.", "Problemas Vecinales.",
-             "Asentamientos ilegales (conocido como precarios).", "Personas en situación de calle.",
-             "Desvinculación escolar (deserción escolar)", "Zona de prostitución", "Consumo de alcohol en vía pública",
-             "Personas con exceso de tiempo de ocio", "Acumulación de basuras, aguas negras, mal alcantarillado.",
-             "Carencia o inexistencia de alumbrado público.", "Cuarterías", "Lotes baldíos.", "Ventas informales",
-             "Pérdida de espacios públicos (parques, polideportivos, etc.).", "Otro"
-         ], "appearance": None, "choice_filter": None, "relevant": None},
+             "En espacios cerrados (casas, edificaciones u otros inmuebles)",
+             "En vía pública",
+             "De forma ocasional o móvil (sin punto fijo)",
+             "No se observa venta de drogas",
+             "Otro"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Selección múltiple", "label": "Falta de inversión social", "name": "falta_inversion_social", "required": False,
-         "opciones": ["Falta de oferta educativa", "Falta de oferta deportiva", "Falta de oferta recreativa", "Falta de actividades culturales"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Delitos contra la vida",
+         "name": "p20_delitos_vida",
+         "required": True,
+         "opciones": [
+             "Homicidios (muerte intencional de una persona)",
+             "Personas heridas de forma intencional (heridos)",
+             "Femicidio (homicidio de una mujer por razones de género)",
+             "No se observan delitos contra la vida"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Selección múltiple", "label": "Consumo de drogas", "name": "consumo_drogas", "required": False,
-         "opciones": ["Área privada", "Área pública"], "appearance": None, "choice_filter": None, "relevant": None},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Delitos sexuales",
+         "name": "p21_delitos_sexuales",
+         "required": True,
+         "opciones": [
+             "Abuso sexual (tocamientos u otros actos sexuales sin consentimiento)",
+             "Violación (acceso carnal sin consentimiento)",
+             "Acoso sexual (insinuaciones, solicitudes o conductas sexuales no deseadas)",
+             "Acoso callejero (comentarios, gestos o conductas sexuales en espacios públicos)",
+             "No se observan delitos sexuales"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Selección múltiple", "label": "Deficiencia en la infraestructura vial", "name": "infra_vial", "required": False,
-         "opciones": ["Calles en mal estado", "Falta de señalización de tránsito", "Carencia o inexistencia de aceras"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Asaltos",
+         "name": "p22_asaltos",
+         "required": True,
+         "opciones": ["Asalto a personas", "Asalto a comercio", "Asalto a vivienda", "Asalto a transporte público", "No se observan asaltos"],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Selección múltiple", "label": "Búnker", "name": "bunker", "required": False,
-         "opciones": ["Casa de habitación", "Edificación abandonada", "Lote baldío", "Otro"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Estafas",
+         "name": "p23_estafas",
+         "required": True,
+         "opciones": [
+             "Billetes falsos",
+             "Documentos falsos",
+             "Estafas relacionadas con la compra o venta de oro",
+             "Lotería falsa",
+             "Estafas informáticas (por internet, redes sociales o correos electrónicos)",
+             "Estafas telefónicas",
+             "Estafas con tarjetas (clonación, cargos no autorizados)",
+             "No se observan estafas"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        # ---------------- Página: Información adicional ----------------
-        {"tipo_ui": "Selección única", "label": "¿Tiene información de alguna persona o grupo que realice delitos en su comunidad? (confidencial)", "name": "info_grupo_delito", "required": True,
-         "opciones": ["Si", "No"], "appearance": None, "choice_filter": None, "relevant": None},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Robo (Sustracción de artículos mediante la utilización de la fuerza)",
+         "name": "p24_robos",
+         "required": True,
+         "opciones": [
+             "Robo a comercios",
+             "Robo a edificaciones",
+             "Robo a viviendas",
+             "Robo de vehículos completos",
+             "Robo a vehículos (tacha)",
+             "Robo de ganado (destace)",
+             "Robo de bienes agrícolas",
+             "Robo de cultivos",
+             "Robo de cable",
+             "No se observan robos"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Párrafo (texto largo)", "label": "Si su respuesta es \"SI\", describa características relevantes (estructura, personas, alias, señas, domicilios, vehículos, etc.)", "name": "desc_info_grupo", "required": True,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": f"${{info_grupo_delito}}='{slugify_name('Si')}'"},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Abandono de personas",
+         "name": "p25_abandono",
+         "required": True,
+         "opciones": [
+             "Abandono de adulto mayor",
+             "Abandono de menor de edad",
+             "Abandono de incapaz",
+             "No se observan situaciones de abandono"
+         ],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Selección única", "label": "¿Usted o algún familiar ha sido víctima de un delito en los últimos 12 meses? ¿Denunció ante el OIJ?", "name": "victimizacion_12m", "required": True,
-         "opciones": ["NO he sido víctima de ningún delito", "SI he sido víctima y SI denuncié", "SI he sido víctima pero NO denuncié"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Explotación infantil",
+         "name": "p26_explotacion_infantil",
+         "required": True,
+         "opciones": ["Sexual", "Laboral", "No se observan"],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Texto (corto)", "label": "¿Cuál fue el delito del que fue víctima?", "name": "delito_victima_si", "required": True,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima y SI denuncié')}'"},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Delitos ambientales",
+         "name": "p27_ambientales",
+         "required": True,
+         "opciones": ["Caza ilegal", "Pesca ilegal", "Tala ilegal", "Extracción ilegal de material minero", "No se observan delitos ambientales"],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
-        {"tipo_ui": "Selección múltiple", "label": "Modo de operar en el delito (marque todos los factores pertinentes)", "name": "modo_operar_si", "required": True,
-         "opciones": ["Arma blanca (cuchillo, machete, tijeras).", "Arma de fuego.", "Amenazas", "Arrebato", "Boquete",
-                      "Ganzúa (pata de chancho)", "Engaño", "No sé.", "Otro"],
-         "appearance": None, "choice_filter": None, "relevant": f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima y SI denuncié')}'"},
-
-        {"tipo_ui": "Selección única", "label": "Horario del hecho delictivo", "name": "horario_hecho_si", "required": True,
-         "opciones": ["00:00 - 02:59 a. m.", "03:00 - 05:59 a. m.", "06:00 - 08:59 a. m.", "09:00 - 11:59 a. m.",
-                      "12:00 - 14:59 p. m.", "15:00 - 17:59 p. m.", "18:00 - 20:59 p. m.", "21:00 - 23:59 p. m.",
-                      "DESCONOCIDO"],
-         "appearance": None, "choice_filter": None, "relevant": f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima y SI denuncié')}'"},
-
-        {"tipo_ui": "Texto (corto)", "label": "¿Cuál fue el delito del que fue víctima?", "name": "delito_victima_no", "required": True,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima pero NO denuncié')}'"},
-
-        {"tipo_ui": "Selección múltiple", "label": "Motivo de no denunciar (marque todos los que apliquen)", "name": "motivo_no_denuncia", "required": True,
-         "opciones": ["Distancia (falta de oficinas)", "Miedo a represalias", "Falta de respuesta oportuna",
-                      "He realizado denuncias y no ha pasado nada", "Complejidad al colocar la denuncia",
-                      "Desconocimiento de dónde denunciar", "El policía sugirió no denunciar", "Falta de tiempo"],
-         "appearance": None, "choice_filter": None, "relevant": f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima pero NO denuncié')}'"},
-
-        {"tipo_ui": "Selección múltiple", "label": "Modo de operar en el delito", "name": "modo_operar_no", "required": True,
-         "opciones": ["Arma blanca (cuchillo, machete, tijeras).", "Arma de fuego.", "Amenazas", "Arrebato", "Boquete",
-                      "Ganzúa (pata de chancho)", "Engaño", "No sé.", "Otro"],
-         "appearance": None, "choice_filter": None, "relevant": f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima pero NO denuncié')}'"},
-
-        {"tipo_ui": "Selección única", "label": "Horario del hecho delictivo", "name": "horario_hecho_no", "required": True,
-         "opciones": ["00:00 - 02:59 a. m.", "03:00 - 05:59 a. m.", "06:00 - 08:59 a. m.", "09:00 - 11:59 a. m.",
-                      "12:00 - 14:59 p. m.", "15:00 - 17:59 p. m.", "18:00 - 20:59 p. m.", "21:00 - 23:59 p. m.",
-                      "DESCONOCIDO"],
-         "appearance": None, "choice_filter": None, "relevant": f"${{victimizacion_12m}}='{slugify_name('SI he sido víctima pero NO denuncié')}'"},
-
-        {"tipo_ui": "Selección única", "label": "¿Cómo califica el servicio policial de la Fuerza Pública de Costa Rica en su comunidad?", "name": "fp_calificacion", "required": True,
-         "opciones": ["Excelente", "Bueno", "Regular", "Mala", "Muy mala"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección única", "label": "¿Cómo ha sido el servicio de la Fuerza Pública en los últimos 24 meses?", "name": "fp_24m", "required": True,
-         "opciones": ["Mejor servicio", "Igual", "Peor servicio"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección única", "label": "¿Conoce a los policías de su comunidad?", "name": "conoce_policias", "required": True,
-         "opciones": ["Si", "No"], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Selección única", "label": "¿Ha conversado con ellos/ellas sobre temas de seguridad?", "name": "conversa_policias", "required": True,
-         "opciones": ["Si", "No"], "appearance": None, "choice_filter": None, "relevant": f"${{conoce_policias}}='{slugify_name('Si')}'"},
-
-        {"tipo_ui": "Párrafo (texto largo)", "label": "¿Qué actividad debería realizar la Fuerza Pública para mejorar la seguridad en su comunidad? (opcional)", "name": "sugerencia_fp", "required": False,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Párrafo (texto largo)", "label": "¿Qué actividad debería realizar la municipalidad para mejorar la seguridad en su comunidad? (opcional)", "name": "sugerencia_muni", "required": False,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Párrafo (texto largo)", "label": "Otra información que estime pertinente (opcional)", "name": "otra_info", "required": False,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Párrafo (texto largo)", "label": "(Voluntario) Nombre, teléfono o correo de contacto (confidencial)", "name": "contacto_voluntario", "required": False,
-         "opciones": [], "appearance": None, "choice_filter": None, "relevant": None},
+        {"tipo_ui": "Selección múltiple",
+         "label": "Trata de personas",
+         "name": "p28_trata",
+         "required": True,
+         "opciones": ["Con fines laborales", "Con fines sexuales", "No se observan situaciones de trata de personas"],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
     ]
 
     st.session_state.preguntas = seed
@@ -843,7 +924,7 @@ with st.sidebar:
             st.session_state.choices_ext_rows = list(data.get("choices_ext_rows", []))
             st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
 
-            # Por seguridad: si importan un JSON sin placeholders, los reponemos.
+            # Por seguridad, si importan un JSON sin placeholders, los reponemos.
             _asegurar_placeholders_catalogo()
 
             _rerun()
@@ -908,23 +989,25 @@ else:
                 meta += f"  •  choice_filter: `{q['choice_filter']}`"
             if q.get("relevant"):
                 meta += f"  •  relevant: `{q['relevant']}`"
+            if q.get("xls_list_name"):
+                meta += f"  •  xls_list_name: `{q['xls_list_name']}`"
             c1.caption(meta)
             if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
                 c1.caption("Opciones: " + ", ".join(q.get("opciones") or []))
 
-            up_btn = c2.button("⬆️ Subir", key=f"up_{idx}", use_container_width=True, disabled=(idx == 0))
-            down_btn = c3.button("⬇️ Bajar", key=f"down_{idx}", use_container_width=True, disabled=(idx == len(st.session_state.preguntas) - 1))
-            edit_btn = c4.button("✏️ Editar", key=f"edit_{idx}", use_container_width=True)
-            del_btn = c5.button("🗑️ Eliminar", key=f"del_{idx}", use_container_width=True)
+            up = c2.button("⬆️ Subir", key=f"up_{idx}", use_container_width=True, disabled=(idx == 0))
+            down = c3.button("⬇️ Bajar", key=f"down_{idx}", use_container_width=True, disabled=(idx == len(st.session_state.preguntas)-1))
+            edit = c4.button("✏️ Editar", key=f"edit_{idx}", use_container_width=True)
+            borrar = c5.button("🗑️ Eliminar", key=f"del_{idx}", use_container_width=True)
 
-            if up_btn:
-                st.session_state.preguntas[idx - 1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx - 1]
+            if up:
+                st.session_state.preguntas[idx-1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx-1]
                 _rerun()
-            if down_btn:
-                st.session_state.preguntas[idx + 1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx + 1]
+            if down:
+                st.session_state.preguntas[idx+1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx+1]
                 _rerun()
 
-            if edit_btn:
+            if edit:
                 st.markdown("**Editar esta pregunta**")
                 ne_label = st.text_input("Etiqueta", value=q["label"], key=f"e_label_{idx}")
                 ne_name = st.text_input("Nombre interno (name)", value=q["name"], key=f"e_name_{idx}")
@@ -932,6 +1015,9 @@ else:
                 ne_appearance = st.text_input("Appearance", value=q.get("appearance") or "", key=f"e_app_{idx}")
                 ne_choice_filter = st.text_input("choice_filter (opcional)", value=q.get("choice_filter") or "", key=f"e_cf_{idx}")
                 ne_relevant = st.text_input("relevant (opcional – se autogenera por reglas)", value=q.get("relevant") or "", key=f"e_rel_{idx}")
+
+                # IMPORTANTÍSIMO: para matrices/table-list
+                ne_xls_list_name = st.text_input("xls_list_name (opcional, para MATRIZ/table-list)", value=q.get("xls_list_name") or "", key=f"e_xlsln_{idx}")
 
                 ne_opciones = q.get("opciones") or []
                 if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
@@ -950,6 +1036,7 @@ else:
                     st.session_state.preguntas[idx]["appearance"] = ne_appearance.strip() or None
                     st.session_state.preguntas[idx]["choice_filter"] = ne_choice_filter.strip() or None
                     st.session_state.preguntas[idx]["relevant"] = ne_relevant.strip() or None
+                    st.session_state.preguntas[idx]["xls_list_name"] = ne_xls_list_name.strip() or None
                     if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
                         st.session_state.preguntas[idx]["opciones"] = ne_opciones
                     st.success("Cambios guardados.")
@@ -958,7 +1045,7 @@ else:
                 if col_cancel.button("Cancelar", key=f"e_cancel_{idx}", use_container_width=True):
                     _rerun()
 
-            if del_btn:
+            if borrar:
                 del st.session_state.preguntas[idx]
                 st.warning("Pregunta eliminada.")
                 _rerun()
@@ -982,7 +1069,7 @@ else:
         src_q = next((q for q in st.session_state.preguntas if q["name"] == src), None)
 
         vals = []
-        if src_q and src_q["opciones"]:
+        if src_q and src_q.get("opciones"):
             vals = st.multiselect("Valores (usa texto, internamente se usará slug)", options=src_q["opciones"])
             vals = [slugify_name(v) for v in vals]
         else:
@@ -1003,7 +1090,7 @@ else:
             st.markdown("**Reglas de visibilidad actuales:**")
             for i, r in enumerate(st.session_state.reglas_visibilidad):
                 st.write(f"- Mostrar **{r['target']}** si **{r['src']}** {r['op']} {r['values']}")
-                if st.button(f"Eliminar regla #{i + 1}", key=f"del_vis_{i}"):
+                if st.button(f"Eliminar regla #{i+1}", key=f"del_vis_{i}"):
                     del st.session_state.reglas_visibilidad[i]
                     _rerun()
 
@@ -1016,7 +1103,7 @@ else:
         src2_q = next((q for q in st.session_state.preguntas if q["name"] == src2), None)
 
         vals2 = []
-        if src2_q and src2_q["opciones"]:
+        if src2_q and src2_q.get("opciones"):
             vals2 = st.multiselect("Valores (slug interno)", options=src2_q["opciones"], key="final_vals")
             vals2 = [slugify_name(v) for v in vals2]
         else:
@@ -1027,7 +1114,7 @@ else:
             if not vals2:
                 st.error("Indica al menos un valor.")
             else:
-                idx_src = next((i for i, qq in enumerate(st.session_state.preguntas) if qq["name"] == src2), 0)
+                idx_src = next((i for i, q in enumerate(st.session_state.preguntas) if q["name"] == src2), 0)
                 st.session_state.reglas_finalizar.append({"src": src2, "op": op2, "values": vals2, "index_src": idx_src})
                 st.success("Regla agregada.")
                 _rerun()
@@ -1036,7 +1123,7 @@ else:
             st.markdown("**Reglas de finalización actuales:**")
             for i, r in enumerate(st.session_state.reglas_finalizar):
                 st.write(f"- Si **{r['src']}** {r['op']} {r['values']} ⇒ ocultar lo que sigue (efecto fin)")
-                if st.button(f"Eliminar regla fin #{i + 1}", key=f"del_fin_{i}"):
+                if st.button(f"Eliminar regla fin #{i+1}", key=f"del_fin_{i}"):
                     del st.session_state.reglas_finalizar[i]
                     _rerun()
 
@@ -1046,32 +1133,44 @@ else:
 def _get_logo_media_name():
     return logo_media_name
 
-
 def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                       reglas_vis, reglas_fin):
     survey_rows = []
     choices_rows = []
 
+    # Index por name para acceso rápido
     idx_by_name = {q.get("name"): i for i, q in enumerate(preguntas)}
 
+    # Visibilidad por target
     vis_by_target = {}
     for r in reglas_vis:
         vis_by_target.setdefault(r["target"], []).append(
             {"src": r["src"], "op": r.get("op", "="), "values": r.get("values", [])}
         )
 
+    # Reglas de finalización (panel)
     fin_conds = []
     for r in reglas_fin:
         cond = build_relevant_expr([{"src": r["src"], "op": r.get("op", "="), "values": r.get("values", [])}])
         if cond:
             fin_conds.append((r["index_src"], cond))
 
+    def _add_constraint_exclusivo_no_observa(row, qname, no_slug):
+        """
+        Evita marcar "No se observa ..." junto con otras opciones en select_multiple.
+        Constraint: NOT( selected(., 'no') AND count-selected(.) > 1 )
+        """
+        row["constraint"] = f"not(selected(., '{no_slug}') and count-selected(.) > 1)"
+        row["constraint_message"] = "Si selecciona 'No se observa', no marque otras opciones."
+
     def add_q(q, idx):
-        x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"])
+        forced_list = q.get("xls_list_name") or None
+        x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"], forced_list_name=forced_list)
 
         rel_manual = q.get("relevant") or None
         rel_panel = build_relevant_expr(vis_by_target.get(q["name"], []))
 
+        # Fin temprano: NOT(conds) acumulado para preguntas posteriores
         nots = [xlsform_not(cond) for idx_src, cond in fin_conds if idx_src < idx]
         rel_fin = "(" + " and ".join(nots) + ")" if nots else None
 
@@ -1089,18 +1188,49 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         if rel_final:
             row["relevant"] = rel_final
 
-        # Constraints SOLO si placeholders están presentes (cuando no hay catálogo real)
-        if not _hay_catalogo_real():
-            if q["name"] == "canton":
-                row["constraint"] = ". != '__pick_canton__'"
-                row["constraint_message"] = "Seleccione un cantón válido."
-            if q["name"] == "distrito":
-                row["constraint"] = ". != '__pick_distrito__'"
-                row["constraint_message"] = "Seleccione un distrito válido."
+        # Constraints placeholders (Cantón/Distrito)
+        if q["name"] == "canton":
+            row["constraint"] = ". != '__pick_canton__'"
+            row["constraint_message"] = "Seleccione un cantón válido."
+        if q["name"] == "distrito":
+            row["constraint"] = ". != '__pick_distrito__'"
+            row["constraint_message"] = "Seleccione un distrito válido."
+
+        # Exclusividad "No se observa ..." en algunas select_multiple
+        if q["name"] in {"p12_problematicas"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan estas problemáticas en el distrito"))
+        if q["name"] in {"p14_consumo_drogas_donde"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observa consumo de drogas"))
+        if q["name"] in {"p16_puntos_venta"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observa"))
+        if q["name"] in {"p17_transporte"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observa"))
+        if q["name"] in {"p18_delitos_presentes"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan delitos"))
+        if q["name"] in {"p19_venta_drogas_forma"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observa venta de drogas"))
+        if q["name"] in {"p20_delitos_vida"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan delitos contra la vida"))
+        if q["name"] in {"p21_delitos_sexuales"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan delitos sexuales"))
+        if q["name"] in {"p22_asaltos"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan asaltos"))
+        if q["name"] in {"p23_estafas"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan estafas"))
+        if q["name"] in {"p24_robos"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan robos"))
+        if q["name"] in {"p25_abandono"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan situaciones de abandono"))
+        if q["name"] in {"p26_explotacion_infantil"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan"))
+        if q["name"] in {"p27_ambientales"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan delitos ambientales"))
+        if q["name"] in {"p28_trata"}:
+            _add_constraint_exclusivo_no_observa(row, q["name"], slugify_name("No se observan situaciones de trata de personas"))
 
         survey_rows.append(row)
 
-        # No generar opciones para Cantón/Distrito (se usan del catálogo)
+        # No generar opciones para Cantón/Distrito (se usan las del catálogo).
         if list_name and q["name"] not in {"canton", "distrito"}:
             usados = set()
             for opt_label in (q.get("opciones") or []):
@@ -1126,133 +1256,61 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
     if idx_consent is not None:
         add_q(preguntas[idx_consent], idx_consent)
+        # Si marca NO, se oculta todo lo que sigue
         fin_conds.append((idx_consent, f"${{consentimiento}}='{slugify_name('No')}'"))
 
     survey_rows.append({"type": "end_group", "name": "p2_consentimiento_end"})
 
-    # ---------------------------------
-    # Páginas por estructura
-    # ---------------------------------
-    p_demograficos = {"canton", "distrito", "edad_rango", "genero", "escolaridad", "relacion_zona"}
+    # PÁGINAS / SECCIONES (orden exacto)
+    # 1) I. DATOS DEMOGRÁFICOS
+    demograficos = {"canton", "distrito", "edad_rango", "genero", "escolaridad", "relacion_zona"}
 
-    p_percepcion = {
-        "percep_seg_distrito",
-        "motivos_inseguridad_distrito",
-        "otro_problema_inseg_distrito",
-        "cambio_seguridad_12m",
-        "motivo_cambio_12m",
-        "seg_discotecas_bares",
-        "seg_espacios_recreativos",
-        "seg_lugar_residencia",
-        "seg_paradas_estaciones",
-        "seg_puentes_peatonales",
-        "seg_transporte_publico",
-        "seg_zona_bancaria",
-        "seg_zona_comercio",
-        "seg_zonas_residenciales",
-        "seg_zonas_francas",
-        "seg_lugares_turisticos",
-        "seg_centros_educativos",
-        "foco_inseguridad",
-        "foco_inseguridad_otro",
-        "razones_foco_inseguridad",
+    # 2) II. PERCEPCIÓN CIUDADANA (título + intro + preguntas)
+    percepcion = {
+        "p7_seguridad_distrito", "p7_1_por_que_inseguro",
+        "p8_cambio_seguridad_12m", "p8_1_por_que_cambio",
+        "seg_discotecas_bares", "seg_espacios_recreativos", "seg_lugar_residencia",
+        "seg_paradas_estaciones", "seg_puentes_peatonales", "seg_transporte_publico",
+        "seg_zona_bancaria", "seg_zona_comercio", "seg_zonas_residenciales",
+        "seg_zonas_francas", "seg_lugares_turisticos", "seg_centros_educativos",
+        "p10_foco_inseguridad", "p11_razones_foco"
     }
 
-    p_incidencia = {
-        "incidencia_delitos", "venta_drogas", "delitos_vida", "delitos_sexuales", "asaltos", "estafas",
-        "robo_fuerza", "abandono_personas", "explotacion_infantil", "delitos_ambientales", "trata_personas",
-        "vi", "vi_victima_ultimo_anno", "vi_tipos", "vi_fp_abordaje", "vi_fp_eval"
-    }
+    # 3) III. RIESGOS SOCIALES (título + intro + 12-17)
+    riesgos = {"p12_problematicas", "p13_inversion_social", "p14_consumo_drogas_donde", "p15_infra_vial", "p16_puntos_venta", "p17_transporte"}
 
-    p_riesgos = {"riesgos_sociales", "falta_inversion_social", "consumo_drogas", "infra_vial", "bunker"}
+    # 4) Delitos (título + intro + 18-28)
+    delitos = {"p18_delitos_presentes", "p19_venta_drogas_forma", "p20_delitos_vida", "p21_delitos_sexuales", "p22_asaltos",
+               "p23_estafas", "p24_robos", "p25_abandono", "p26_explotacion_infantil", "p27_ambientales", "p28_trata"}
 
-    p_info = {
-        "info_grupo_delito", "desc_info_grupo", "victimizacion_12m",
-        "delito_victima_si", "modo_operar_si", "horario_hecho_si",
-        "delito_victima_no", "motivo_no_denuncia", "modo_operar_no", "horario_hecho_no",
-        "fp_calificacion", "fp_24m", "conoce_policias", "conversa_policias",
-        "sugerencia_fp", "sugerencia_muni", "otra_info", "contacto_voluntario"
-    }
-
-    def add_page(group_name, page_label, names_set, intro_note_text: str = None, group_appearance: str = "field-list"):
-        survey_rows.append({"type": "begin_group", "name": group_name, "label": page_label, "appearance": group_appearance})
-        if intro_note_text:
-            survey_rows.append({"type": "note", "name": f"{group_name}_intro", "label": intro_note_text})
-
-        # Matriz (9): se muestra mejor como tabla si el grupo está en table-list y los hijos son select_one
+    def add_page(group_name, page_label, names_set, intro_title=None, intro_text=None, appearance="field-list"):
+        survey_rows.append({"type": "begin_group", "name": group_name, "label": page_label, "appearance": appearance})
+        if intro_title:
+            survey_rows.append({"type": "note", "name": f"{group_name}_t", "label": intro_title})
+        if intro_text:
+            # si viene con saltos de línea, lo dejamos como string tal cual
+            survey_rows.append({"type": "note", "name": f"{group_name}_i", "label": intro_text})
         for i, q in enumerate(preguntas):
             if q["name"] in names_set:
                 add_q(q, i)
         survey_rows.append({"type": "end_group", "name": f"{group_name}_end"})
 
-    add_page("p3_demograficos", "I. DATOS DEMOGRÁFICOS", p_demograficos, intro_note_text=None, group_appearance="field-list")
+    add_page("p3_demograficos", "I. DATOS DEMOGRÁFICOS", demograficos)
+    add_page("p4_percepcion", "Percepción ciudadana de seguridad en el distrito", percepcion,
+             intro_title=TITULO_PERC_DISTRITO, intro_text=INTRO_PERC_DISTRITO)
 
-    # Página de percepción con INTRO antes de preguntas
-    add_page(
-        "p4_percepcion_distrito",
-        "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO",
-        p_percepcion,
-        intro_note_text=INTRO_PERCEPCION_DISTRITO,
-        group_appearance="field-list"
-    )
+    add_page("p5_riesgos", "Riesgos sociales y situacionales en el distrito", riesgos,
+             intro_title=TITULO_RIESGOS, intro_text=INTRO_RIESGOS_SOCIALES)
 
-    # Para que la “matriz 9” se vea como tabla, la “envolvemos” en un subgrupo table-list
-    # sin tocar la lógica de páginas:
-    # - Se re-estructura SOLO dentro del XLSForm exportado.
-    # (Esto NO cambia tu editor ni tu lista de preguntas.)
-    def _postprocesar_matriz_table_list(df_survey: pd.DataFrame) -> pd.DataFrame:
-        # Ubicamos la primera fila de seg_discotecas_bares dentro de p4_percepcion_distrito
-        # e insertamos begin_group / end_group con appearance=table-list alrededor de las 12 filas de matriz.
-        matriz_names = [
-            "seg_discotecas_bares",
-            "seg_espacios_recreativos",
-            "seg_lugar_residencia",
-            "seg_paradas_estaciones",
-            "seg_puentes_peatonales",
-            "seg_transporte_publico",
-            "seg_zona_bancaria",
-            "seg_zona_comercio",
-            "seg_zonas_residenciales",
-            "seg_zonas_francas",
-            "seg_lugares_turisticos",
-            "seg_centros_educativos",
-        ]
-        idxs = df_survey.index[df_survey["name"].isin(matriz_names)].tolist()
-        if not idxs:
-            return df_survey
-        start = min(idxs)
-        end = max(idxs)
+    add_page("p6_delitos", "Delitos", delitos,
+             intro_title=TITULO_DELITOS, intro_text=INTRO_DELITOS)
 
-        begin_row = {
-            "type": "begin_group",
-            "name": "matriz_seguridad_9",
-            "label": "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito.",
-            "appearance": "table-list"
-        }
-        end_row = {"type": "end_group", "name": "matriz_seguridad_9_end"}
-
-        top = df_survey.iloc[:start].copy()
-        mid = df_survey.iloc[start:end + 1].copy()
-        bot = df_survey.iloc[end + 1:].copy()
-
-        df_new = pd.concat(
-            [top, pd.DataFrame([begin_row]), mid, pd.DataFrame([end_row]), bot],
-            ignore_index=True
-        )
-        return df_new
-
-    add_page("p5_incidencia", "III. INCIDENCIA RELACIONADA A DELITOS", p_incidencia, intro_note_text=None, group_appearance="field-list")
-    add_page("p6_riesgos", "IV. RIESGOS SOCIALES", p_riesgos, intro_note_text=None, group_appearance="field-list")
-    add_page("p7_info_adicional", "V. INFORMACIÓN ADICIONAL", p_info, intro_note_text=None, group_appearance="field-list")
-
-    # Choices del catálogo manual (incluye placeholders SIEMPRE en memoria, pero filtramos al exportar si hay catálogo real)
+    # Choices del catálogo manual (incluye placeholders SIEMPRE, por el fix)
     _asegurar_placeholders_catalogo()
-    catalog_rows = [dict(r) for r in st.session_state.choices_ext_rows]
-    catalog_rows = _filtrar_placeholders_si_hay_catalogo(catalog_rows)
-    for r in catalog_rows:
-        choices_rows.append(r)
+    for r in st.session_state.choices_ext_rows:
+        choices_rows.append(dict(r))
 
-    # DataFrames (survey primero)
+    # DataFrames
     survey_cols_all = set().union(*[r.keys() for r in survey_rows])
     survey_cols = [c for c in ["type", "name", "label", "required", "appearance", "choice_filter",
                                "relevant", "constraint", "constraint_message", "media::image"] if c in survey_cols_all]
@@ -1260,9 +1318,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         if k not in survey_cols:
             survey_cols.append(k)
     df_survey = pd.DataFrame(survey_rows, columns=survey_cols)
-
-    # Postprocesar la matriz para que se muestre como tabla
-    df_survey = _postprocesar_matriz_table_list(df_survey)
 
     choices_cols_all = set()
     for r in choices_rows:
@@ -1282,7 +1337,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
     return df_survey, df_choices, df_settings
 
-
 def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: str):
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
@@ -1297,7 +1351,7 @@ def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: 
             ws.freeze_panes(1, 0)
             ws.set_row(0, None, fmt_hdr)
             for col_idx, col_name in enumerate(list(df.columns)):
-                ws.set_column(col_idx, col_idx, max(14, min(55, len(str(col_name)) + 8)))
+                ws.set_column(col_idx, col_idx, max(14, min(60, len(str(col_name)) + 8)))
 
     buffer.seek(0)
     st.download_button(
@@ -1316,7 +1370,7 @@ st.subheader("📦 Generar XLSForm (Excel) para Survey123")
 st.caption("""
 Incluye:
 - **survey** con `type,name,label,required,appearance,choice_filter,relevant,constraint,media::image`,
-- **choices** (con `canton_key` y `any` para cascada),
+- **choices** (con `canton_key` y `any` para cascada Cantón→Distrito),
 - **settings** con título, versión, idioma y **style = pages**.
 """)
 
@@ -1336,12 +1390,9 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             )
             st.success("XLSForm construido. Vista previa:")
             c1, c2, c3 = st.columns(3)
-            c1.markdown("**Hoja: survey**")
-            c1.dataframe(df_survey, use_container_width=True, hide_index=True)
-            c2.markdown("**Hoja: choices**")
-            c2.dataframe(df_choices, use_container_width=True, hide_index=True)
-            c3.markdown("**Hoja: settings**")
-            c3.dataframe(df_settings, use_container_width=True, hide_index=True)
+            c1.markdown("**Hoja: survey**");   c1.dataframe(df_survey, use_container_width=True, hide_index=True)
+            c2.markdown("**Hoja: choices**");  c2.dataframe(df_choices, use_container_width=True, hide_index=True)
+            c3.markdown("**Hoja: settings**"); c3.dataframe(df_settings, use_container_width=True, hide_index=True)
 
             nombre_archivo = slugify_name(form_title) + "_xlsform.xlsx"
             descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo)
