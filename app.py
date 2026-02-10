@@ -18,6 +18,7 @@
 #     - Opciones "No se observa / No se observan ..." en select_multiple son EXCLUSIVAS
 #     - Página nueva: Victimización — Apartado B (30–30.4)
 #     - 30.1 ordenada por categorías A/B/C/D sin campos de texto extras
+# - NUEVA PÁGINA: Confianza Policial (31–41)
 # ==========================================================================================
 
 import re
@@ -61,11 +62,13 @@ TIPOS = [
     "GPS (ubicación)",
 ]
 
+
 def _rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
         st.experimental_rerun()
+
 
 def slugify_name(texto: str) -> str:
     if not texto:
@@ -80,6 +83,7 @@ def slugify_name(texto: str) -> str:
     t = re.sub(r"[^a-z0-9]+", "_", t).strip("_")
     return t or "campo"
 
+
 def asegurar_nombre_unico(base: str, usados: set) -> str:
     if base not in usados:
         return base
@@ -87,6 +91,7 @@ def asegurar_nombre_unico(base: str, usados: set) -> str:
     while f"{base}_{i}" in usados:
         i += 1
     return f"{base}_{i}"
+
 
 def map_tipo_to_xlsform(tipo_ui: str, name: str):
     if tipo_ui == "Texto (corto)":
@@ -107,6 +112,7 @@ def map_tipo_to_xlsform(tipo_ui: str, name: str):
         return ("geopoint", None, None)
     return ("text", None, None)
 
+
 def xlsform_or_expr(conds):
     if not conds:
         return None
@@ -114,10 +120,12 @@ def xlsform_or_expr(conds):
         return conds[0]
     return "(" + " or ".join(conds) + ")"
 
+
 def xlsform_not(expr):
     if not expr:
         return None
     return f"not({expr})"
+
 
 def build_relevant_expr(rules_for_target: List[Dict]):
     or_parts = []
@@ -140,6 +148,7 @@ def build_relevant_expr(rules_for_target: List[Dict]):
         or_parts.append(xlsform_or_expr(segs))
     return xlsform_or_expr(or_parts)
 
+
 # ------------------------------------------------------------------------------------------
 # Estado base (session_state)
 # ------------------------------------------------------------------------------------------
@@ -158,11 +167,13 @@ if "choices_ext_rows" not in st.session_state:
 if "choices_extra_cols" not in st.session_state:
     st.session_state.choices_extra_cols = set()
 
+
 def _append_choice_unique(row: Dict):
     key = (row.get("list_name"), row.get("name"))
     exists = any((r.get("list_name"), r.get("name")) == key for r in st.session_state.choices_ext_rows)
     if not exists:
         st.session_state.choices_ext_rows.append(row)
+
 
 def _asegurar_placeholders_catalogo():
     """
@@ -172,6 +183,7 @@ def _asegurar_placeholders_catalogo():
     st.session_state.choices_extra_cols.update({"canton_key", "any"})
     _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
     _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "— escoja un cantón —", "any": "1"})
+
 
 def _hay_catalogo_real() -> bool:
     cantones_reales = any(
@@ -184,6 +196,7 @@ def _hay_catalogo_real() -> bool:
     )
     return bool(cantones_reales and distritos_reales)
 
+
 def _filtrar_placeholders_si_hay_catalogo(rows: List[Dict]) -> List[Dict]:
     if not _hay_catalogo_real():
         return rows
@@ -195,6 +208,7 @@ def _filtrar_placeholders_si_hay_catalogo(rows: List[Dict]) -> List[Dict]:
             continue
         filtradas.append(r)
     return filtradas
+
 
 # Asegurar placeholders desde el inicio
 _asegurar_placeholders_catalogo()
@@ -364,14 +378,23 @@ INTRO_VICT_VI = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Victimización — Apartado B: Otros delitos (intro) — página nueva
+# Victimización — Apartado B: Otros delitos (intro) — página nueva (NO OMITIR)
 # ------------------------------------------------------------------------------------------
 INTRO_VICT_OTROS = (
+    "Apartado B: Victimización por otros delitos\n"
     "Las siguientes preguntas se refieren a otros delitos distintos a la violencia intrafamiliar, "
     "que pudieron haber afectado a usted o a algún miembro de su hogar en el distrito durante los últimos 12 meses. "
     "Estas preguntas buscan conocer la experiencia directa de victimización, así como aspectos relacionados con la "
     "denuncia y las características generales del hecho. La información brindada no constituye denuncia formal ni "
     "confirmación de hechos delictivos."
+)
+
+# ------------------------------------------------------------------------------------------
+# Confianza Policial (intro) — página nueva (31–41)
+# ------------------------------------------------------------------------------------------
+INTRO_CONFIANZA_POLICIAL = (
+    "A continuación, se presentará una lista de afirmaciones relacionadas con su percepción y confianza en el "
+    "cuerpo de policía que opera en su (Distrito) barrio."
 )
 
 # ------------------------------------------------------------------------------------------
@@ -383,6 +406,9 @@ if "seed_cargado" not in st.session_state:
 
     # LISTA COMPARTIDA para la matriz (table-list)
     LISTA_MATRIZ_SEG = "list_matriz_seguridad"
+
+    # LISTA COMPARTIDA escala 1–10 (Confianza/Profesionalidad/Calidad/Satisfacción/Contribución)
+    LISTA_ESCALA_1_10 = "list_escala_1_10"
 
     seed = [
         # ---------------- Consentimiento ----------------
@@ -1038,6 +1064,106 @@ if "seed_cargado" not in st.session_state:
          ],
          "appearance": "columns", "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
+
+        # ---------------- Confianza Policial (31–41) ----------------
+        {"tipo_ui": "Selección única",
+         "label": "31. ¿Identifica usted a los policías de la Fuerza Pública de Costa Rica en su comunidad?",
+         "name": "conf_31_identifica_policias",
+         "required": True,
+         "opciones": ["Sí", "No"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "31.1 ¿Cuáles de los siguientes tipos de atención ha tenido?",
+         "name": "conf_311_tipos_atencion",
+         "required": True,
+         "opciones": [
+             "Solicitud de ayuda o auxilio.",
+             "Atención relacionada con una denuncia.",
+             "Atención cordial o preventiva durante un patrullaje.",
+             "Fui abordado o registrado para identificación.",
+             "Fui objeto de una infracción o conflicto.",
+             "Evento preventivos (Cívico policial, Reunión Comunitaria)",
+             "Otra (especifique):",
+         ],
+         "appearance": None, "choice_filter": None,
+         "relevant": f"${{conf_31_identifica_policias}}='{CONSENT_SI}'"},
+
+        {"tipo_ui": "Selección única",
+         "label": "32. ¿Cuál es el nivel de confianza en la policía de la Fuerza Pública de Costa Rica de su comunidad?",
+         "name": "conf_32_nivel_confianza",
+         "required": True,
+         "opciones": [str(i) for i in range(1, 11)],
+         "appearance": "horizontal", "choice_filter": None,
+         "relevant": f"${{conf_31_identifica_policias}}='{CONSENT_SI}'",
+         "list_override": LISTA_ESCALA_1_10},
+
+        {"tipo_ui": "Selección única",
+         "label": "33. En una escala del 1 al 10, donde 1 es “Nada profesional” y 10 es “Muy profesional”, ¿cómo calificaría la profesionalidad de la Fuerza Pública en su distrito?",
+         "name": "conf_33_profesionalidad",
+         "required": True,
+         "opciones": [str(i) for i in range(1, 11)],
+         "appearance": "horizontal", "choice_filter": None, "relevant": None,
+         "list_override": LISTA_ESCALA_1_10},
+
+        {"tipo_ui": "Selección única",
+         "label": "34. En una escala del 1 al 10, donde 1 es “Muy mala” y 10 es “Muy buena”, ¿cómo califica la calidad del servicio policial en su distrito?",
+         "name": "conf_34_calidad_servicio",
+         "required": True,
+         "opciones": [str(i) for i in range(1, 11)],
+         "appearance": "horizontal", "choice_filter": None, "relevant": None,
+         "list_override": LISTA_ESCALA_1_10},
+
+        {"tipo_ui": "Selección única",
+         "label": "35. En una escala del 1 al 10, donde 1 es “Nada satisfecho(a)” y 10 es “Muy satisfecho(a)”, ¿qué tan satisfecho(a) está con el trabajo preventivo que realiza la Fuerza Pública en su distrito?",
+         "name": "conf_35_satisfaccion",
+         "required": True,
+         "opciones": [str(i) for i in range(1, 11)],
+         "appearance": "horizontal", "choice_filter": None, "relevant": None,
+         "list_override": LISTA_ESCALA_1_10},
+
+        {"tipo_ui": "Selección única",
+         "label": "36. En una escala del 1 al 10, donde 1 es “No contribuye en nada” y 10 es “Contribuye muchísimo”, indique: ¿En qué medida considera que la presencia policial ayuda a reducir el crimen en su distrito?",
+         "name": "conf_36_contribucion",
+         "required": True,
+         "opciones": [str(i) for i in range(1, 11)],
+         "appearance": "horizontal", "choice_filter": None, "relevant": None,
+         "list_override": LISTA_ESCALA_1_10},
+
+        {"tipo_ui": "Selección única",
+         "label": "37. ¿Con qué frecuencia observa presencia policial en su distrito?",
+         "name": "conf_37_frecuencia_presencia",
+         "required": True,
+         "opciones": ["Todos los días", "Varias veces por semana", "Una vez por semana", "Casi nunca", "Nunca"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "38. ¿Considera que la presencia policial es consistente a lo largo del día en su distrito?",
+         "name": "conf_38_consistencia_horario",
+         "required": True,
+         "opciones": ["Sí", "No", "A veces"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "39. ¿Considera que la policía trata a las personas de manera justa e imparcial en su distrito?",
+         "name": "conf_39_justicia_imparcialidad",
+         "required": True,
+         "opciones": ["Sí", "No", "A veces"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "40. ¿Cree usted que puede expresar preocupaciones o quejas a la policía sin temor a represalias?",
+         "name": "conf_40_sin_represalias",
+         "required": True,
+         "opciones": ["Sí", "No", "No estoy seguro(a)"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "41. ¿Considera que la policía proporciona información veraz, clara y oportuna a la comunidad?",
+         "name": "conf_41_info_veraz_clara",
+         "required": True,
+         "opciones": ["Sí", "No", "A veces"],
+         "appearance": None, "choice_filter": None, "relevant": None},
     ]
 
     st.session_state.preguntas = seed
@@ -1294,6 +1420,7 @@ else:
 def _get_logo_media_name():
     return logo_media_name
 
+
 def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                       reglas_vis, reglas_fin):
     survey_rows = []
@@ -1335,19 +1462,15 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         if not opts:
             return
 
-        # Detecta una opción que empiece con "No se observa" o "No se observan"
         exclusivas = [o for o in opts if str(o).strip().lower().startswith("no se observa")]
         if not exclusivas:
             exclusivas = [o for o in opts if str(o).strip().lower().startswith("no se observan")]
         if not exclusivas:
             return
 
-        # Tomamos la primera coincidencia
         ex_label = exclusivas[0]
         ex_slug = slugify_name(ex_label)
 
-        # Constraint: si se selecciona ex_slug, entonces count-selected debe ser 1
-        # not( selected(${q}, 'ex') and count-selected(${q}) > 1 )
         nm = q["name"]
         row["constraint"] = f"not(selected(${{{nm}}}, '{ex_slug}') and count-selected(${{{nm}}})>1)"
         row["constraint_message"] = f"Si selecciona “{ex_label}”, no puede marcar otras opciones."
@@ -1355,7 +1478,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     def add_q(q, idx):
         x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"])
 
-        # FIX MATRIZ: permitir forzar list_name compartido con list_override
+        # FIX MATRIZ / listas compartidas: permitir forzar list_name compartido con list_override
         list_override = q.get("list_override")
         if list_override and isinstance(x_type, str):
             if x_type.startswith("select_one "):
@@ -1512,6 +1635,21 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "vict_304_modo",
     }
 
+    p_confianza_policial = {
+        "conf_31_identifica_policias",
+        "conf_311_tipos_atencion",
+        "conf_32_nivel_confianza",
+        "conf_33_profesionalidad",
+        "conf_34_calidad_servicio",
+        "conf_35_satisfaccion",
+        "conf_36_contribucion",
+        "conf_37_frecuencia_presencia",
+        "conf_38_consistencia_horario",
+        "conf_39_justicia_imparcialidad",
+        "conf_40_sin_represalias",
+        "conf_41_info_veraz_clara",
+    }
+
     def add_page(group_name, page_label, names_set, intro_note_text: str = None,
                  group_appearance: str = "field-list", group_relevant: str = None):
         row = {"type": "begin_group", "name": group_name, "label": page_label, "appearance": group_appearance}
@@ -1519,6 +1657,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
             row["relevant"] = group_relevant
         survey_rows.append(row)
 
+        # ✅ Intro dentro de la página (antes de las preguntas)
         if intro_note_text:
             note = {"type": "note", "name": f"{group_name}_intro", "label": intro_note_text}
             if group_relevant:
@@ -1548,9 +1687,13 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     add_page("p7_vict_vi", "Victimización — Apartado A: Violencia intrafamiliar", p_vict_vi,
              intro_note_text=INTRO_VICT_VI, group_appearance="field-list", group_relevant=rel_si)
 
-    # ✅ Página Victimización B (30–30.4)
+    # ✅ Página Victimización B (30–30.4) + INTRO (NO OMITIR)
     add_page("p8_vict_otros", "Victimización — Apartado B: Victimización por otros delitos", p_vict_otros,
              intro_note_text=INTRO_VICT_OTROS, group_appearance="field-list", group_relevant=rel_si)
+
+    # ✅ Página Confianza Policial (31–41)
+    add_page("p9_confianza_policial", "Confianza Policial", p_confianza_policial,
+             intro_note_text=INTRO_CONFIANZA_POLICIAL, group_appearance="field-list", group_relevant=rel_si)
 
     # Encapsular matriz 9 en table-list (ya comparten list_override)
     def _postprocesar_matriz_table_list(df_survey: pd.DataFrame) -> pd.DataFrame:
@@ -1626,6 +1769,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     }], columns=["form_title", "version", "default_language", "style"])
 
     return df_survey, df_choices, df_settings
+
 
 def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: str):
     buffer = BytesIO()
