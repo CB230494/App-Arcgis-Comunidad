@@ -6,17 +6,14 @@
 # - Listas en cascada (choice_filter) Cantón→Distrito [CATÁLOGO MANUAL POR LOTES]
 # - Exportar/Importar proyecto (JSON)
 # - Exportar a XLSForm (survey/choices/settings)
-# - PÁGINAS reales (style="pages"): Intro + Consentimiento + P2..
+# - PÁGINAS reales (style="pages"): Intro + Consentimiento + P2.. (por secciones)
 # - Portada con logo (media::image) y texto de introducción
-# - Consentimiento (si NO acepta, la encuesta se corta) con texto ordenado por bloques.
-# - FIX: evita error "List name not in choices sheet: list_canton"
+# - Consentimiento:
+#     - Texto en BLOQUES (notes separados) para que se vea ordenado en Survey123
+#     - Si marca "No" ⇒ NO muestra el resto de páginas y cae a una página final para enviar
 # - MEJORA: no mostrar "— escoja un cantón —" cuando ya hay catálogo real
-# - FIX MATRIZ (table-list): todas las filas deben compartir el MISMO list_name
-# - FIX NUEVO (lo que pediste):
-#     1) Si marca "No" en consentimiento, NO muestra el resto, pero SÍ permite avanzar a una página final y enviar.
-#     2) La página donde antes salía "III. ..." + "Delitos" junta, ahora se separa en 2 páginas:
-#         - Página: III. ... (Riesgos) + preguntas 12–17
-#         - Página: Delitos + preguntas 18–28
+# - FIX MATRIZ (table-list): todas las filas comparten el MISMO list_name (list_override)
+# - FIX: Página "Delitos" separada (solo título Delitos + intro + preguntas 18–28)
 # ==========================================================================================
 
 import re
@@ -43,7 +40,7 @@ Incluye:
 - **Listas en cascada** **Cantón→Distrito** (**catálogo manual por lotes**).
 - **Páginas** con navegación **Siguiente/Anterior** (`settings.style = pages`).
 - **Portada** con **logo** (`media::image`) e **introducción**.
-- **Consentimiento informado** (si NO acepta, la encuesta se corta) con texto ordenado por bloques.
+- **Consentimiento informado** (si NO acepta, la encuesta termina) con texto ordenado por bloques.
 """)
 
 # ------------------------------------------------------------------------------------------
@@ -57,16 +54,14 @@ TIPOS = [
     "Selección múltiple",
     "Fecha",
     "Hora",
-    "GPS (ubicación)"
+    "GPS (ubicación)",
 ]
-
 
 def _rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
         st.experimental_rerun()
-
 
 def slugify_name(texto: str) -> str:
     if not texto:
@@ -81,7 +76,6 @@ def slugify_name(texto: str) -> str:
     t = re.sub(r"[^a-z0-9]+", "_", t).strip("_")
     return t or "campo"
 
-
 def asegurar_nombre_unico(base: str, usados: set) -> str:
     if base not in usados:
         return base
@@ -89,7 +83,6 @@ def asegurar_nombre_unico(base: str, usados: set) -> str:
     while f"{base}_{i}" in usados:
         i += 1
     return f"{base}_{i}"
-
 
 def map_tipo_to_xlsform(tipo_ui: str, name: str):
     if tipo_ui == "Texto (corto)":
@@ -110,7 +103,6 @@ def map_tipo_to_xlsform(tipo_ui: str, name: str):
         return ("geopoint", None, None)
     return ("text", None, None)
 
-
 def xlsform_or_expr(conds):
     if not conds:
         return None
@@ -118,12 +110,10 @@ def xlsform_or_expr(conds):
         return conds[0]
     return "(" + " or ".join(conds) + ")"
 
-
 def xlsform_not(expr):
     if not expr:
         return None
     return f"not({expr})"
-
 
 def build_relevant_expr(rules_for_target: List[Dict]):
     or_parts = []
@@ -146,15 +136,6 @@ def build_relevant_expr(rules_for_target: List[Dict]):
         or_parts.append(xlsform_or_expr(segs))
     return xlsform_or_expr(or_parts)
 
-
-def constraint_no_se_observa(opt_label: str) -> str:
-    """
-    Si elige la opción "No se observa..." (en select_multiple) no puede marcar otra adicional.
-    """
-    opt = slugify_name(opt_label)
-    return f"not(selected(., '{opt}') and count-selected(.) > 1)"
-
-
 # ------------------------------------------------------------------------------------------
 # Estado base (session_state)
 # ------------------------------------------------------------------------------------------
@@ -173,14 +154,11 @@ if "choices_ext_rows" not in st.session_state:
 if "choices_extra_cols" not in st.session_state:
     st.session_state.choices_extra_cols = set()
 
-
 def _append_choice_unique(row: Dict):
-    """Inserta fila en choices evitando duplicados por (list_name,name)."""
     key = (row.get("list_name"), row.get("name"))
     exists = any((r.get("list_name"), r.get("name")) == key for r in st.session_state.choices_ext_rows)
     if not exists:
         st.session_state.choices_ext_rows.append(row)
-
 
 def _asegurar_placeholders_catalogo():
     """
@@ -190,7 +168,6 @@ def _asegurar_placeholders_catalogo():
     st.session_state.choices_extra_cols.update({"canton_key", "any"})
     _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
     _append_choice_unique({"list_name": "list_distrito", "name": "__pick_distrito__", "label": "— escoja un cantón —", "any": "1"})
-
 
 def _hay_catalogo_real() -> bool:
     cantones_reales = any(
@@ -203,11 +180,9 @@ def _hay_catalogo_real() -> bool:
     )
     return bool(cantones_reales and distritos_reales)
 
-
 def _filtrar_placeholders_si_hay_catalogo(rows: List[Dict]) -> List[Dict]:
     if not _hay_catalogo_real():
         return rows
-
     filtradas = []
     for r in rows:
         if r.get("list_name") == "list_canton" and r.get("name") == "__pick_canton__":
@@ -216,7 +191,6 @@ def _filtrar_placeholders_si_hay_catalogo(rows: List[Dict]) -> List[Dict]:
             continue
         filtradas.append(r)
     return filtradas
-
 
 # Asegurar placeholders desde el inicio
 _asegurar_placeholders_catalogo()
@@ -316,6 +290,8 @@ INTRO_COMUNIDAD = (
 # Consentimiento informado (Página 2)
 # ------------------------------------------------------------------------------------------
 CONSENTIMIENTO_TITULO = "Consentimiento Informado para la Participación en la Encuesta"
+CONSENT_SI = slugify_name("Sí")
+CONSENT_NO = slugify_name("No")
 
 CONSENTIMIENTO_BLOQUES = [
     "Usted está siendo invitado(a) a participar de forma libre y voluntaria en una encuesta sobre seguridad, convivencia y percepción ciudadana, dirigida a personas mayores de 18 años.",
@@ -333,7 +309,7 @@ CONSENTIMIENTO_BLOQUES = [
 ]
 
 # ------------------------------------------------------------------------------------------
-# Página: II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO (intro)
+# II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO (intro)
 # ------------------------------------------------------------------------------------------
 INTRO_PERCEPCION_DISTRITO = (
     "En esta sección le preguntaremos sobre cómo percibe la seguridad en su distrito. "
@@ -349,23 +325,23 @@ INTRO_PERCEPCION_DISTRITO = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Página: III. RIESGOS... (Riesgos sociales y situacionales) (intro)
+# III. RIESGOS (intro)  — página separada
 # ------------------------------------------------------------------------------------------
-INTRO_RIESGOS = (
+INTRO_RIESGOS_III = (
     "A continuación, en esta sección le preguntaremos sobre situaciones o condiciones que pueden representar "
     "riesgos para la convivencia y la seguridad en el distrito. "
     "Estas preguntas no se refieren necesariamente a delitos, sino a situaciones, comportamientos o problemas "
     "sociales que usted haya observado y que puedan generar preocupación, afectar la tranquilidad o aumentar "
     "el riesgo de que ocurran hechos de inseguridad. "
-    "Nos interesa conocer qué situaciones están presentes en el distrito, con qué frecuencia se observan y "
-    "en qué espacios se presentan, según su experiencia y percepción. Sus respuestas ayudarán a identificar "
+    "Nos interesa conocer qué situaciones están presentes en el distrito, con qué frecuencia se observan y en "
+    "qué espacios se presentan, según su experiencia y percepción. Sus respuestas ayudarán a identificar "
     "factores de riesgo y a orientar acciones de prevención y atención a nivel local. "
-    "No existen respuestas correctas o incorrectas. Le pedimos responder con sinceridad, de acuerdo con lo "
-    "que ha visto o vivido en su entorno."
+    "No existen respuestas correctas o incorrectas. Le pedimos responder con sinceridad, de acuerdo con lo que "
+    "ha visto o vivido en su entorno."
 )
 
 # ------------------------------------------------------------------------------------------
-# Página: Delitos (intro)
+# Delitos (intro) — página SOLO delitos
 # ------------------------------------------------------------------------------------------
 INTRO_DELITOS = (
     "A continuación, se presenta una lista de delitos para que indique aquellos que, según su conocimiento u "
@@ -374,7 +350,17 @@ INTRO_DELITOS = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Precarga de preguntas (con FIX de matriz table-list)
+# Victimización — Apartado A: Violencia intrafamiliar (intro) — página nueva
+# ------------------------------------------------------------------------------------------
+INTRO_VICT_VI = (
+    "A continuación, se presentan algunas preguntas relacionadas con situaciones de violencia intrafamiliar, "
+    "con el fin de conocer si usted o algún miembro de su hogar ha sido afectado directamente por este tipo de "
+    "situaciones en el distrito durante los últimos 12 meses. La información recopilada es confidencial y se utiliza "
+    "únicamente con fines de análisis y mejora de las acciones de prevención y atención."
+)
+
+# ------------------------------------------------------------------------------------------
+# Precarga de preguntas (seed)
 # ------------------------------------------------------------------------------------------
 if "seed_cargado" not in st.session_state:
     v_muy_inseguro = slugify_name("Muy inseguro")
@@ -511,7 +497,7 @@ if "seed_cargado" not in st.session_state:
          "opciones": [],
          "appearance": None, "choice_filter": None, "relevant": "string-length(${cambio_seguridad_12m})>0"},
 
-        # 9. MATRIZ (todas comparten list_override = LISTA_MATRIZ_SEG)  ✅ FIX table-list
+        # 9. MATRIZ (todas comparten list_override = LISTA_MATRIZ_SEG)
         {"tipo_ui": "Selección única", "label": "Discotecas, bares, sitios de entretenimiento", "name": "seg_discotecas_bares",
          "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
          "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
@@ -598,7 +584,7 @@ if "seed_cargado" not in st.session_state:
         # ---------------- III. RIESGOS (12–17) ----------------
         {"tipo_ui": "Selección múltiple",
          "label": "12. Según su conocimiento u observación, seleccione las problemáticas que afectan su distrito:",
-         "name": "prob_riesgos_distrito",
+         "name": "problematicas_distrito",
          "required": True,
          "opciones": [
              "Problemas vecinales o conflictos entre vecinos",
@@ -619,26 +605,19 @@ if "seed_cargado" not in st.session_state:
              "Otro problema que considere importante",
              "No se observan estas problemáticas en el distrito",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan estas problemáticas en el distrito"),
-         "constraint_message": "Si marca 'No se observan', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Párrafo (texto largo)",
          "label": "Indique cuál es ese otro problema importante:",
-         "name": "prob_riesgos_otro",
+         "name": "problematicas_otro",
          "required": True,
          "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"selected(${{prob_riesgos_distrito}}, '{slugify_name('Otro problema que considere importante')}')"
-         },
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{problematicas_distrito}}, '{slugify_name('Otro problema que considere importante')}')"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "13. En relación con la oferta de servicios y oportunidades en su distrito (Inversión social), indique cuáles de las siguientes carencias identifica:",
-         "name": "inversion_social_carencias",
+         "name": "carencias_inversion_social",
          "required": True,
          "opciones": [
              "Falta de oferta educativa",
@@ -650,13 +629,12 @@ if "seed_cargado" not in st.session_state:
          "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Párrafo (texto largo)",
-         "label": "Indique cuál es ese otro problema importante:",
-         "name": "inversion_social_otro",
+         "label": "Indique cuál es esa otra carencia importante:",
+         "name": "carencias_inversion_social_otro",
          "required": True,
          "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"selected(${{inversion_social_carencias}}, '{slugify_name('Otro problema que considere importante')}')"},
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{carencias_inversion_social}}, '{slugify_name('Otro problema que considere importante')}')"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "14. En los casos en que se observa consumo de drogas en el distrito, indique dónde ocurre:",
@@ -667,16 +645,11 @@ if "seed_cargado" not in st.session_state:
              "Áreas privadas (viviendas, locales, espacios cerrados)",
              "No se observa consumo de drogas",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observa consumo de drogas"),
-         "constraint_message": "Si marca 'No se observa consumo de drogas', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "15. Indique las principales deficiencias de infraestructura vial que afectan su distrito:",
-         "name": "infra_vial_def",
+         "name": "infra_vial_deficiencias",
          "required": True,
          "opciones": [
              "Calles en mal estado",
@@ -696,25 +669,19 @@ if "seed_cargado" not in st.session_state:
              "Otro tipo de espacio",
              "No se observa",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"not(selected(${{consumo_drogas_donde}}, '{slugify_name('No se observa consumo de drogas')}'))",
-         "constraint": constraint_no_se_observa("No se observa"),
-         "constraint_message": "Si marca 'No se observa', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
          "label": "Indique cuál es ese otro tipo de espacio:",
-         "name": "puntos_venta_otro",
+         "name": "puntos_venta_drogas_otro",
          "required": True,
          "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
+         "appearance": None, "choice_filter": None,
          "relevant": f"selected(${{puntos_venta_drogas}}, '{slugify_name('Otro tipo de espacio')}')"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "17. Según su conocimiento u observación, indique si ha identificado situaciones de inseguridad asociadas al uso de los siguientes medios o modalidades de transporte en su distrito:",
-         "name": "transporte_inseguridad",
+         "name": "inseguridad_transporte",
          "required": True,
          "opciones": [
              "Transporte informal o no autorizado (taxis piratas)",
@@ -724,26 +691,20 @@ if "seed_cargado" not in st.session_state:
              "Otro tipo de situación relacionada con el transporte",
              "No se observa",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observa"),
-         "constraint_message": "Si marca 'No se observa', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
          "label": "Indique cuál es ese otro tipo de situación relacionada con el transporte:",
-         "name": "transporte_otro",
+         "name": "inseguridad_transporte_otro",
          "required": True,
          "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"selected(${{transporte_inseguridad}}, '{slugify_name('Otro tipo de situación relacionada con el transporte')}')"},
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{inseguridad_transporte}}, '{slugify_name('Otro tipo de situación relacionada con el transporte')}')"},
 
         # ---------------- Delitos (18–28) ----------------
         {"tipo_ui": "Selección múltiple",
          "label": "18. Seleccione los delitos que, según su conocimiento u observación, se presentan en el distrito:",
-         "name": "delitos_presentes",
+         "name": "delitos_lista",
          "required": True,
          "opciones": [
              "Disturbios en vía pública (riñas o agresiones)",
@@ -758,21 +719,15 @@ if "seed_cargado" not in st.session_state:
              "Otro delito",
              "No se observan delitos",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan delitos"),
-         "constraint_message": "Si marca 'No se observan delitos', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
          "label": "Indique cuál es ese otro delito:",
          "name": "delitos_otro",
          "required": True,
          "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"selected(${{delitos_presentes}}, '{slugify_name('Otro delito')}')"},
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{delitos_lista}}, '{slugify_name('Otro delito')}')"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "19. Según su conocimiento u observación, ¿de qué forma se presenta la venta de drogas en el distrito?",
@@ -785,20 +740,14 @@ if "seed_cargado" not in st.session_state:
              "No se observa venta de drogas",
              "Otro",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observa venta de drogas"),
-         "constraint_message": "Si marca 'No se observa venta de drogas', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro:",
-         "name": "venta_drogas_otro",
+         "label": "Indique cuál es ese otro modo de venta de drogas:",
+         "name": "venta_drogas_forma_otro",
          "required": True,
          "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
+         "appearance": None, "choice_filter": None,
          "relevant": f"selected(${{venta_drogas_forma}}, '{slugify_name('Otro')}')"},
 
         {"tipo_ui": "Selección múltiple",
@@ -808,15 +757,10 @@ if "seed_cargado" not in st.session_state:
          "opciones": [
              "Homicidios (muerte intencional de una persona)",
              "Personas heridas de forma intencional (heridos)",
-             "Femicios (homicidio de una mujer por razones de género)",
+             "Femicide (homicidio de una mujer por razones de género)",
              "No se observan delitos contra la vida",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan delitos contra la vida"),
-         "constraint_message": "Si marca 'No se observan delitos contra la vida', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "21. Delitos sexuales",
@@ -829,12 +773,7 @@ if "seed_cargado" not in st.session_state:
              "Acoso callejero (comentarios, gestos o conductas sexuales en espacios públicos)",
              "No se observan delitos sexuales",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan delitos sexuales"),
-         "constraint_message": "Si marca 'No se observan delitos sexuales', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "22. Asaltos",
@@ -847,12 +786,7 @@ if "seed_cargado" not in st.session_state:
              "Asalto a transporte público",
              "No se observan asaltos",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan asaltos"),
-         "constraint_message": "Si marca 'No se observan asaltos', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "23. Estafas",
@@ -868,12 +802,7 @@ if "seed_cargado" not in st.session_state:
              "Estafas con tarjetas (clonación, cargos no autorizados)",
              "No se observan estafas",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan estafas"),
-         "constraint_message": "Si marca 'No se observan estafas', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "24. Robo (Sustracción de artículos mediante la utilización de la fuerza)",
@@ -891,12 +820,7 @@ if "seed_cargado" not in st.session_state:
              "Robo de cable",
              "No se observan robos",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan robos"),
-         "constraint_message": "Si marca 'No se observan robos', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "25. Abandono de personas",
@@ -908,12 +832,7 @@ if "seed_cargado" not in st.session_state:
              "Abandono de incapaz",
              "No se observan situaciones de abandono",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan situaciones de abandono"),
-         "constraint_message": "Si marca 'No se observan situaciones de abandono', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "26. Explotación infantil",
@@ -924,12 +843,7 @@ if "seed_cargado" not in st.session_state:
              "Laboral",
              "No se observan",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan"),
-         "constraint_message": "Si marca 'No se observan', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "27. Delitos ambientales",
@@ -942,12 +856,7 @@ if "seed_cargado" not in st.session_state:
              "Extracción ilegal de material minero",
              "No se observan delitos ambientales",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan delitos ambientales"),
-         "constraint_message": "Si marca 'No se observan delitos ambientales', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
          "label": "28. Trata de personas",
@@ -958,12 +867,42 @@ if "seed_cargado" not in st.session_state:
              "Con fines sexuales",
              "No se observan situaciones de trata de personas",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": None,
-         "constraint": constraint_no_se_observa("No se observan situaciones de trata de personas"),
-         "constraint_message": "Si marca 'No se observan situaciones de trata de personas', no seleccione otras opciones."
-         },
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        # ---------------- Victimización — Apartado A: Violencia intrafamiliar (29–29.3) ----------------
+        {"tipo_ui": "Selección única",
+         "label": "29. Durante los últimos 12 meses, ¿usted o algún miembro de su hogar ha sido afectado por alguna situación de violencia intrafamiliar (violencia doméstica)?",
+         "name": "vi_12m",
+         "required": True,
+         "opciones": ["Sí", "No"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "29.1. ¿Qué tipo(s) de violencia intrafamiliar (violencia doméstica) se presentaron?",
+         "name": "vi_tipos",
+         "required": True,
+         "opciones": [
+             "Violencia psicológica (gritos, amenazas, humillaciones, maltratos, entre otros)",
+             "Violencia física (agresiones físicas, empujones, golpes, entre otros)",
+             "Violencia vicaria (uso de hijas, hijos u otras personas para causar daño emocional)",
+             "Violencia patrimonial (destrucción, retención o control de bienes, documentos o dinero)",
+             "Violencia sexual (actos de carácter sexual sin consentimiento)",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{CONSENT_SI}'"},
+
+        {"tipo_ui": "Selección única",
+         "label": "29.2 ¿En relación con la situación de violencia intrafamiliar indicada anteriormente, usted o algún miembro de su hogar solicitó medidas de protección?",
+         "name": "vi_medidas_proteccion",
+         "required": True,
+         "opciones": ["Sí", "No", "No recuerda"],
+         "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{CONSENT_SI}'"},
+
+        {"tipo_ui": "Selección única",
+         "label": "29.3. ¿Cómo valora el abordaje de la Fuerza Pública ante esta situación?",
+         "name": "vi_valoracion_fp",
+         "required": True,
+         "opciones": ["Excelente", "Bueno", "Regular", "Malo", "Muy malo"],
+         "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{CONSENT_SI}'"},
     ]
 
     st.session_state.preguntas = seed
@@ -1082,8 +1021,6 @@ else:
                 meta += f"  •  relevant: `{q['relevant']}`"
             if q.get("list_override"):
                 meta += f"  •  list_override: `{q['list_override']}`"
-            if q.get("constraint"):
-                meta += "  •  constraint: ✅"
             c1.caption(meta)
             if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
                 c1.caption("Opciones: " + ", ".join(q.get("opciones") or []))
@@ -1108,6 +1045,8 @@ else:
                 ne_appearance = st.text_input("Appearance", value=q.get("appearance") or "", key=f"e_app_{idx}")
                 ne_choice_filter = st.text_input("choice_filter (opcional)", value=q.get("choice_filter") or "", key=f"e_cf_{idx}")
                 ne_relevant = st.text_input("relevant (opcional)", value=q.get("relevant") or "", key=f"e_rel_{idx}")
+
+                # list_override NO se expone aquí para no romper matriz por accidente.
 
                 ne_opciones = q.get("opciones") or []
                 if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
@@ -1140,11 +1079,87 @@ else:
                 _rerun()
 
 # ------------------------------------------------------------------------------------------
+# Condicionales (panel)
+# ------------------------------------------------------------------------------------------
+st.subheader("🔀 Condicionales (mostrar / finalizar)")
+if not st.session_state.preguntas:
+    st.info("Agrega preguntas para definir condicionales.")
+else:
+    with st.expander("👁️ Mostrar pregunta si se cumple condición", expanded=False):
+        names = [q["name"] for q in st.session_state.preguntas]
+        labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
+
+        target = st.selectbox("Pregunta a mostrar (target)", options=names,
+                              format_func=lambda n: f"{n} — {labels_by_name[n]}")
+        src = st.selectbox("Depende de (source)", options=names,
+                           format_func=lambda n: f"{n} — {labels_by_name[n]}")
+        op = st.selectbox("Operador", options=["=", "selected"])
+        src_q = next((qq for qq in st.session_state.preguntas if qq["name"] == src), None)
+
+        vals = []
+        if src_q and src_q.get("opciones"):
+            vals = st.multiselect("Valores (usa texto, internamente se usará slug)", options=src_q["opciones"])
+            vals = [slugify_name(v) for v in vals]
+        else:
+            manual = st.text_input("Valor (si la pregunta no tiene opciones)")
+            vals = [slugify_name(manual)] if manual.strip() else []
+
+        if st.button("➕ Agregar regla de visibilidad"):
+            if target == src:
+                st.error("Target y Source no pueden ser la misma pregunta.")
+            elif not vals:
+                st.error("Indica al menos un valor.")
+            else:
+                st.session_state.reglas_visibilidad.append({"target": target, "src": src, "op": op, "values": vals})
+                st.success("Regla agregada.")
+                _rerun()
+
+        if st.session_state.reglas_visibilidad:
+            st.markdown("**Reglas de visibilidad actuales:**")
+            for i, r in enumerate(st.session_state.reglas_visibilidad):
+                st.write(f"- Mostrar **{r['target']}** si **{r['src']}** {r['op']} {r['values']}")
+                if st.button(f"Eliminar regla #{i+1}", key=f"del_vis_{i}"):
+                    del st.session_state.reglas_visibilidad[i]
+                    _rerun()
+
+    with st.expander("⏹️ Finalizar temprano si se cumple condición", expanded=False):
+        names = [q["name"] for q in st.session_state.preguntas]
+        labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
+        src2 = st.selectbox("Condición basada en", options=names,
+                            format_func=lambda n: f"{n} — {labels_by_name[n]}", key="final_src")
+        op2 = st.selectbox("Operador", options=["=", "selected", "!="], key="final_op")
+        src2_q = next((qq for qq in st.session_state.preguntas if qq["name"] == src2), None)
+
+        vals2 = []
+        if src2_q and src2_q.get("opciones"):
+            vals2 = st.multiselect("Valores (slug interno)", options=src2_q["opciones"], key="final_vals")
+            vals2 = [slugify_name(v) for v in vals2]
+        else:
+            manual2 = st.text_input("Valor (si no hay opciones)", key="final_manual")
+            vals2 = [slugify_name(manual2)] if manual2.strip() else []
+
+        if st.button("➕ Agregar regla de finalización"):
+            if not vals2:
+                st.error("Indica al menos un valor.")
+            else:
+                idx_src = next((i for i, qq in enumerate(st.session_state.preguntas) if qq["name"] == src2), 0)
+                st.session_state.reglas_finalizar.append({"src": src2, "op": op2, "values": vals2, "index_src": idx_src})
+                st.success("Regla agregada.")
+                _rerun()
+
+        if st.session_state.reglas_finalizar:
+            st.markdown("**Reglas de finalización actuales:**")
+            for i, r in enumerate(st.session_state.reglas_finalizar):
+                st.write(f"- Si **{r['src']}** {r['op']} {r['values']} ⇒ ocultar lo que sigue (efecto fin)")
+                if st.button(f"Eliminar regla fin #{i+1}", key=f"del_fin_{i}"):
+                    del st.session_state.reglas_finalizar[i]
+                    _rerun()
+
+# ------------------------------------------------------------------------------------------
 # Construcción XLSForm (Intro + Consentimiento + Páginas)
 # ------------------------------------------------------------------------------------------
 def _get_logo_media_name():
     return logo_media_name
-
 
 def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                       reglas_vis, reglas_fin):
@@ -1175,7 +1190,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     def add_q(q, idx):
         x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"])
 
-        # ✅ FIX MATRIZ: permitir forzar list_name compartido con list_override
+        # FIX MATRIZ: permitir forzar list_name compartido con list_override
         list_override = q.get("list_override")
         if list_override and isinstance(x_type, str):
             if x_type.startswith("select_one "):
@@ -1205,12 +1220,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         if rel_final:
             row["relevant"] = rel_final
 
-        # ✅ permitir constraint/constraint_message por pregunta (sin tocar lo demás)
-        if q.get("constraint"):
-            row["constraint"] = q["constraint"]
-            row["constraint_message"] = q.get("constraint_message") or "Selección inválida."
-
-        # constraints de placeholders solo si NO hay catálogo real
+        # Constraints placeholders SOLO si NO hay catálogo real (para no forzar "escoja un")
         if not _hay_catalogo_real():
             if q["name"] == "canton":
                 row["constraint"] = ". != '__pick_canton__'"
@@ -1235,7 +1245,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         {"type": "begin_group", "name": "p1_intro", "label": "Introducción", "appearance": "field-list"},
         {"type": "note", "name": "intro_logo", "label": form_title, "media::image": _get_logo_media_name()},
         {"type": "note", "name": "intro_texto", "label": INTRO_COMUNIDAD},
-        {"type": "end_group", "name": "p1_end"}
+        {"type": "end_group", "name": "p1_end"},
     ]
 
     # Página 2: Consentimiento
@@ -1247,27 +1257,26 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
     if idx_consent is not None:
         add_q(preguntas[idx_consent], idx_consent)
-        # Mantengo tu lógica de fin temprano
-        fin_conds.append((idx_consent, f"${{consentimiento}}='{slugify_name('No')}'"))
-
     survey_rows.append({"type": "end_group", "name": "p2_consentimiento_end"})
 
-    # ✅ FIX 1: Página final SOLO si NO acepta (para que pueda avanzar y enviar)
+    # ✅ Página final si NO acepta (para que pueda “Enviar” sin seguir a las demás)
     survey_rows.append({
         "type": "begin_group",
-        "name": "p3_fin_no",
-        "label": "Fin",
+        "name": "p_fin_no",
+        "label": "Finalización",
         "appearance": "field-list",
-        "relevant": f"${{consentimiento}}='{slugify_name('No')}'"
+        "relevant": f"${{consentimiento}}='{CONSENT_NO}'"
     })
     survey_rows.append({
         "type": "note",
-        "name": "fin_no_note",
-        "label": "Gracias. Al no aceptar el consentimiento informado, la encuesta finaliza aquí."
+        "name": "fin_no_texto",
+        "label": "Gracias. Al no aceptar participar, la encuesta finaliza en este punto."
     })
-    survey_rows.append({"type": "end_group", "name": "p3_fin_no_end"})
+    survey_rows.append({"type": "end_group", "name": "p_fin_no_end"})
 
-    # Sets por página
+    # Sets por página (desde aquí, todo se muestra SOLO si consentimiento = Sí)
+    rel_si = f"${{consentimiento}}='{CONSENT_SI}'"
+
     p_demograficos = {"canton", "distrito", "edad_rango", "genero", "escolaridad", "relacion_zona"}
 
     p_percepcion = {
@@ -1294,23 +1303,23 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     }
 
     p_riesgos = {
-        "prob_riesgos_distrito",
-        "prob_riesgos_otro",
-        "inversion_social_carencias",
-        "inversion_social_otro",
+        "problematicas_distrito",
+        "problematicas_otro",
+        "carencias_inversion_social",
+        "carencias_inversion_social_otro",
         "consumo_drogas_donde",
-        "infra_vial_def",
+        "infra_vial_deficiencias",
         "puntos_venta_drogas",
-        "puntos_venta_otro",
-        "transporte_inseguridad",
-        "transporte_otro",
+        "puntos_venta_drogas_otro",
+        "inseguridad_transporte",
+        "inseguridad_transporte_otro",
     }
 
     p_delitos = {
-        "delitos_presentes",
+        "delitos_lista",
         "delitos_otro",
         "venta_drogas_forma",
-        "venta_drogas_otro",
+        "venta_drogas_forma_otro",
         "delitos_vida",
         "delitos_sexuales",
         "asaltos",
@@ -1322,63 +1331,45 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "trata_personas",
     }
 
+    p_vict_vi = {"vi_12m", "vi_tipos", "vi_medidas_proteccion", "vi_valoracion_fp"}
+
     def add_page(group_name, page_label, names_set, intro_note_text: str = None,
                  group_appearance: str = "field-list", group_relevant: str = None):
-        row_begin = {"type": "begin_group", "name": group_name, "label": page_label, "appearance": group_appearance}
+        row = {"type": "begin_group", "name": group_name, "label": page_label, "appearance": group_appearance}
         if group_relevant:
-            row_begin["relevant"] = group_relevant
-        survey_rows.append(row_begin)
+            row["relevant"] = group_relevant
+        survey_rows.append(row)
 
         if intro_note_text:
-            intro_row = {"type": "note", "name": f"{group_name}_intro", "label": intro_note_text}
+            note = {"type": "note", "name": f"{group_name}_intro", "label": intro_note_text}
             if group_relevant:
-                intro_row["relevant"] = group_relevant
-            survey_rows.append(intro_row)
+                note["relevant"] = group_relevant
+            survey_rows.append(note)
 
         for i, qq in enumerate(preguntas):
             if qq["name"] in names_set:
                 add_q(qq, i)
 
-        row_end = {"type": "end_group", "name": f"{group_name}_end"}
-        if group_relevant:
-            row_end["relevant"] = group_relevant
-        survey_rows.append(row_end)
+        survey_rows.append({"type": "end_group", "name": f"{group_name}_end"})
 
-    # ✅ FIX 1: Todas las páginas “reales” solo si consentimiento = Sí
-    rel_si = f"${{consentimiento}}='{slugify_name('Sí')}'"
+    add_page("p3_demograficos", "I. DATOS DEMOGRÁFICOS", p_demograficos, intro_note_text=None,
+             group_appearance="field-list", group_relevant=rel_si)
 
-    add_page("p4_demograficos", "I. DATOS DEMOGRÁFICOS", p_demograficos, intro_note_text=None, group_appearance="field-list", group_relevant=rel_si)
+    add_page("p4_percepcion_distrito", "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO", p_percepcion,
+             intro_note_text=INTRO_PERCEPCION_DISTRITO, group_appearance="field-list", group_relevant=rel_si)
 
-    add_page(
-        "p5_percepcion_distrito",
-        "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO",
-        p_percepcion,
-        intro_note_text=INTRO_PERCEPCION_DISTRITO,
-        group_appearance="field-list",
-        group_relevant=rel_si
-    )
+    add_page("p5_riesgos_iii", "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL", p_riesgos,
+             intro_note_text=INTRO_RIESGOS_III, group_appearance="field-list", group_relevant=rel_si)
 
-    # ✅ FIX 2: Página III (Riesgos) separada
-    add_page(
-        "p6_riesgos",
-        "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL",
-        p_riesgos,
-        intro_note_text=INTRO_RIESGOS,
-        group_appearance="field-list",
-        group_relevant=rel_si
-    )
+    # ✅ Página SOLO Delitos (título Delitos + intro + preguntas 18–28)
+    add_page("p6_delitos", "Delitos", p_delitos,
+             intro_note_text=INTRO_DELITOS, group_appearance="field-list", group_relevant=rel_si)
 
-    # ✅ FIX 2: Página “Delitos” separada (solo título DELITOS + intro + preguntas 18–28)
-    add_page(
-        "p7_delitos",
-        "Delitos",
-        p_delitos,
-        intro_note_text=INTRO_DELITOS,
-        group_appearance="field-list",
-        group_relevant=rel_si
-    )
+    # ✅ Página Victimización (29–29.3)
+    add_page("p7_vict_vi", "Victimización — Apartado A: Violencia intrafamiliar", p_vict_vi,
+             intro_note_text=INTRO_VICT_VI, group_appearance="field-list", group_relevant=rel_si)
 
-    # ✅ Encapsular matriz 9 en table-list (ya comparten list_override)
+    # Encapsular matriz 9 en table-list (ya comparten list_override)
     def _postprocesar_matriz_table_list(df_survey: pd.DataFrame) -> pd.DataFrame:
         matriz_names = [
             "seg_discotecas_bares",
@@ -1397,6 +1388,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         idxs = df_survey.index[df_survey["name"].isin(matriz_names)].tolist()
         if not idxs:
             return df_survey
+
         start = min(idxs)
         end = max(idxs)
 
@@ -1414,7 +1406,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
         return pd.concat([top, pd.DataFrame([begin_row]), mid, pd.DataFrame([end_row]), bot], ignore_index=True)
 
-    # Catálogo a choices
+    # Choices del catálogo (filtrando placeholders si hay catálogo real)
     _asegurar_placeholders_catalogo()
     catalog_rows = [dict(r) for r in st.session_state.choices_ext_rows]
     catalog_rows = _filtrar_placeholders_si_hay_catalogo(catalog_rows)
@@ -1423,13 +1415,15 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
     # DataFrames
     survey_cols_all = set().union(*[r.keys() for r in survey_rows])
-    survey_cols = [c for c in ["type", "name", "label", "required", "appearance", "choice_filter",
-                               "relevant", "constraint", "constraint_message", "media::image"] if c in survey_cols_all]
+    survey_cols = [c for c in [
+        "type", "name", "label", "required", "appearance", "choice_filter",
+        "relevant", "constraint", "constraint_message", "media::image"
+    ] if c in survey_cols_all]
     for k in sorted(survey_cols_all):
         if k not in survey_cols:
             survey_cols.append(k)
-    df_survey = pd.DataFrame(survey_rows, columns=survey_cols)
 
+    df_survey = pd.DataFrame(survey_rows, columns=survey_cols)
     df_survey = _postprocesar_matriz_table_list(df_survey)
 
     choices_cols_all = set()
@@ -1445,11 +1439,10 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "form_title": form_title,
         "version": version,
         "default_language": idioma,
-        "style": "pages"
+        "style": "pages",
     }], columns=["form_title", "version", "default_language", "style"])
 
     return df_survey, df_choices, df_settings
-
 
 def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: str):
     buffer = BytesIO()
