@@ -14,8 +14,10 @@
 # - MEJORA: no mostrar "— escoja un cantón —" cuando ya hay catálogo real
 # - FIX MATRIZ (table-list): todas las filas comparten el MISMO list_name (list_override)
 # - FIX: Página "Delitos" separada (solo título Delitos + intro + preguntas 18–28)
-# - NUEVO: Página Victimización — Apartado B (30–30.4)
-# - ✅ AJUSTE SOLICITADO: 30.1 ahora se muestra ORDENADO por categorías (A/B/C/D) con separadores
+# - FIX NUEVO:
+#     - Opciones "No se observa / No se observan ..." en select_multiple son EXCLUSIVAS
+#     - Página nueva: Victimización — Apartado B (30–30.4)
+#     - 30.1 ordenada por categorías A/B/C/D sin campos de texto extras
 # ==========================================================================================
 
 import re
@@ -164,7 +166,7 @@ def _append_choice_unique(row: Dict):
 
 def _asegurar_placeholders_catalogo():
     """
-    Survey123 exige que existan list_canton/list_distrito en choices si se usan en survey.
+    FIX: Survey123 exige que existan list_canton/list_distrito en choices si se usan en survey.
     Esto garantiza placeholders aun cuando el usuario NO agregue lotes.
     """
     st.session_state.choices_extra_cols.update({"canton_key", "any"})
@@ -352,7 +354,7 @@ INTRO_DELITOS = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Victimización — Apartado A: Violencia intrafamiliar (intro) — página
+# Victimización — Apartado A: Violencia intrafamiliar (intro) — página nueva
 # ------------------------------------------------------------------------------------------
 INTRO_VICT_VI = (
     "A continuación, se presentan algunas preguntas relacionadas con situaciones de violencia intrafamiliar, "
@@ -362,14 +364,14 @@ INTRO_VICT_VI = (
 )
 
 # ------------------------------------------------------------------------------------------
-# Victimización — Apartado B: Otros delitos (intro) — página NUEVA
+# Victimización — Apartado B: Otros delitos (intro) — página nueva
 # ------------------------------------------------------------------------------------------
 INTRO_VICT_OTROS = (
-    "Las siguientes preguntas se refieren a otros delitos distintos a la violencia intrafamiliar, que pudieron "
-    "haber afectado a usted o a algún miembro de su hogar en el distrito durante los últimos 12 meses. Estas "
-    "preguntas buscan conocer la experiencia directa de victimización, así como aspectos relacionados con la "
-    "denuncia y las características generales del hecho. La información brindada no constituye denuncia formal "
-    "ni confirmación de hechos delictivos."
+    "Las siguientes preguntas se refieren a otros delitos distintos a la violencia intrafamiliar, "
+    "que pudieron haber afectado a usted o a algún miembro de su hogar en el distrito durante los últimos 12 meses. "
+    "Estas preguntas buscan conocer la experiencia directa de victimización, así como aspectos relacionados con la "
+    "denuncia y las características generales del hecho. La información brindada no constituye denuncia formal ni "
+    "confirmación de hechos delictivos."
 )
 
 # ------------------------------------------------------------------------------------------
@@ -381,17 +383,6 @@ if "seed_cargado" not in st.session_state:
 
     # LISTA COMPARTIDA para la matriz (table-list)
     LISTA_MATRIZ_SEG = "list_matriz_seguridad"
-
-    # Valores (slug) para pregunta 30
-    V30_NO = slugify_name("NO")
-    V30_SI_DEN = slugify_name("Sí, y denuncié")
-    V30_SI_NODEN = slugify_name("Sí, pero no denuncié.")
-
-    # Relevante común para 30.1 en cualquiera de sus partes
-    REL_30_1 = xlsform_or_expr([
-        f"${{vict_otrodel_12m}}='{V30_SI_DEN}'",
-        f"${{vict_otrodel_12m}}='{V30_SI_NODEN}'",
-    ])
 
     seed = [
         # ---------------- Consentimiento ----------------
@@ -640,7 +631,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"selected(${{problematicas_distrito}}, '{slugify_name('Otro problema que considere importante')}')"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "13. En atención a la oferta de servicios y oportunidades en su distrito, indique cuáles de las siguientes carencias identifica:",
+         "label": "13. En relación con la oferta de servicios y oportunidades en su distrito (Inversión social), indique cuáles de las siguientes carencias identifica:",
          "name": "carencias_inversion_social",
          "required": True,
          "opciones": [
@@ -657,7 +648,8 @@ if "seed_cargado" not in st.session_state:
          "name": "carencias_inversion_social_otro",
          "required": True,
          "opciones": [],
-         "appearance": None, "choice_filter": None, "relevant": f"selected(${{carencias_inversion_social}}, '{slugify_name('Otro problema que considere importante')}')"},
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{carencias_inversion_social}}, '{slugify_name('Otro problema que considere importante')}')"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "14. En los casos en que se observa consumo de drogas en el distrito, indique dónde ocurre:",
@@ -811,7 +803,7 @@ if "seed_cargado" not in st.session_state:
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
 
-        {"tipo_ui": "Selección múltple",
+        {"tipo_ui": "Selección múltiple",
          "label": "23. Estafas",
          "name": "estafas",
          "required": True,
@@ -930,34 +922,16 @@ if "seed_cargado" not in st.session_state:
         # ---------------- Victimización — Apartado B: Otros delitos (30–30.4) ----------------
         {"tipo_ui": "Selección única",
          "label": "30. Durante los últimos 12 meses, ¿usted o algún miembro de su hogar fue afectado por algún delito?",
-         "name": "vict_otrodel_12m",
+         "name": "vict_delito_12m",
          "required": True,
-         "opciones": ["NO", "Sí, y denuncié", "Sí, pero no denuncié."],
+         "opciones": ["NO", "Sí, y denuncié", "Sí, pero no denuncié"],
          "appearance": None, "choice_filter": None, "relevant": None},
 
-        # ✅ 30.1 ORDENADO POR CATEGORÍAS (A/B/C/D) CON SEPARADORES (notes)
-        {"tipo_ui": "Párrafo (texto largo)",
-         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar?\n\nMarque todas las opciones que correspondan.",
-         "name": "vict_30_1_intro",
-         "required": False,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": REL_30_1},
-
-        {"tipo_ui": "Párrafo (texto largo)",
-         "label": "A. Robo y Asalto (Violencia y Fuerza)",
-         "name": "vict_30_1_a_hdr",
-         "required": False,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": REL_30_1},
-
+        # 30.1 (ordenada por categorías; NO se agregan cajas de texto)
         {"tipo_ui": "Selección múltiple",
-         "label": "Seleccione las opciones que correspondan:",
-         "name": "vict_30_1_a",
-         "required": False,
+         "label": "30.1A. A. Robo y Asalto (Violencia y Fuerza) — Seleccione las opciones que correspondan:",
+         "name": "vict_301_robo_asalto",
+         "required": True,
          "opciones": [
              "Asalto a mano armada (amenaza con arma o uso de violencia) en la calle o espacio público.",
              "Asalto en transporte público (bus, taxi, metro, etc.).",
@@ -966,68 +940,39 @@ if "seed_cargado" not in st.session_state:
              "Robo o intento de robo con fuerza a su vivienda (ej. forzar una puerta o ventana).",
              "Robo o intento de robo con fuerza a su comercio o negocio.",
          ],
-         "appearance": "columns",
-         "choice_filter": None,
-         "relevant": REL_30_1},
-
-        {"tipo_ui": "Párrafo (texto largo)",
-         "label": "B. Hurto y Daños (Sin Violencia Directa)",
-         "name": "vict_30_1_b_hdr",
-         "required": False,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": REL_30_1},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "Seleccione las opciones que correspondan:",
-         "name": "vict_30_1_b",
-         "required": False,
+         "label": "30.1B. B. Hurto y Daños (Sin Violencia Directa) — Seleccione las opciones que correspondan:",
+         "name": "vict_301_hurto_danos",
+         "required": True,
          "opciones": [
              "Hurto de su cartera, bolso o celular (sin que se diera cuenta, por descuido).",
              "Daños a su propiedad (ej. grafitis, rotura de cristales, destrucción de cercas).",
              "Receptación (Alguien en su hogar compró o recibió un artículo que luego supo que era robado).",
+             "Pérdida de artículos (celular, bicicleta, etc.) por descuido.",
          ],
-         "appearance": "columns",
-         "choice_filter": None,
-         "relevant": REL_30_1},
-
-        {"tipo_ui": "Párrafo (texto largo)",
-         "label": "C. Fraude y Engaño (Estafas)",
-         "name": "vict_30_1_c_hdr",
-         "required": False,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": REL_30_1},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "Seleccione las opciones que correspondan:",
-         "name": "vict_30_1_c",
-         "required": False,
+         "label": "30.1C. C. Fraude y Engaño (Estafas) — Seleccione las opciones que correspondan:",
+         "name": "vict_301_estafas",
+         "required": True,
          "opciones": [
              "Estafa telefónica (ej. llamadas para pedir dinero o datos personales).",
              "Estafa o fraude informático (ej. a través de internet, redes sociales o correo electrónico).",
              "Fraude con tarjetas bancarias (clonación o uso no autorizado).",
              "Ser víctima de billetes o documentos falsos.",
          ],
-         "appearance": "columns",
-         "choice_filter": None,
-         "relevant": REL_30_1},
-
-        {"tipo_ui": "Párrafo (texto largo)",
-         "label": "D. Otros Delitos y Problemas Personales",
-         "name": "vict_30_1_d_hdr",
-         "required": False,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": REL_30_1},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "Seleccione las opciones que correspondan:",
-         "name": "vict_30_1_d",
-         "required": False,
+         "label": "30.1D. D. Otros Delitos y Problemas Personales — Seleccione las opciones que correspondan:",
+         "name": "vict_301_otros",
+         "required": True,
          "opciones": [
              "Extorsión (intimidación o amenaza para obtener dinero u otro beneficio).",
              "Maltrato animal (si usted o alguien de su hogar fue testigo o su mascota fue la víctima).",
@@ -1036,22 +981,12 @@ if "seed_cargado" not in st.session_state:
              "Lesiones personales (haber sido herido en una riña o agresión).",
              "Otro.",
          ],
-         "appearance": "columns",
-         "choice_filter": None,
-         "relevant": REL_30_1},
-
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro delito o situación:",
-         "name": "vict_otrodel_otro_txt",
-         "required": True,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"selected(${{vict_30_1_d}}, '{slugify_name('Otro.')}')"},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "30.2 En caso de NO haber realizado la denuncia, indique ¿cuál o cuáles fueron el motivo?",
-         "name": "vict_otrodel_motivos_nodenuncia",
+         "name": "vict_302_motivos_no_denuncia",
          "required": True,
          "opciones": [
              "Distancia o dificultad de acceso a oficinas para denunciar",
@@ -1064,22 +999,12 @@ if "seed_cargado" not in st.session_state:
              "Desconfianza en las autoridades o en el proceso de denuncia",
              "Otro motivo:",
          ],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"${{vict_otrodel_12m}}='{V30_SI_NODEN}'"},
+         "appearance": None, "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}='{slugify_name('Sí, pero no denuncié')}'"},
 
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro motivo:",
-         "name": "vict_otrodel_motivo_otro_txt",
-         "required": True,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"selected(${{vict_otrodel_motivos_nodenuncia}}, '{slugify_name('Otro motivo:')}')"},
-
-        {"tipo_ui": "Selección única",
-         "label": "30.3 ¿Tiene conocimiento sobre el horario en el cual se presentó el hecho o situación que le afectó a usted o a un familiar?",
-         "name": "vict_otrodel_horario",
+        {"tipo_ui": "Selección múltiple",
+         "label": "30.3 ¿Tiene conocimiento sobre el horario en el cual se presentó el hecho o situación que le afectó a usted o un familiar?",
+         "name": "vict_303_horario",
          "required": True,
          "opciones": [
              "00:00 – 02:59 (madrugada)",
@@ -1092,13 +1017,12 @@ if "seed_cargado" not in st.session_state:
              "21:00 – 23:59 (noche)",
              "Desconocido",
          ],
-         "appearance": "columns",
-         "choice_filter": None,
-         "relevant": REL_30_1},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "30.4 ¿Cuál fue la forma o modo en que ocurrió la situación que afectó a usted o a algún miembro de su hogar?",
-         "name": "vict_otrodel_modo",
+         "name": "vict_304_modo",
          "required": True,
          "opciones": [
              "Arma blanca (cuchillo, machete, tijeras).",
@@ -1112,24 +1036,9 @@ if "seed_cargado" not in st.session_state:
              "Otro.",
              "No sabe / No recuerda",
          ],
-         "appearance": "columns",
-         "choice_filter": None,
-         "relevant": REL_30_1},
-
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál fue ese otro modo:",
-         "name": "vict_otrodel_modo_otro_txt",
-         "required": True,
-         "opciones": [],
-         "appearance": None,
-         "choice_filter": None,
-         "relevant": f"selected(${{vict_otrodel_modo}}, '{slugify_name('Otro.')}')"},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
     ]
-
-    # FIX por si alguien copia/pega y aparece un typo "Selección múltple" (seguridad)
-    for q in seed:
-        if q.get("tipo_ui") == "Selección múltple":
-            q["tipo_ui"] = "Selección múltiple"
 
     st.session_state.preguntas = seed
     st.session_state.seed_cargado = True
@@ -1411,6 +1320,38 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         if cond:
             fin_conds.append((r["index_src"], cond))
 
+    def _aplicar_exclusividad_no_observa(row: Dict, q: Dict):
+        """
+        FIX: Si un select_multiple incluye opción tipo:
+        - "No se observa"
+        - "No se observan ..."
+        - "No se observa ..."
+        entonces esa opción debe ser EXCLUSIVA (no permitir combinar con otras).
+        """
+        if q.get("tipo_ui") != "Selección múltiple":
+            return
+
+        opts = q.get("opciones") or []
+        if not opts:
+            return
+
+        # Detecta una opción que empiece con "No se observa" o "No se observan"
+        exclusivas = [o for o in opts if str(o).strip().lower().startswith("no se observa")]
+        if not exclusivas:
+            exclusivas = [o for o in opts if str(o).strip().lower().startswith("no se observan")]
+        if not exclusivas:
+            return
+
+        # Tomamos la primera coincidencia
+        ex_label = exclusivas[0]
+        ex_slug = slugify_name(ex_label)
+
+        # Constraint: si se selecciona ex_slug, entonces count-selected debe ser 1
+        # not( selected(${q}, 'ex') and count-selected(${q}) > 1 )
+        nm = q["name"]
+        row["constraint"] = f"not(selected(${{{nm}}}, '{ex_slug}') and count-selected(${{{nm}}})>1)"
+        row["constraint_message"] = f"Si selecciona “{ex_label}”, no puede marcar otras opciones."
+
     def add_q(q, idx):
         x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"])
 
@@ -1444,7 +1385,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         if rel_final:
             row["relevant"] = rel_final
 
-        # Constraints placeholders SOLO si NO hay catálogo real
+        # Constraints placeholders SOLO si NO hay catálogo real (para no forzar "escoja un")
         if not _hay_catalogo_real():
             if q["name"] == "canton":
                 row["constraint"] = ". != '__pick_canton__'"
@@ -1452,6 +1393,9 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
             if q["name"] == "distrito":
                 row["constraint"] = ". != '__pick_distrito__'"
                 row["constraint_message"] = "Seleccione un distrito válido."
+
+        # ✅ FIX EXCLUSIVIDAD "No se observa / No se observan..."
+        _aplicar_exclusividad_no_observa(row, q)
 
         survey_rows.append(row)
 
@@ -1483,7 +1427,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         add_q(preguntas[idx_consent], idx_consent)
     survey_rows.append({"type": "end_group", "name": "p2_consentimiento_end"})
 
-    # Página final si NO acepta
+    # ✅ Página final si NO acepta (para que pueda “Enviar” sin seguir a las demás)
     survey_rows.append({
         "type": "begin_group",
         "name": "p_fin_no",
@@ -1557,20 +1501,15 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
     p_vict_vi = {"vi_12m", "vi_tipos", "vi_medidas_proteccion", "vi_valoracion_fp"}
 
-    # ✅ NUEVO: Apartado B (30–30.4) (incluye los headers y el intro)
     p_vict_otros = {
-        "vict_otrodel_12m",
-        "vict_30_1_intro",
-        "vict_30_1_a_hdr", "vict_30_1_a",
-        "vict_30_1_b_hdr", "vict_30_1_b",
-        "vict_30_1_c_hdr", "vict_30_1_c",
-        "vict_30_1_d_hdr", "vict_30_1_d",
-        "vict_otrodel_otro_txt",
-        "vict_otrodel_motivos_nodenuncia",
-        "vict_otrodel_motivo_otro_txt",
-        "vict_otrodel_horario",
-        "vict_otrodel_modo",
-        "vict_otrodel_modo_otro_txt",
+        "vict_delito_12m",
+        "vict_301_robo_asalto",
+        "vict_301_hurto_danos",
+        "vict_301_estafas",
+        "vict_301_otros",
+        "vict_302_motivos_no_denuncia",
+        "vict_303_horario",
+        "vict_304_modo",
     }
 
     def add_page(group_name, page_label, names_set, intro_note_text: str = None,
@@ -1601,15 +1540,15 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     add_page("p5_riesgos_iii", "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL", p_riesgos,
              intro_note_text=INTRO_RIESGOS_III, group_appearance="field-list", group_relevant=rel_si)
 
-    # Página SOLO Delitos (título Delitos + intro + preguntas 18–28)
+    # ✅ Página SOLO Delitos (título Delitos + intro + preguntas 18–28)
     add_page("p6_delitos", "Delitos", p_delitos,
              intro_note_text=INTRO_DELITOS, group_appearance="field-list", group_relevant=rel_si)
 
-    # Página Victimización A (29–29.3)
+    # ✅ Página Victimización A (29–29.3)
     add_page("p7_vict_vi", "Victimización — Apartado A: Violencia intrafamiliar", p_vict_vi,
              intro_note_text=INTRO_VICT_VI, group_appearance="field-list", group_relevant=rel_si)
 
-    # Página Victimización B (30–30.4)
+    # ✅ Página Victimización B (30–30.4)
     add_page("p8_vict_otros", "Victimización — Apartado B: Victimización por otros delitos", p_vict_otros,
              intro_note_text=INTRO_VICT_OTROS, group_appearance="field-list", group_relevant=rel_si)
 
@@ -1650,7 +1589,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
         return pd.concat([top, pd.DataFrame([begin_row]), mid, pd.DataFrame([end_row]), bot], ignore_index=True)
 
-    # Choices del catálogo
+    # Choices del catálogo (filtrando placeholders si hay catálogo real)
     _asegurar_placeholders_catalogo()
     catalog_rows = [dict(r) for r in st.session_state.choices_ext_rows]
     catalog_rows = _filtrar_placeholders_si_hay_catalogo(catalog_rows)
