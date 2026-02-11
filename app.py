@@ -956,8 +956,7 @@ if "seed_cargado" not in st.session_state:
 
         # 30.1 (ordenada por categorías; NO se agregan cajas de texto)
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? ",
-         "label": "30.1 A. Robo y Asalto (Violencia y Fuerza) — Seleccione las opciones que correspondan:",
+         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? A. Robo y Asalto (Violencia y Fuerza) — Seleccione las opciones que correspondan:",
          "name": "vict_301_robo_asalto",
          "required": True,
          "opciones": [
@@ -972,7 +971,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 B. Hurto y Daños (Sin Violencia Directa) — Seleccione las opciones que correspondan:",
+         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? B. Hurto y Daños (Sin Violencia Directa) — Seleccione las opciones que correspondan:",
          "name": "vict_301_hurto_danos",
          "required": True,
          "opciones": [
@@ -985,7 +984,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 C. Fraude y Engaño (Estafas) — Seleccione las opciones que correspondan:",
+         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? C. Fraude y Engaño (Estafas) — Seleccione las opciones que correspondan:",
          "name": "vict_301_estafas",
          "required": True,
          "opciones": [
@@ -998,7 +997,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 D. Otros Delitos y Problemas Personales — Seleccione las opciones que correspondan:",
+         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? D. Otros Delitos y Problemas Personales — Seleccione las opciones que correspondan:",
          "name": "vict_301_otros",
          "required": True,
          "opciones": [
@@ -1990,4 +1989,5 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
 
