@@ -974,7 +974,8 @@ if "seed_cargado" not in st.session_state:
 
         # ✅ 30.1 orden visual (solo formato del texto, misma información)
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar?           A. Robo y Asalto (Violencia y fuerza). Seleccione las opciones que correspondan:",
+         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar?\n\nA. Robo y Asalto (Violencia y fuerza).\nSeleccione las opciones que correspondan:",
+
          "name": "vict_301_robo_asalto",
          "required": True,
          "opciones": [
@@ -2043,5 +2044,6 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
 
 
