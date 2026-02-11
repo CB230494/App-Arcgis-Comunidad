@@ -21,6 +21,11 @@
 # - NUEVO (penúltima + última página):
 #     - Página: Confianza Policial (31–41) + intro
 #     - Página: Propuestas ciudadanas para la mejora de la seguridad (42–46) + intro
+#
+# ✅ AJUSTES PEDIDOS (SIN CAMBIOS INNECESARIOS):
+#   1) “Otro” habilita texto en: 30.1(D), 30.2, 30.4
+#   2) 30.1 se ordena visualmente (solo formato del texto)
+#   3) Texto/encabezado de la MATRIZ 9 ahora es editable en la app (Textos fijos)
 # ==========================================================================================
 
 import re
@@ -152,6 +157,19 @@ if "reglas_visibilidad" not in st.session_state:
     st.session_state.reglas_visibilidad = []
 if "reglas_finalizar" not in st.session_state:
     st.session_state.reglas_finalizar = []
+
+# ✅ Textos fijos editables (solo lo que pediste: la matriz 9)
+if "textos_fijos" not in st.session_state:
+    st.session_state.textos_fijos = {
+        "matriz_9_label": "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito."
+    }
+
+with st.expander("✏️ Textos fijos (editables)", expanded=False):
+    st.caption("Esto es para editar textos que NO son preguntas individuales (por ejemplo, encabezados internos como la Matriz 9).")
+    st.session_state.textos_fijos["matriz_9_label"] = st.text_input(
+        "Texto del encabezado de la Matriz 9",
+        value=st.session_state.textos_fijos.get("matriz_9_label", "")
+    )
 
 # ------------------------------------------------------------------------------------------
 # Catálogo manual por lotes: Cantón → Distritos
@@ -954,9 +972,9 @@ if "seed_cargado" not in st.session_state:
          "opciones": ["NO", "Sí, y denuncié", "Sí, pero no denuncié"],
          "appearance": None, "choice_filter": None, "relevant": None},
 
-        # 30.1 (ordenada por categorías; NO se agregan cajas de texto)
+        # ✅ 30.1 orden visual (solo formato del texto, misma información)
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? A. Robo y Asalto (Violencia y Fuerza) — Seleccione las opciones que correspondan:",
+         "label": "30.1 A. Robo y Asalto (Violencia y fuerza)\nSeleccione las opciones que correspondan:",
          "name": "vict_301_robo_asalto",
          "required": True,
          "opciones": [
@@ -971,7 +989,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? B. Hurto y Daños (Sin Violencia Directa) — Seleccione las opciones que correspondan:",
+         "label": "30.1 B. Hurto y Daños (Sin violencia directa)\nSeleccione las opciones que correspondan:",
          "name": "vict_301_hurto_danos",
          "required": True,
          "opciones": [
@@ -984,7 +1002,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? C. Fraude y Engaño (Estafas) — Seleccione las opciones que correspondan:",
+         "label": "30.1 C. Fraude y Engaño (Estafas)\nSeleccione las opciones que correspondan:",
          "name": "vict_301_estafas",
          "required": True,
          "opciones": [
@@ -997,7 +1015,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar? D. Otros Delitos y Problemas Personales — Seleccione las opciones que correspondan:",
+         "label": "30.1 D. Otros delitos y problemas personales\nSeleccione las opciones que correspondan:",
          "name": "vict_301_otros",
          "required": True,
          "opciones": [
@@ -1010,6 +1028,16 @@ if "seed_cargado" not in st.session_state:
          ],
          "appearance": "columns", "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
+
+        # ✅ “Otro.” en 30.1(D) -> texto
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "30.1 D.1. Indique cuál fue ese otro delito o situación:",
+         "name": "vict_301_otros_detalle",
+         "required": True,
+         "opciones": [],
+         "appearance": "multiline",
+         "choice_filter": None,
+         "relevant": f"selected(${{vict_301_otros}}, '{slugify_name('Otro.')}')"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "30.2 En caso de NO haber realizado la denuncia, indique ¿cuál o cuáles fueron el motivo?",
@@ -1028,6 +1056,16 @@ if "seed_cargado" not in st.session_state:
          ],
          "appearance": None, "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}='{slugify_name('Sí, pero no denuncié')}'"},
+
+        # ✅ “Otro motivo:” en 30.2 -> texto
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "30.2.1 Indique cuál fue ese otro motivo:",
+         "name": "vict_302_motivos_no_denuncia_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": "multiline",
+         "choice_filter": None,
+         "relevant": f"selected(${{vict_302_motivos_no_denuncia}}, '{slugify_name('Otro motivo:')}')"},
 
         {"tipo_ui": "Selección múltiple",
          "label": "30.3 ¿Tiene conocimiento sobre el horario en el cual se presentó el hecho o situación que le afectó a usted o un familiar?",
@@ -1065,6 +1103,16 @@ if "seed_cargado" not in st.session_state:
          ],
          "appearance": "columns", "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
+
+        # ✅ “Otro.” en 30.4 -> texto
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "30.4.1 Indique cuál fue ese otro modo:",
+         "name": "vict_304_modo_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": "multiline",
+         "choice_filter": None,
+         "relevant": f"selected(${{vict_304_modo}}, '{slugify_name('Otro.')}')"},
 
         # ---------------- Confianza Policial (31–41) ----------------
         {"tipo_ui": "Selección única",
@@ -1318,6 +1366,7 @@ with st.sidebar:
             "reglas_finalizar": st.session_state.reglas_finalizar,
             "choices_ext_rows": st.session_state.choices_ext_rows,
             "choices_extra_cols": list(st.session_state.choices_extra_cols),
+            "textos_fijos": st.session_state.textos_fijos,  # ✅
         }
         jbuf = BytesIO(json.dumps(proj, ensure_ascii=False, indent=2).encode("utf-8"))
         st.download_button(
@@ -1338,6 +1387,7 @@ with st.sidebar:
             st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
             st.session_state.choices_ext_rows = list(data.get("choices_ext_rows", []))
             st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
+            st.session_state.textos_fijos = dict(data.get("textos_fijos", st.session_state.textos_fijos))  # ✅
 
             _asegurar_placeholders_catalogo()
             _rerun()
@@ -1671,7 +1721,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         add_q(preguntas[idx_consent], idx_consent)
     survey_rows.append({"type": "end_group", "name": "p2_consentimiento_end"})
 
-    # Página final si NO acepta (para que pueda “Enviar” sin seguir a las demás)
+    # Página final si NO acepta
     survey_rows.append({
         "type": "begin_group",
         "name": "p_fin_no",
@@ -1751,9 +1801,12 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "vict_301_hurto_danos",
         "vict_301_estafas",
         "vict_301_otros",
+        "vict_301_otros_detalle",              # ✅
         "vict_302_motivos_no_denuncia",
+        "vict_302_motivos_no_denuncia_otro",   # ✅
         "vict_303_horario",
         "vict_304_modo",
+        "vict_304_modo_otro",                  # ✅
     }
 
     p_confianza = {
@@ -1818,23 +1871,18 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     add_page("p5_riesgos_iii", "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL", p_riesgos,
              intro_note_text=INTRO_RIESGOS_III, group_appearance="field-list", group_relevant=rel_si)
 
-    # Página SOLO Delitos
     add_page("p6_delitos", "Delitos", p_delitos,
              intro_note_text=INTRO_DELITOS, group_appearance="field-list", group_relevant=rel_si)
 
-    # Página Victimización A
     add_page("p7_vict_vi", "Victimización — Apartado A: Violencia intrafamiliar", p_vict_vi,
              intro_note_text=INTRO_VICT_VI, group_appearance="field-list", group_relevant=rel_si)
 
-    # Página Victimización B (con el texto que pediste, sin omitir)
     add_page("p8_vict_otros", "Victimización — Apartado B: Victimización por otros delitos", p_vict_otros,
              intro_note_text=INTRO_VICT_OTROS, group_appearance="field-list", group_relevant=rel_si)
 
-    # Penúltima: Confianza Policial
     add_page("p9_confianza_policial", "Confianza Policial", p_confianza,
              intro_note_text=INTRO_CONFIANZA_POLICIAL, group_appearance="field-list", group_relevant=rel_si)
 
-    # Última: Propuestas ciudadanas (42–46)
     add_page(
         "p10_propuestas_ciudadanas",
         "Propuestas ciudadanas para la mejora de la seguridad",
@@ -1871,10 +1919,16 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         start = min(idxs)
         end = max(idxs)
 
+        # ✅ Ahora el label se toma del texto editable
+        matriz_label = st.session_state.textos_fijos.get(
+            "matriz_9_label",
+            "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito."
+        )
+
         begin_row = {
             "type": "begin_group",
             "name": "matriz_seguridad_9",
-            "label": "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito.",
+            "label": matriz_label,
             "appearance": "table-list",
         }
         end_row = {"type": "end_group", "name": "matriz_seguridad_9_end"}
@@ -1989,5 +2043,3 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
-
-
