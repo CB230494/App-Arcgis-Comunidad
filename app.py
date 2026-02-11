@@ -1015,7 +1015,7 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "30.1 D. Otros delitos y problemas personales\nSeleccione las opciones que correspondan:",
+         "label": "30.1 D. ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar?       Otros delitos y problemas personales. Seleccione las opciones que correspondan:",
          "name": "vict_301_otros",
          "required": True,
          "opciones": [
@@ -1031,7 +1031,7 @@ if "seed_cargado" not in st.session_state:
 
         # ✅ “Otro.” en 30.1(D) -> texto
         {"tipo_ui": "Párrafo (texto largo)",
-         "label": "30.1 D.1. Indique cuál fue ese otro delito o situación:",
+         "label": "30.1 Indique cuál fue ese otro delito o situación:",
          "name": "vict_301_otros_detalle",
          "required": True,
          "opciones": [],
@@ -1059,7 +1059,7 @@ if "seed_cargado" not in st.session_state:
 
         # ✅ “Otro motivo:” en 30.2 -> texto
         {"tipo_ui": "Párrafo (texto largo)",
-         "label": "30.2.1 Indique cuál fue ese otro motivo:",
+         "label": "Indique cuál fue ese otro motivo:",
          "name": "vict_302_motivos_no_denuncia_otro",
          "required": True,
          "opciones": [],
@@ -2043,3 +2043,4 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
