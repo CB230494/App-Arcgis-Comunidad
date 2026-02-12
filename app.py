@@ -26,10 +26,16 @@
 #   1) “Otro” habilita texto en: 30.1(D), 30.2, 30.4
 #   2) 30.1 se ordena visualmente (solo formato del texto)
 #   3) Texto/encabezado de la MATRIZ 9 ahora es editable en la app (Textos fijos)
+#
+# ✅ FIX NUEVO (LO QUE PEDISTE AHORA):
+#   - Al editar preguntas/opciones, los cambios SIEMPRE se reflejan en la app,
+#     incluso después de ordenar (subir/bajar) o re-render.
+#   - Se agrega 'qid' estable por pregunta y el editor deja de depender del índice.
 # ==========================================================================================
 
 import re
 import json
+import uuid
 from io import BytesIO
 from datetime import datetime
 from typing import List, Dict
@@ -149,6 +155,20 @@ def build_relevant_expr(rules_for_target: List[Dict]):
     return xlsform_or_expr(or_parts)
 
 # ------------------------------------------------------------------------------------------
+# FIX REFLEJO DE EDICIÓN: ID estable por pregunta (qid) + editor por qid
+# ------------------------------------------------------------------------------------------
+def ensure_qid(q: Dict) -> Dict:
+    if "qid" not in q or not q["qid"]:
+        q["qid"] = str(uuid.uuid4())
+    return q
+
+def q_index_by_qid(qid: str) -> int:
+    for i, q in enumerate(st.session_state.preguntas):
+        if q.get("qid") == qid:
+            return i
+    return -1
+
+# ------------------------------------------------------------------------------------------
 # Estado base (session_state)
 # ------------------------------------------------------------------------------------------
 if "preguntas" not in st.session_state:
@@ -158,19 +178,23 @@ if "reglas_visibilidad" not in st.session_state:
 if "reglas_finalizar" not in st.session_state:
     st.session_state.reglas_finalizar = []
 
-# ✅ Textos fijos editables (solo lo que pediste: la matriz 9)
+# ✅ Textos fijos editables (solo matriz 9)
 if "textos_fijos" not in st.session_state:
     st.session_state.textos_fijos = {
         "matriz_9_label": "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito."
     }
 
+# Editor: solo una pregunta abierta a la vez (por qid estable)
+if "edit_qid" not in st.session_state:
+    st.session_state.edit_qid = None
+
 with st.expander("✏️ Textos fijos (editables)", expanded=False):
     st.caption("Esto es para editar textos que NO son preguntas individuales (por ejemplo, encabezados internos como la Matriz 9).")
     st.session_state.textos_fijos["matriz_9_label"] = st.text_input(
         "Texto del encabezado de la Matriz 9",
-        value=st.session_state.textos_fijos.get("matriz_9_label", "")
+        value=st.session_state.textos_fijos.get("matriz_9_label", ""),
+        key="txt_matriz9"
     )
-
 # ------------------------------------------------------------------------------------------
 # Catálogo manual por lotes: Cantón → Distritos
 # ------------------------------------------------------------------------------------------
@@ -223,18 +247,19 @@ _asegurar_placeholders_catalogo()
 st.markdown("### 📚 Catálogo Cantón → Distrito (por lotes)")
 with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True):
     col_c1, col_c2 = st.columns(2)
-    canton_txt = col_c1.text_input("Cantón (una vez)", value="")
-    distritos_txt = col_c2.text_area("Distritos del cantón (uno por línea)", value="", height=130)
+    canton_txt = col_c1.text_input("Cantón (una vez)", value="", key="canton_lote")
+    distritos_txt = col_c2.text_area("Distritos del cantón (uno por línea)", value="", height=130, key="distritos_lote")
 
     col_b1, col_b2, _ = st.columns([1, 1, 2])
-    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True)
-    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True)
+    add_lote = col_b1.button("Agregar lote", type="primary", use_container_width=True, key="btn_add_lote")
+    clear_all = col_b2.button("Limpiar catálogo", use_container_width=True, key="btn_clear_cat")
 
     if clear_all:
         st.session_state.choices_ext_rows = []
         st.session_state.choices_extra_cols = set()
         _asegurar_placeholders_catalogo()
         st.success("Catálogo limpiado (placeholders conservados).")
+        _rerun()
 
     if add_lote:
         c = canton_txt.strip()
@@ -256,6 +281,7 @@ with st.expander("Agrega un lote (un Cantón y varios Distritos)", expanded=True
                 _append_choice_unique({"list_name": "list_distrito", "name": slug_d, "label": d, "canton_key": slug_c})
 
             st.success(f"Lote agregado: {c} → {len(distritos)} distritos.")
+            _rerun()
 
 if st.session_state.choices_ext_rows:
     st.dataframe(
@@ -264,7 +290,6 @@ if st.session_state.choices_ext_rows:
         hide_index=True,
         height=240
     )
-
 # ------------------------------------------------------------------------------------------
 # Cabecera: Logo + Delegación
 # ------------------------------------------------------------------------------------------
@@ -272,7 +297,7 @@ DEFAULT_LOGO_PATH = "001.png"
 
 col_logo, col_txt = st.columns([1, 3], vertical_alignment="center")
 with col_logo:
-    up_logo = st.file_uploader("Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
+    up_logo = st.file_uploader("Logo (PNG/JPG)", type=["png", "jpg", "jpeg"], key="uploader_logo")
     if up_logo:
         st.image(up_logo, caption="Logo cargado", use_container_width=True)
         st.session_state["_logo_bytes"] = up_logo.getvalue()
@@ -289,11 +314,12 @@ with col_logo:
 
 with col_txt:
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste")
+    delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste", key="delegacion_txt")
     logo_media_name = st.text_input(
         "Nombre de archivo para `media::image`",
         value=st.session_state.get("_logo_name", "001.png"),
-        help="Debe coincidir con el archivo en `media/` de Survey123 Connect."
+        help="Debe coincidir con el archivo en `media/` de Survey123 Connect.",
+        key="logo_media_txt"
     )
     titulo_compuesto = (f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad")
     st.markdown(f"<h5 style='text-align:center;margin:4px 0'>📋 {titulo_compuesto}</h5>", unsafe_allow_html=True)
@@ -333,9 +359,6 @@ CONSENTIMIENTO_BLOQUES = [
     "Al continuar con la encuesta, usted manifiesta haber leído y comprendido la información anterior y otorga su consentimiento informado para participar."
 ]
 
-# ------------------------------------------------------------------------------------------
-# II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO (intro)
-# ------------------------------------------------------------------------------------------
 INTRO_PERCEPCION_DISTRITO = (
     "En esta sección le preguntaremos sobre cómo percibe la seguridad en su distrito. "
     "Las siguientes preguntas buscan conocer su opinión y experiencia sobre la seguridad en el lugar "
@@ -349,9 +372,6 @@ INTRO_PERCEPCION_DISTRITO = (
     "según su experiencia y percepción personal."
 )
 
-# ------------------------------------------------------------------------------------------
-# III. RIESGOS (intro)  — página separada
-# ------------------------------------------------------------------------------------------
 INTRO_RIESGOS_III = (
     "A continuación, en esta sección le preguntaremos sobre situaciones o condiciones que pueden representar "
     "riesgos para la convivencia y la seguridad en el distrito. "
@@ -365,18 +385,12 @@ INTRO_RIESGOS_III = (
     "ha visto o vivido en su entorno."
 )
 
-# ------------------------------------------------------------------------------------------
-# Delitos (intro) — página SOLO delitos
-# ------------------------------------------------------------------------------------------
 INTRO_DELITOS = (
     "A continuación, se presenta una lista de delitos para que indique aquellos que, según su conocimiento u "
     "observación, considera que se presentan en el distrito. La información recopilada tiene fines de análisis "
     "preventivo y territorial, y no constituye una denuncia formal ni la confirmación judicial de hechos delictivos."
 )
 
-# ------------------------------------------------------------------------------------------
-# Victimización — Apartado A: Violencia intrafamiliar (intro) — página nueva
-# ------------------------------------------------------------------------------------------
 INTRO_VICT_VI = (
     "A continuación, se presentan algunas preguntas relacionadas con situaciones de violencia intrafamiliar, "
     "con el fin de conocer si usted o algún miembro de su hogar ha sido afectado directamente por este tipo de "
@@ -384,9 +398,6 @@ INTRO_VICT_VI = (
     "únicamente con fines de análisis y mejora de las acciones de prevención y atención."
 )
 
-# ------------------------------------------------------------------------------------------
-# Victimización — Apartado B: Otros delitos (intro) — página nueva
-# ------------------------------------------------------------------------------------------
 INTRO_VICT_OTROS = (
     "Las siguientes preguntas se refieren a otros delitos distintos a la violencia intrafamiliar, "
     "que pudieron haber afectado a usted o a algún miembro de su hogar en el distrito durante los últimos 12 meses. "
@@ -395,23 +406,16 @@ INTRO_VICT_OTROS = (
     "confirmación de hechos delictivos."
 )
 
-# ------------------------------------------------------------------------------------------
-# Confianza Policial (intro) — penúltima página
-# ------------------------------------------------------------------------------------------
 INTRO_CONFIANZA_POLICIAL = (
     "A continuación, se presentará una lista de afirmaciones relacionadas con su percepción y confianza "
     "en el cuerpo de policía que opera en su (Distrito) barrio."
 )
 
-# ------------------------------------------------------------------------------------------
-# Propuestas ciudadanas para la mejora de la seguridad (intro) — última página
-# ------------------------------------------------------------------------------------------
 INTRO_PROPUESTAS_CIUDADANAS = (
     "Las siguientes preguntas tienen como objetivo conocer la percepción ciudadana sobre acciones que podrían "
     "contribuir a la mejora de la seguridad desde el ámbito local e institucional. La información recolectada no "
     "constituye una evaluación de la gestión ni implica asignación de competencias o responsabilidades."
 )
-
 # ------------------------------------------------------------------------------------------
 # Precarga de preguntas (seed)
 # ------------------------------------------------------------------------------------------
@@ -972,15 +976,12 @@ if "seed_cargado" not in st.session_state:
          "opciones": ["NO", "Sí, y denuncié", "Sí, pero no denuncié"],
          "appearance": None, "choice_filter": None, "relevant": None},
 
-        # ✅ 30.1 orden visual (solo formato del texto, misma información)
         {"tipo_ui": "Selección múltiple",
-        "label": (
-        "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar?\n\n"
-        "A. Robo y Asalto (Violencia y fuerza)\n\n"
-        "Seleccione las opciones que correspondan:"
-        ),
-
-
+         "label": (
+             "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar?\n\n"
+             "A. Robo y Asalto (Violencia y fuerza)\n\n"
+             "Seleccione las opciones que correspondan:"
+         ),
          "name": "vict_301_robo_asalto",
          "required": True,
          "opciones": [
@@ -1035,7 +1036,6 @@ if "seed_cargado" not in st.session_state:
          "appearance": "columns", "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
-        # ✅ “Otro.” en 30.1(D) -> texto
         {"tipo_ui": "Párrafo (texto largo)",
          "label": "30.1 Indique cuál fue ese otro delito o situación:",
          "name": "vict_301_otros_detalle",
@@ -1063,7 +1063,6 @@ if "seed_cargado" not in st.session_state:
          "appearance": None, "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}='{slugify_name('Sí, pero no denuncié')}'"},
 
-        # ✅ “Otro motivo:” en 30.2 -> texto
         {"tipo_ui": "Párrafo (texto largo)",
          "label": "Indique cuál fue ese otro motivo:",
          "name": "vict_302_motivos_no_denuncia_otro",
@@ -1110,7 +1109,6 @@ if "seed_cargado" not in st.session_state:
          "appearance": "columns", "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
-        # ✅ “Otro.” en 30.4 -> texto
         {"tipo_ui": "Párrafo (texto largo)",
          "label": "30.4.1 Indique cuál fue ese otro modo:",
          "name": "vict_304_modo_otro",
@@ -1342,9 +1340,12 @@ if "seed_cargado" not in st.session_state:
          "relevant": None},
     ]
 
-    st.session_state.preguntas = seed
+    # ✅ asegurar qid estable en todo el seed
+    st.session_state.preguntas = [ensure_qid(q) for q in seed]
     st.session_state.seed_cargado = True
 
+# ✅ Asegurar qid también si ya existían preguntas en session_state (por ejemplo al recargar)
+st.session_state.preguntas = [ensure_qid(q) for q in st.session_state.preguntas]
 # ------------------------------------------------------------------------------------------
 # Sidebar: Metadatos + Exportar/Importar proyecto
 # ------------------------------------------------------------------------------------------
@@ -1352,27 +1353,28 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     form_title = st.text_input(
         "Título del formulario",
-        value=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad")
+        value=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
+        key="sb_form_title"
     )
-    idioma = st.selectbox("Idioma por defecto (default_language)", options=["es", "en"], index=0)
+    idioma = st.selectbox("Idioma por defecto (default_language)", options=["es", "en"], index=0, key="sb_idioma")
     version_auto = datetime.now().strftime("%Y%m%d%H%M")
-    version = st.text_input("Versión (settings.version)", value=version_auto)
+    version = st.text_input("Versión (settings.version)", value=version_auto, key="sb_version")
 
     st.markdown("---")
     st.caption("💾 Exporta/Importa tu proyecto (JSON)")
     col_exp, col_imp = st.columns(2)
 
-    if col_exp.button("Exportar proyecto (JSON)", use_container_width=True):
+    if col_exp.button("Exportar proyecto (JSON)", use_container_width=True, key="btn_export_json"):
         proj = {
             "form_title": form_title,
             "idioma": idioma,
             "version": version,
-            "preguntas": st.session_state.preguntas,
+            "preguntas": st.session_state.preguntas,  # incluye qid
             "reglas_visibilidad": st.session_state.reglas_visibilidad,
             "reglas_finalizar": st.session_state.reglas_finalizar,
             "choices_ext_rows": st.session_state.choices_ext_rows,
             "choices_extra_cols": list(st.session_state.choices_extra_cols),
-            "textos_fijos": st.session_state.textos_fijos,  # ✅
+            "textos_fijos": st.session_state.textos_fijos,
         }
         jbuf = BytesIO(json.dumps(proj, ensure_ascii=False, indent=2).encode("utf-8"))
         st.download_button(
@@ -1383,42 +1385,48 @@ with st.sidebar:
             use_container_width=True
         )
 
-    up = col_imp.file_uploader("Importar JSON", type=["json"], label_visibility="collapsed")
+    up = col_imp.file_uploader("Importar JSON", type=["json"], label_visibility="collapsed", key="uploader_json")
     if up is not None:
         try:
             raw = up.read().decode("utf-8")
             data = json.loads(raw)
-            st.session_state.preguntas = list(data.get("preguntas", []))
+
+            preguntas = list(data.get("preguntas", []))
+            # ✅ asegurar qid (si tu JSON viejo no trae qid)
+            st.session_state.preguntas = [ensure_qid(q) for q in preguntas]
+
             st.session_state.reglas_visibilidad = list(data.get("reglas_visibilidad", []))
             st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
             st.session_state.choices_ext_rows = list(data.get("choices_ext_rows", []))
             st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
-            st.session_state.textos_fijos = dict(data.get("textos_fijos", st.session_state.textos_fijos))  # ✅
+            st.session_state.textos_fijos = dict(data.get("textos_fijos", st.session_state.textos_fijos))
 
+            st.session_state.edit_qid = None
             _asegurar_placeholders_catalogo()
             _rerun()
         except Exception as e:
             st.error(f"No se pudo importar el JSON: {e}")
-
 # ------------------------------------------------------------------------------------------
 # Constructor: Agregar nuevas preguntas
 # ------------------------------------------------------------------------------------------
 st.subheader("📝 Diseña tus preguntas")
 
 with st.form("form_add_q", clear_on_submit=False):
-    tipo_ui = st.selectbox("Tipo de pregunta", options=TIPOS)
-    label = st.text_input("Etiqueta (texto exacto)")
+    tipo_ui = st.selectbox("Tipo de pregunta", options=TIPOS, key="add_tipo")
+    label = st.text_input("Etiqueta (texto exacto)", key="add_label")
     sugerido = slugify_name(label) if label else ""
     col_n1, col_n2, col_n3 = st.columns([2, 1, 1])
-    name = col_n1.text_input("Nombre interno (XLSForm 'name')", value=sugerido)
-    required = col_n2.checkbox("Requerida", value=False)
-    appearance = col_n3.text_input("Appearance (opcional)", value="")
+    name = col_n1.text_input("Nombre interno (XLSForm 'name')", value=sugerido, key="add_name")
+    required = col_n2.checkbox("Requerida", value=False, key="add_required")
+    appearance = col_n3.text_input("Appearance (opcional)", value="", key="add_appearance")
+
     opciones = []
     if tipo_ui in ("Selección única", "Selección múltiple"):
         st.markdown("**Opciones (una por línea)**")
-        txt_opts = st.text_area("Opciones", height=120)
+        txt_opts = st.text_area("Opciones", height=120, key="add_opts")
         if txt_opts.strip():
             opciones = [o.strip() for o in txt_opts.splitlines() if o.strip()]
+
     add = st.form_submit_button("➕ Agregar pregunta")
 
 if add:
@@ -1428,7 +1436,8 @@ if add:
         base = slugify_name(name or label)
         usados = {q["name"] for q in st.session_state.preguntas}
         unico = asegurar_nombre_unico(base, usados)
-        st.session_state.preguntas.append({
+
+        nueva = ensure_qid({
             "tipo_ui": tipo_ui,
             "label": label.strip(),
             "name": unico,
@@ -1438,18 +1447,25 @@ if add:
             "choice_filter": None,
             "relevant": None
         })
+        st.session_state.preguntas.append(nueva)
+        st.session_state.edit_qid = None
         st.success(f"Pregunta agregada: **{label}** (name: `{unico}`)")
-
+        _rerun()
 # ------------------------------------------------------------------------------------------
-# Lista / Ordenado / Edición (completa)
+# Lista / Ordenado / Edición (completa) — FIX: editor por qid estable
 # ------------------------------------------------------------------------------------------
 st.subheader("📚 Preguntas (ordénalas y edítalas)")
+
 if not st.session_state.preguntas:
     st.info("Aún no has agregado preguntas.")
 else:
     for idx, q in enumerate(st.session_state.preguntas):
+        q = ensure_qid(q)
+        qid = q["qid"]
+
         with st.container(border=True):
             c1, c2, c3, c4, c5 = st.columns([4, 2, 2, 2, 2])
+
             c1.markdown(f"**{idx+1}. {q['label']}**")
             meta = f"type: {q['tipo_ui']}  •  name: `{q['name']}`  •  requerida: {'sí' if q['required'] else 'no'}"
             if q.get("appearance"):
@@ -1461,60 +1477,82 @@ else:
             if q.get("list_override"):
                 meta += f"  •  list_override: `{q['list_override']}`"
             c1.caption(meta)
+
             if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
                 c1.caption("Opciones: " + ", ".join(q.get("opciones") or []))
 
-            up_btn = c2.button("⬆️ Subir", key=f"up_{idx}", use_container_width=True, disabled=(idx == 0))
-            down_btn = c3.button("⬇️ Bajar", key=f"down_{idx}", use_container_width=True, disabled=(idx == len(st.session_state.preguntas) - 1))
-            edit_btn = c4.button("✏️ Editar", key=f"edit_{idx}", use_container_width=True)
-            del_btn = c5.button("🗑️ Eliminar", key=f"del_{idx}", use_container_width=True)
+            up_btn = c2.button("⬆️ Subir", key=f"up_{qid}", use_container_width=True, disabled=(idx == 0))
+            down_btn = c3.button("⬇️ Bajar", key=f"down_{qid}", use_container_width=True, disabled=(idx == len(st.session_state.preguntas) - 1))
+            edit_btn = c4.button("✏️ Editar", key=f"edit_{qid}", use_container_width=True)
+            del_btn = c5.button("🗑️ Eliminar", key=f"del_{qid}", use_container_width=True)
 
             if up_btn:
                 st.session_state.preguntas[idx - 1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx - 1]
                 _rerun()
+
             if down_btn:
                 st.session_state.preguntas[idx + 1], st.session_state.preguntas[idx] = st.session_state.preguntas[idx], st.session_state.preguntas[idx + 1]
                 _rerun()
 
             if edit_btn:
-                st.markdown("**Editar esta pregunta**")
-                ne_label = st.text_input("Etiqueta", value=q["label"], key=f"e_label_{idx}")
-                ne_name = st.text_input("Nombre interno (name)", value=q["name"], key=f"e_name_{idx}")
-                ne_required = st.checkbox("Requerida", value=q["required"], key=f"e_req_{idx}")
-                ne_appearance = st.text_input("Appearance", value=q.get("appearance") or "", key=f"e_app_{idx}")
-                ne_choice_filter = st.text_input("choice_filter (opcional)", value=q.get("choice_filter") or "", key=f"e_cf_{idx}")
-                ne_relevant = st.text_input("relevant (opcional)", value=q.get("relevant") or "", key=f"e_rel_{idx}")
-
-                ne_opciones = q.get("opciones") or []
-                if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
-                    ne_opts_txt = st.text_area("Opciones (una por línea)", value="\n".join(ne_opciones), key=f"e_opts_{idx}")
-                    ne_opciones = [o.strip() for o in ne_opts_txt.splitlines() if o.strip()]
-
-                col_ok, col_cancel = st.columns(2)
-                if col_ok.button("💾 Guardar cambios", key=f"e_save_{idx}", use_container_width=True):
-                    new_base = slugify_name(ne_name or ne_label)
-                    usados = {qq["name"] for j, qq in enumerate(st.session_state.preguntas) if j != idx}
-                    ne_name_final = new_base if new_base not in usados else asegurar_nombre_unico(new_base, usados)
-
-                    st.session_state.preguntas[idx]["label"] = ne_label.strip() or q["label"]
-                    st.session_state.preguntas[idx]["name"] = ne_name_final
-                    st.session_state.preguntas[idx]["required"] = ne_required
-                    st.session_state.preguntas[idx]["appearance"] = ne_appearance.strip() or None
-                    st.session_state.preguntas[idx]["choice_filter"] = ne_choice_filter.strip() or None
-                    st.session_state.preguntas[idx]["relevant"] = ne_relevant.strip() or None
-                    if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
-                        st.session_state.preguntas[idx]["opciones"] = ne_opciones
-                    st.success("Cambios guardados.")
-                    _rerun()
-
-                if col_cancel.button("Cancelar", key=f"e_cancel_{idx}", use_container_width=True):
-                    _rerun()
+                st.session_state.edit_qid = qid
+                _rerun()
 
             if del_btn:
+                # Si estaba editando esa, cerrar editor
+                if st.session_state.edit_qid == qid:
+                    st.session_state.edit_qid = None
                 del st.session_state.preguntas[idx]
                 st.warning("Pregunta eliminada.")
                 _rerun()
 
+            # Editor desplegable SOLO si coincide el qid
+            if st.session_state.edit_qid == qid:
+                st.markdown("**Editar esta pregunta**")
+
+                ne_label = st.text_input("Etiqueta", value=q["label"], key=f"e_label_{qid}")
+                ne_name = st.text_input("Nombre interno (name)", value=q["name"], key=f"e_name_{qid}")
+                ne_required = st.checkbox("Requerida", value=q["required"], key=f"e_req_{qid}")
+                ne_appearance = st.text_input("Appearance", value=q.get("appearance") or "", key=f"e_app_{qid}")
+                ne_choice_filter = st.text_input("choice_filter (opcional)", value=q.get("choice_filter") or "", key=f"e_cf_{qid}")
+                ne_relevant = st.text_input("relevant (opcional)", value=q.get("relevant") or "", key=f"e_rel_{qid}")
+
+                ne_opciones = q.get("opciones") or []
+                if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
+                    ne_opts_txt = st.text_area("Opciones (una por línea)", value="\n".join(ne_opciones), key=f"e_opts_{qid}")
+                    ne_opciones = [o.strip() for o in ne_opts_txt.splitlines() if o.strip()]
+
+                col_ok, col_cancel = st.columns(2)
+
+                if col_ok.button("💾 Guardar cambios", key=f"e_save_{qid}", use_container_width=True):
+                    # Buscar índice actual por qid (por si se movió mientras editabas)
+                    cur_idx = q_index_by_qid(qid)
+                    if cur_idx == -1:
+                        st.error("No se encontró la pregunta (posible cambio de estado). Intenta de nuevo.")
+                        st.session_state.edit_qid = None
+                        _rerun()
+
+                    new_base = slugify_name(ne_name or ne_label)
+                    usados = {qq["name"] for j, qq in enumerate(st.session_state.preguntas) if j != cur_idx}
+                    ne_name_final = new_base if new_base not in usados else asegurar_nombre_unico(new_base, usados)
+
+                    st.session_state.preguntas[cur_idx]["label"] = ne_label.strip() or q["label"]
+                    st.session_state.preguntas[cur_idx]["name"] = ne_name_final
+                    st.session_state.preguntas[cur_idx]["required"] = ne_required
+                    st.session_state.preguntas[cur_idx]["appearance"] = ne_appearance.strip() or None
+                    st.session_state.preguntas[cur_idx]["choice_filter"] = ne_choice_filter.strip() or None
+                    st.session_state.preguntas[cur_idx]["relevant"] = ne_relevant.strip() or None
+
+                    if q["tipo_ui"] in ("Selección única", "Selección múltiple"):
+                        st.session_state.preguntas[cur_idx]["opciones"] = ne_opciones
+
+                    st.success("Cambios guardados.")
+                    st.session_state.edit_qid = None
+                    _rerun()
+
+                if col_cancel.button("Cancelar", key=f"e_cancel_{qid}", use_container_width=True):
+                    st.session_state.edit_qid = None
+                    _rerun()
 # ------------------------------------------------------------------------------------------
 # Condicionales (panel)
 # ------------------------------------------------------------------------------------------
@@ -1527,21 +1565,23 @@ else:
         labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
 
         target = st.selectbox("Pregunta a mostrar (target)", options=names,
-                              format_func=lambda n: f"{n} — {labels_by_name[n]}")
+                              format_func=lambda n: f"{n} — {labels_by_name[n]}",
+                              key="vis_target")
         src = st.selectbox("Depende de (source)", options=names,
-                           format_func=lambda n: f"{n} — {labels_by_name[n]}")
-        op = st.selectbox("Operador", options=["=", "selected"])
+                           format_func=lambda n: f"{n} — {labels_by_name[n]}",
+                           key="vis_src")
+        op = st.selectbox("Operador", options=["=", "selected"], key="vis_op")
         src_q = next((qq for qq in st.session_state.preguntas if qq["name"] == src), None)
 
         vals = []
         if src_q and src_q.get("opciones"):
-            vals = st.multiselect("Valores (usa texto, internamente se usará slug)", options=src_q["opciones"])
+            vals = st.multiselect("Valores (usa texto, internamente se usará slug)", options=src_q["opciones"], key="vis_vals")
             vals = [slugify_name(v) for v in vals]
         else:
-            manual = st.text_input("Valor (si la pregunta no tiene opciones)")
+            manual = st.text_input("Valor (si la pregunta no tiene opciones)", key="vis_manual")
             vals = [slugify_name(manual)] if manual.strip() else []
 
-        if st.button("➕ Agregar regla de visibilidad"):
+        if st.button("➕ Agregar regla de visibilidad", key="btn_add_vis"):
             if target == src:
                 st.error("Target y Source no pueden ser la misma pregunta.")
             elif not vals:
@@ -1562,8 +1602,10 @@ else:
     with st.expander("⏹️ Finalizar temprano si se cumple condición", expanded=False):
         names = [q["name"] for q in st.session_state.preguntas]
         labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
+
         src2 = st.selectbox("Condición basada en", options=names,
-                            format_func=lambda n: f"{n} — {labels_by_name[n]}", key="final_src")
+                            format_func=lambda n: f"{n} — {labels_by_name[n]}",
+                            key="final_src")
         op2 = st.selectbox("Operador", options=["=", "selected", "!="], key="final_op")
         src2_q = next((qq for qq in st.session_state.preguntas if qq["name"] == src2), None)
 
@@ -1575,7 +1617,7 @@ else:
             manual2 = st.text_input("Valor (si no hay opciones)", key="final_manual")
             vals2 = [slugify_name(manual2)] if manual2.strip() else []
 
-        if st.button("➕ Agregar regla de finalización"):
+        if st.button("➕ Agregar regla de finalización", key="btn_add_fin"):
             if not vals2:
                 st.error("Indica al menos un valor.")
             else:
@@ -1591,7 +1633,6 @@ else:
                 if st.button(f"Eliminar regla fin #{i+1}", key=f"del_fin_{i}"):
                     del st.session_state.reglas_finalizar[i]
                     _rerun()
-
 # ------------------------------------------------------------------------------------------
 # Construcción XLSForm (Intro + Consentimiento + Páginas)
 # ------------------------------------------------------------------------------------------
@@ -1722,7 +1763,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     survey_rows.append({"type": "note", "name": "cons_title", "label": CONSENTIMIENTO_TITULO})
     for i, txt in enumerate(CONSENTIMIENTO_BLOQUES, start=1):
         survey_rows.append({"type": "note", "name": f"cons_b{i:02d}", "label": txt})
-
     if idx_consent is not None:
         add_q(preguntas[idx_consent], idx_consent)
     survey_rows.append({"type": "end_group", "name": "p2_consentimiento_end"})
@@ -1807,12 +1847,12 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         "vict_301_hurto_danos",
         "vict_301_estafas",
         "vict_301_otros",
-        "vict_301_otros_detalle",              # ✅
+        "vict_301_otros_detalle",
         "vict_302_motivos_no_denuncia",
-        "vict_302_motivos_no_denuncia_otro",   # ✅
+        "vict_302_motivos_no_denuncia_otro",
         "vict_303_horario",
         "vict_304_modo",
-        "vict_304_modo_otro",                  # ✅
+        "vict_304_modo_otro",
     }
 
     p_confianza = {
@@ -1925,7 +1965,6 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         start = min(idxs)
         end = max(idxs)
 
-        # ✅ Ahora el label se toma del texto editable
         matriz_label = st.session_state.textos_fijos.get(
             "matriz_9_label",
             "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito."
@@ -2007,14 +2046,13 @@ def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: 
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
-
 # ------------------------------------------------------------------------------------------
 # Exportar / Vista previa XLSForm
 # ------------------------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("📦 Generar XLSForm (Excel) para Survey123")
 
-if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st.session_state.preguntas):
+if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st.session_state.preguntas, key="btn_build_xls"):
     try:
         names = [q["name"] for q in st.session_state.preguntas]
         if len(names) != len(set(names)):
@@ -2049,7 +2087,6 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
-
 
 
 
