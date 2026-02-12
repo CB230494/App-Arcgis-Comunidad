@@ -1,30 +1,36 @@
 # -*- coding: utf-8 -*-
 # ==========================================================================================
-# App: Encuesta COMERCIO → XLSForm para ArcGIS Survey123 (versión extendida)
+# App: Encuesta Comunidad → XLSForm para ArcGIS Survey123 (versión extendida)
 # - Constructor completo (agregar/editar/ordenar/borrar)
 # - Condicionales (relevant) + finalizar temprano
 # - Listas en cascada (choice_filter) Cantón→Distrito [CATÁLOGO MANUAL POR LOTES]
 # - Exportar/Importar proyecto (JSON)
 # - Exportar a XLSForm (survey/choices/settings)
-# - PÁGINAS reales (style="pages"): Intro + Consentimiento + P3.. (por secciones)
+# - PÁGINAS reales (style="pages"): Intro + Consentimiento + P2.. (por secciones)
 # - Portada con logo (media::image) y texto de introducción
 # - Consentimiento:
 #     - Texto en BLOQUES (notes separados) para que se vea ordenado en Survey123
 #     - Si marca "No" ⇒ NO muestra el resto de páginas y cae a una página final para enviar
-# - FIX: no mostrar placeholders “— escoja un cantón —” si hay catálogo real
+# - MEJORA: no mostrar "— escoja un cantón —" cuando ya hay catálogo real
 # - FIX MATRIZ (table-list): todas las filas comparten el MISMO list_name (list_override)
-# - FIX: Opciones "No se observa / No se observan ..." en select_multiple son EXCLUSIVAS
-# - FIX: Al editar preguntas/opciones, los cambios SIEMPRE se reflejan (qid estable)
+# - FIX: Página "Delitos" separada (solo título Delitos + intro + preguntas 18–28)
+# - FIX NUEVO:
+#     - Opciones "No se observa / No se observan ..." en select_multiple son EXCLUSIVAS
+#     - Página nueva: Victimización — Apartado B (30–30.4)
+#     - 30.1 ordenada por categorías A/B/C/D sin campos de texto extras
+# - NUEVO (penúltima + última página):
+#     - Página: Confianza Policial (31–41) + intro
+#     - Página: Propuestas ciudadanas para la mejora de la seguridad (42–46) + intro
 #
-# ✅ ESTA VERSIÓN (LIMPIA) TRAE:
-#   - P1 Intro Comercio 2026
-#   - P2 Consentimiento + Finalización si NO
-#   - P3 Datos demográficos (Cantón/Distrito/Edad/Género/Escolaridad) + texto comercio + Q6 Tipo local comercial
-#   - P4 II. Percepción Comercio (7–10 + Matriz 9)
-#   - P5 III. Riesgos (11–16)
-#   - P6 Delitos (17–21)
-#   - P7 Victimización (22–23.1)  ✅ 22.1 en BLOQUES A/B/C/D con "Otro"+texto por bloque
-#   - P8 Propuestas ciudadanas (24–25)
+# ✅ AJUSTES PEDIDOS (SIN CAMBIOS INNECESARIOS):
+#   1) “Otro” habilita texto en: 30.1(D), 30.2, 30.4
+#   2) 30.1 se ordena visualmente (solo formato del texto)
+#   3) Texto/encabezado de la MATRIZ 9 ahora es editable en la app (Textos fijos)
+#
+# ✅ FIX NUEVO (LO QUE PEDISTE AHORA):
+#   - Al editar preguntas/opciones, los cambios SIEMPRE se reflejan en la app,
+#     incluso después de ordenar (subir/bajar) o re-render.
+#   - Se agrega 'qid' estable por pregunta y el editor deja de depender del índice.
 # ==========================================================================================
 
 import re
@@ -40,8 +46,8 @@ import pandas as pd
 # ------------------------------------------------------------------------------------------
 # Configuración de la app
 # ------------------------------------------------------------------------------------------
-st.set_page_config(page_title="Encuesta Comercio → XLSForm (Survey123)", layout="wide")
-st.title("🏪 Encuesta Comercio → XLSForm para ArcGIS Survey123")
+st.set_page_config(page_title="Encuesta Comunidad → XLSForm (Survey123)", layout="wide")
+st.title("🏘️ Encuesta Comunidad → XLSForm para ArcGIS Survey123")
 
 st.markdown("""
 Crea tu cuestionario y **exporta un XLSForm** listo para **ArcGIS Survey123**.
@@ -172,10 +178,10 @@ if "reglas_visibilidad" not in st.session_state:
 if "reglas_finalizar" not in st.session_state:
     st.session_state.reglas_finalizar = []
 
-# ✅ Textos fijos editables (Matriz 9 Comercio)
+# ✅ Textos fijos editables (solo matriz 9)
 if "textos_fijos" not in st.session_state:
     st.session_state.textos_fijos = {
-        "matriz_9_label_comercio": "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios alrededor de su comercio."
+        "matriz_9_label": "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito."
     }
 
 # Editor: solo una pregunta abierta a la vez (por qid estable)
@@ -183,18 +189,17 @@ if "edit_qid" not in st.session_state:
     st.session_state.edit_qid = None
 
 with st.expander("✏️ Textos fijos (editables)", expanded=False):
-    st.caption("Textos que NO son preguntas individuales (por ejemplo, encabezados internos como la Matriz 9).")
-    st.session_state.textos_fijos["matriz_9_label_comercio"] = st.text_input(
-        "Texto del encabezado de la Matriz 9 (Comercio)",
-        value=st.session_state.textos_fijos.get("matriz_9_label_comercio", ""),
-        key="txt_matriz9_comercio"
+    st.caption("Esto es para editar textos que NO son preguntas individuales (por ejemplo, encabezados internos como la Matriz 9).")
+    st.session_state.textos_fijos["matriz_9_label"] = st.text_input(
+        "Texto del encabezado de la Matriz 9",
+        value=st.session_state.textos_fijos.get("matriz_9_label", ""),
+        key="txt_matriz9"
     )
-
 # ------------------------------------------------------------------------------------------
 # Catálogo manual por lotes: Cantón → Distritos
 # ------------------------------------------------------------------------------------------
 if "choices_ext_rows" not in st.session_state:
-    st.session_state.choices_ext_rows = []
+    st.session_state.choices_ext_rows = []  # filas para hoja choices
 if "choices_extra_cols" not in st.session_state:
     st.session_state.choices_extra_cols = set()
 
@@ -206,8 +211,8 @@ def _append_choice_unique(row: Dict):
 
 def _asegurar_placeholders_catalogo():
     """
-    Survey123 exige list_canton/list_distrito en choices si se usan en survey.
-    Garantiza placeholders aun cuando el usuario NO agregue lotes.
+    FIX: Survey123 exige que existan list_canton/list_distrito en choices si se usan en survey.
+    Esto garantiza placeholders aun cuando el usuario NO agregue lotes.
     """
     st.session_state.choices_extra_cols.update({"canton_key", "any"})
     _append_choice_unique({"list_name": "list_canton", "name": "__pick_canton__", "label": "— escoja un cantón —"})
@@ -236,6 +241,7 @@ def _filtrar_placeholders_si_hay_catalogo(rows: List[Dict]) -> List[Dict]:
         filtradas.append(r)
     return filtradas
 
+# Asegurar placeholders desde el inicio
 _asegurar_placeholders_catalogo()
 
 st.markdown("### 📚 Catálogo Cantón → Distrito (por lotes)")
@@ -284,7 +290,6 @@ if st.session_state.choices_ext_rows:
         hide_index=True,
         height=240
     )
-
 # ------------------------------------------------------------------------------------------
 # Cabecera: Logo + Delegación
 # ------------------------------------------------------------------------------------------
@@ -309,21 +314,21 @@ with col_logo:
 
 with col_txt:
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    delegacion = st.text_input("Nombre del lugar / Delegación", value="Alajuela Norte", key="delegacion_txt")
+    delegacion = st.text_input("Nombre del lugar / Delegación", value="San Carlos Oeste", key="delegacion_txt")
     logo_media_name = st.text_input(
         "Nombre de archivo para `media::image`",
         value=st.session_state.get("_logo_name", "001.png"),
         help="Debe coincidir con el archivo en `media/` de Survey123 Connect.",
         key="logo_media_txt"
     )
-    titulo_compuesto = (f"Encuesta comercio – {delegacion.strip()}" if delegacion.strip() else "Encuesta comercio")
+    titulo_compuesto = (f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad")
     st.markdown(f"<h5 style='text-align:center;margin:4px 0'>📋 {titulo_compuesto}</h5>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------------------
-# Textos base (Intro / Consentimiento / Intros de páginas)
+# Intro (Página 1)
 # ------------------------------------------------------------------------------------------
-INTRO_COMERCIO = (
-    "El presente formato corresponde a la Encuesta de Percepción de Comercio 2026, diseñada para "
+INTRO_COMUNIDAD = (
+    "El presente formato corresponde a la Encuesta de Percepción de Comunidad 2026, diseñada para "
     "recopilar información clave sobre seguridad ciudadana, convivencia y factores de riesgo en los "
     "cantones del territorio nacional. Este documento se remite para su revisión y validación por parte "
     "de las direcciones, departamentos u oficinas con competencia técnica en cada uno de los apartados, "
@@ -332,15 +337,9 @@ INTRO_COMERCIO = (
     "de su aplicación en territorio."
 )
 
-INTRO_DEMOG_COMERCIO = (
-    "Con el fin de hacer más segura la zona comercial de este distrito, deseamos concentrarnos en los "
-    "problemas de seguridad más importantes que afectan a los negocios. Queremos trabajar en conjunto con "
-    "el gobierno local, otras instituciones y las personas comerciantes para reducir los delitos y riesgos "
-    "que afectan la actividad comercial.\n\n"
-    "Es importante recordarle que la información que usted nos proporcione es confidencial y se utilizará "
-    "únicamente para mejorar la seguridad en esta zona comercial."
-)
-
+# ------------------------------------------------------------------------------------------
+# Consentimiento informado (Página 2)
+# ------------------------------------------------------------------------------------------
 CONSENTIMIENTO_TITULO = "Consentimiento Informado para la Participación en la Encuesta"
 CONSENT_SI = slugify_name("Sí")
 CONSENT_NO = slugify_name("No")
@@ -360,125 +359,79 @@ CONSENTIMIENTO_BLOQUES = [
     "Al continuar con la encuesta, usted manifiesta haber leído y comprendido la información anterior y otorga su consentimiento informado para participar."
 ]
 
-INTRO_PERCEPCION_COMERCIO = (
-    "En esta sección le preguntaremos sobre cómo percibe la seguridad en el entorno donde desarrolla su actividad comercial. "
-    "Las siguientes preguntas buscan conocer su opinión y experiencia sobre la seguridad en el lugar donde se ubica su negocio, "
-    "así como en los espacios cercanos que forman parte de la dinámica comercial.\n\n"
-    "Nos interesa saber cómo siente y cómo observa la seguridad en la zona comercial, cuáles situaciones generan mayor o menor tranquilidad "
-    "y si considera que la situación ha mejorado, empeorado o se mantiene igual. Sus respuestas nos ayudarán a identificar qué factores generan "
-    "preocupación en el comercio y cómo se vive la seguridad desde la actividad económica.\n\n"
-    "Esta información se utilizará para apoyar el análisis preventivo del entorno comercial y orientar acciones de mejora y prevención. "
-    "No hay respuestas correctas o incorrectas. Le pedimos responder con sinceridad, según su experiencia y percepción personal."
+INTRO_PERCEPCION_DISTRITO = (
+    "En esta sección le preguntaremos sobre cómo percibe la seguridad en su distrito. "
+    "Las siguientes preguntas buscan conocer su opinión y experiencia sobre la seguridad en el lugar "
+    "donde vive o trabaja, así como en los distintos espacios que forman parte del distrito. "
+    "Nos interesa saber cómo siente y cómo observa la seguridad, cuáles lugares le generan mayor o menor "
+    "tranquilidad y si considera que la situación ha mejorado, empeorado o se mantiene igual. "
+    "Sus respuestas nos ayudarán a identificar qué espacios generan mayor preocupación, entender por qué "
+    "se perciben como inseguros y conocer la forma en que las personas viven la seguridad en su entorno. "
+    "Esta información se utilizará para apoyar el análisis de la situación del distrito y orientar acciones "
+    "de mejora y prevención. No hay respuestas correctas o incorrectas. Le pedimos responder con sinceridad, "
+    "según su experiencia y percepción personal."
 )
 
-INTRO_RIESGOS_COMERCIO = (
-    "A continuación, en esta sección le preguntaremos sobre situaciones o condiciones que pueden representar riesgos para la actividad comercial "
-    "y la convivencia en la zona. Estas preguntas no se refieren necesariamente a delitos, sino a situaciones, comportamientos o problemáticas que "
-    "usted haya observado y que puedan generar preocupación, afectar la operación del comercio o aumentar el riesgo de que ocurran hechos de inseguridad. "
-    "Nos interesa conocer qué situaciones están presentes en el entorno comercial, con qué frecuencia se observan y en qué espacios se presentan, según su "
-    "experiencia y percepción. Sus respuestas ayudarán a identificar factores de riesgo y a orientar acciones preventivas y de articulación local. "
-    "No existen respuestas correctas o incorrectas. Le pedimos responder con sinceridad, de acuerdo con lo que ha visto o vivido en su entorno comercial."
+INTRO_RIESGOS_III = (
+    "A continuación, en esta sección le preguntaremos sobre situaciones o condiciones que pueden representar "
+    "riesgos para la convivencia y la seguridad en el distrito. "
+    "Estas preguntas no se refieren necesariamente a delitos, sino a situaciones, comportamientos o problemas "
+    "sociales que usted haya observado y que puedan generar preocupación, afectar la tranquilidad o aumentar "
+    "el riesgo de que ocurran hechos de inseguridad. "
+    "Nos interesa conocer qué situaciones están presentes en el distrito, con qué frecuencia se observan y en "
+    "qué espacios se presentan, según su experiencia y percepción. Sus respuestas ayudarán a identificar "
+    "factores de riesgo y a orientar acciones de prevención y atención a nivel local. "
+    "No existen respuestas correctas o incorrectas. Le pedimos responder con sinceridad, de acuerdo con lo que "
+    "ha visto o vivido en su entorno."
 )
 
-INTRO_DELITOS_COMERCIO = (
-    "A continuación, se presenta una lista de delitos para que indique aquellos que, según su conocimiento u observación, "
-    "considera que se presentan en la zona donde desarrolla su actividad comercial. La información recopilada tiene fines de "
-    "análisis preventivo y territorial y no constituye una denuncia formal ni la confirmación judicial de hechos delictivos."
+INTRO_DELITOS = (
+    "A continuación, se presenta una lista de delitos para que indique aquellos que, según su conocimiento u "
+    "observación, considera que se presentan en el distrito. La información recopilada tiene fines de análisis "
+    "preventivo y territorial, y no constituye una denuncia formal ni la confirmación judicial de hechos delictivos."
 )
 
-INTRO_VICTIMIZACION_COMERCIO = (
-    "A continuación, se presentará una lista de situaciones o hechos para que seleccione aquellos en los que su local comercial, "
-    "o personas vinculadas a su actividad comercial, hayan sido directamente afectados en su zona comercial durante los últimos 12 meses. "
-    "La información recopilada se utiliza con fines de análisis preventivo y no sustituye una denuncia formal."
+INTRO_VICT_VI = (
+    "A continuación, se presentan algunas preguntas relacionadas con situaciones de violencia intrafamiliar, "
+    "con el fin de conocer si usted o algún miembro de su hogar ha sido afectado directamente por este tipo de "
+    "situaciones en el distrito durante los últimos 12 meses. La información recopilada es confidencial y se utiliza "
+    "únicamente con fines de análisis y mejora de las acciones de prevención y atención."
 )
 
-INTRO_PROPUESTAS_COMERCIO = (
-    "Las siguientes preguntas tienen como objetivo conocer la percepción ciudadana sobre acciones que podrían contribuir a la mejora "
-    "de la seguridad desde el ámbito local e institucional. La información recolectada no constituye una evaluación de la gestión ni "
-    "implica asignación de competencias o responsabilidades."
+INTRO_VICT_OTROS = (
+    "Las siguientes preguntas se refieren a otros delitos distintos a la violencia intrafamiliar, "
+    "que pudieron haber afectado a usted o a algún miembro de su hogar en el distrito durante los últimos 12 meses. "
+    "Estas preguntas buscan conocer la experiencia directa de victimización, así como aspectos relacionados con la "
+    "denuncia y las características generales del hecho. La información brindada no constituye denuncia formal ni "
+    "confirmación de hechos delictivos."
+)
+
+INTRO_CONFIANZA_POLICIAL = (
+    "A continuación, se presentará una lista de afirmaciones relacionadas con su percepción y confianza "
+    "en el cuerpo de policía que opera en su (Distrito) barrio."
+)
+
+INTRO_PROPUESTAS_CIUDADANAS = (
+    "Las siguientes preguntas tienen como objetivo conocer la percepción ciudadana sobre acciones que podrían "
+    "contribuir a la mejora de la seguridad desde el ámbito local e institucional. La información recolectada no "
+    "constituye una evaluación de la gestión ni implica asignación de competencias o responsabilidades."
 )
 # ------------------------------------------------------------------------------------------
-# Sidebar: Exportar/Importar proyecto (JSON) + Config
-# ------------------------------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Configuración")
-    _ = st.text_input(
-        "Título del formulario (referencia)",
-        value=(f"Encuesta comercio – {delegacion.strip()}" if delegacion.strip() else "Encuesta comercio"),
-        key="sb_form_title_ref"
-    )
-    idioma = st.selectbox("Idioma por defecto (default_language)", options=["es", "en"], index=0, key="sb_idioma")
-    version_auto = datetime.now().strftime("%Y%m%d%H%M")
-    version = st.text_input("Versión (settings.version)", value=version_auto, key="sb_version")
-
-    st.markdown("---")
-    st.caption("💾 Exporta/Importa tu proyecto (JSON)")
-    col_exp, col_imp = st.columns(2)
-
-    if col_exp.button("Exportar proyecto (JSON)", use_container_width=True, key="btn_export_json"):
-        proj = {
-            "idioma": idioma,
-            "version": version,
-            "preguntas": st.session_state.preguntas,  # incluye qid
-            "reglas_visibilidad": st.session_state.reglas_visibilidad,
-            "reglas_finalizar": st.session_state.reglas_finalizar,
-            "choices_ext_rows": st.session_state.choices_ext_rows,
-            "choices_extra_cols": list(st.session_state.choices_extra_cols),
-            "textos_fijos": st.session_state.textos_fijos,
-        }
-        jbuf = BytesIO(json.dumps(proj, ensure_ascii=False, indent=2).encode("utf-8"))
-        st.download_button(
-            "Descargar JSON",
-            data=jbuf,
-            file_name="proyecto_encuesta_comercio.json",
-            mime="application/json",
-            use_container_width=True
-        )
-
-    up = col_imp.file_uploader("Importar JSON", type=["json"], label_visibility="collapsed", key="uploader_json")
-    if up is not None:
-        try:
-            raw = up.read().decode("utf-8")
-            data = json.loads(raw)
-
-            preguntas = list(data.get("preguntas", []))
-            st.session_state.preguntas = [ensure_qid(q) for q in preguntas]
-
-            st.session_state.reglas_visibilidad = list(data.get("reglas_visibilidad", []))
-            st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
-            st.session_state.choices_ext_rows = list(data.get("choices_ext_rows", []))
-            st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
-            st.session_state.textos_fijos = dict(data.get("textos_fijos", st.session_state.textos_fijos))
-
-            st.session_state.edit_qid = None
-            _asegurar_placeholders_catalogo()
-            _rerun()
-        except Exception as e:
-            st.error(f"No se pudo importar el JSON: {e}")
-
-# ------------------------------------------------------------------------------------------
-# Precarga limpia de preguntas (seed) — COMERCIO
+# Precarga de preguntas (seed)
 # ------------------------------------------------------------------------------------------
 if "seed_cargado" not in st.session_state:
     v_muy_inseguro = slugify_name("Muy inseguro")
     v_inseguro = slugify_name("Inseguro")
 
+    # LISTA COMPARTIDA para la matriz (table-list)
+    LISTA_MATRIZ_SEG = "list_matriz_seguridad"
+
+    # Slugs útiles
     SLUG_SI = slugify_name("Sí")
     SLUG_NO = slugify_name("No")
 
-    # LISTA COMPARTIDA para matriz (table-list)
-    LISTA_MATRIZ_COM = "list_matriz_comercio"
-
-    # Para victimización (Q22)
-    v22_no = slugify_name("No")
-    v22_si_denuncie = slugify_name("Sí, y denuncié")
-    v22_si_no_denuncie = slugify_name("Sí, pero no denuncié.")
-
-    # helper relevant: cuando Q22 indica SI (cualquiera de las dos)
-    rel_vict_si = xlsform_or_expr([
-        f"${{vict_delito_12m}}='{v22_si_denuncie}'",
-        f"${{vict_delito_12m}}='{v22_si_no_denuncie}'",
-    ])
+    # Escala 1–10 (para confianza / profesionalidad / calidad / satisfacción / contribución)
+    ESCALA_1_10 = [str(i) for i in range(1, 11)]
 
     seed = [
         # ---------------- Consentimiento ----------------
@@ -528,292 +481,333 @@ if "seed_cargado" not in st.session_state:
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
 
-        # ✅ 6 - Tipo de local comercial
         {"tipo_ui": "Selección única",
-         "label": "6. Tipo de local comercial",
-         "name": "tipo_local_comercial",
+         "label": "6. ¿Cuál es su relación con la zona?",
+         "name": "relacion_zona",
          "required": True,
-         "opciones": [
-             "Supermercado",
-             "Pulpería / Licorera",
-             "Restaurante / Soda",
-             "Bar",
-             "Tienda de artículos",
-             "Gasolinera",
-             "Servicios estéticos",
-             "Puesto de lotería",
-             "Ferretería",
-             "Otro",
-         ],
-         "appearance": "columns", "choice_filter": None, "relevant": None},
+         "opciones": ["Vivo en la zona", "Trabajo en la zona", "Visito la zona", "Estudio en la zona"],
+         "appearance": None, "choice_filter": None, "relevant": None},
 
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro tipo de local comercial:",
-         "name": "tipo_local_comercial_otro",
-         "required": True,
-         "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": f"${{tipo_local_comercial}}='{slugify_name('Otro')}'"},
-
-        # ---------------- II. PERCEPCIÓN COMERCIO (7–10) ----------------
+        # ---------------- II. PERCEPCIÓN CIUDADANA (7–11) ----------------
         {"tipo_ui": "Selección única",
-         "label": "7. ¿Qué tan seguro percibe usted el entorno en su local comercial?",
-         "name": "percep_seg_local",
+         "label": "7. ¿Qué tan seguro percibe usted el distrito donde reside o transita?",
+         "name": "percep_seg_distrito",
          "required": True,
          "opciones": ["Muy inseguro", "Inseguro", "Ni seguro ni inseguro", "Seguro", "Muy seguro"],
          "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "7.1. Indique por qué considera inseguro el entorno del local comercial (Marque todos los que apliquen):",
-         "name": "motivos_inseguridad_local",
+         "label": "7.1. Indique por qué considera el distrito inseguro (Marque todas las situaciones que usted percibe que ocurren con mayor frecuencia en su comunidad):",
+         "name": "motivos_inseguridad_distrito",
          "required": True,
          "opciones": [
-             "Venta de drogas",
-             "Consumo de drogas",
-             "Consumo de alcohol en vía pública",
-             "Riñas o peleas",
-             "Asaltos",
-             "Robos o tachas",
-             "Extorsiones o amenazas",
-             "Daños a la propiedad",
-             "Vandalismo",
-             "Ventas informales desordenadas",
+             "Venta o distribución de drogas",
+             "Consumo de drogas en espacios públicos",
+             "Consumo de alcohol en espacios públicos",
+             "Riñas o peleas frecuentes",
+             "Asaltos o robos a personas",
+             "Robos a viviendas o comercios",
+             "Amenazas y extorsiones",
+             "Balaceras, detonaciones o ruidos similares",
+             "Presencia de grupos que generan temor",
+             "Vandalismo o daños intencionales",
+             "Poca iluminación en calles o espacios públicos",
+             "Lotes baldíos o abandonados",
+             "Casas o edificios abandonados",
+             "Calles en mal estado",
+             "Falta de limpieza o acumulación de basura",
+             "Paradas de bus inseguras",
+             "Falta de cámaras de seguridad",
+             "Comercios inseguros o sin control",
+             "Daños frecuentes a la propiedad",
              "Presencia de personas en situación de calle que influye en su percepción de seguridad",
              "Presencia de personas en situación de ocio (sin actividad laboral o educativa)",
-             "Intentos de cobro ilegal o exigencias indebidas a comercios",
-             "Otro",
+             "Ventas informales (ambulantes)",
+             "Zona donde se ejerce prostitución",
+             "Problemas con transporte informal",
+             "Falta de patrullajes visibles",
+             "Falta de presencia policial en la zona",
+             "Situaciones de violencia intrafamiliar",
+             "Situaciones de violencia de género",
+             "Otro problema que considere importante",
          ],
-         "appearance": "columns",
+         "appearance": None,
          "choice_filter": None,
          "relevant": xlsform_or_expr([
-             f"${{percep_seg_local}}='{v_muy_inseguro}'",
-             f"${{percep_seg_local}}='{v_inseguro}'"
+             f"${{percep_seg_distrito}}='{v_muy_inseguro}'",
+             f"${{percep_seg_distrito}}='{v_inseguro}'"
          ])},
 
         {"tipo_ui": "Párrafo (texto largo)",
-         "label": "Indique cuál es ese otro motivo:",
-         "name": "motivos_inseguridad_local_otro",
+         "label": "Indique cuál es ese otro problema importante:",
+         "name": "otro_problema_inseg_distrito",
          "required": True,
          "opciones": [],
-         "appearance": "multiline",
+         "appearance": None,
          "choice_filter": None,
-         "relevant": f"selected(${{motivos_inseguridad_local}}, '{slugify_name('Otro')}')"},
+         "relevant": f"selected(${{motivos_inseguridad_distrito}}, '{slugify_name('Otro problema que considere importante')}')"},
 
         {"tipo_ui": "Selección única",
-         "label": "8. ¿En comparación con los 12 meses anteriores, cómo percibe que ha cambiado la seguridad en los alrededores del lugar comercial?",
-         "name": "cambio_seguridad_12m_comercio",
+         "label": "8. En comparación con los 12 meses anteriores, ¿cómo percibe que ha cambiado la seguridad en este distrito?",
+         "name": "cambio_seguridad_12m",
          "required": True,
          "opciones": ["Mucho menos seguro (1)", "Menos seguro (2)", "Se mantiene igual (3)", "Más seguro (4)", "Mucho más seguro (5)"],
          "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Párrafo (texto largo)",
          "label": "8.1. Indique por qué (explique brevemente la razón de su respuesta anterior):",
-         "name": "motivo_cambio_12m_comercio",
+         "name": "motivo_cambio_12m",
          "required": True,
          "opciones": [],
-         "appearance": "multiline",
-         "choice_filter": None,
-         "relevant": "string-length(${cambio_seguridad_12m_comercio})>0"},
+         "appearance": None, "choice_filter": None, "relevant": "string-length(${cambio_seguridad_12m})>0"},
 
-        # 9 MATRIZ (table-list)
-        {"tipo_ui": "Selección única", "label": "Afuera del comercio", "name": "seg_afuera_comercio",
-         "required": True,
-         "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_COM},
+        # 9. MATRIZ (todas comparten list_override = LISTA_MATRIZ_SEG)
+        {"tipo_ui": "Selección única", "label": "Discotecas, bares, sitios de entretenimiento", "name": "seg_discotecas_bares",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
 
-        {"tipo_ui": "Selección única", "label": "Pasillos / aceras comerciales", "name": "seg_pasillos_aceras",
-         "required": True,
-         "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_COM},
+        {"tipo_ui": "Selección única", "label": "Espacios recreativos (parques, play, plaza de deportes)", "name": "seg_espacios_recreativos",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
 
-        {"tipo_ui": "Selección única", "label": "Parqueos", "name": "seg_parqueos",
-         "required": True,
-         "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_COM},
+        {"tipo_ui": "Selección única", "label": "Lugar de residencia (casa de habitación)", "name": "seg_lugar_residencia",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
 
-        {"tipo_ui": "Selección única", "label": "Paradas de bus", "name": "seg_paradas_bus",
-         "required": True,
-         "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_COM},
+        {"tipo_ui": "Selección única", "label": "Paradas y/o estaciones de buses, taxis, trenes", "name": "seg_paradas_estaciones",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
 
-        {"tipo_ui": "Selección única", "label": "Calles cercanas", "name": "seg_calles_cercanas",
-         "required": True,
-         "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
-         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_COM},
+        {"tipo_ui": "Selección única", "label": "Puentes peatonales", "name": "seg_puentes_peatonales",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
+
+        {"tipo_ui": "Selección única", "label": "Transporte público", "name": "seg_transporte_publico",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
+
+        {"tipo_ui": "Selección única", "label": "Zona bancaria", "name": "seg_zona_bancaria",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
+
+        {"tipo_ui": "Selección única", "label": "Zona de comercio", "name": "seg_zona_comercio",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
+
+        {"tipo_ui": "Selección única", "label": "Zonas residenciales (calles y barrios, distinto a su casa)", "name": "seg_zonas_residenciales",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
+
+        {"tipo_ui": "Selección única", "label": "Zonas francas", "name": "seg_zonas_francas",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
+
+        {"tipo_ui": "Selección única", "label": "Lugares de interés turístico", "name": "seg_lugares_turisticos",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
+
+        {"tipo_ui": "Selección única", "label": "Centros educativos", "name": "seg_centros_educativos",
+         "required": True, "opciones": ["Muy inseguro (1)", "Inseguro (2)", "Ni seguro ni inseguro (3)", "Seguro (4)", "Muy seguro (5)", "No aplica"],
+         "appearance": None, "choice_filter": None, "relevant": None, "list_override": LISTA_MATRIZ_SEG},
 
         {"tipo_ui": "Selección única",
-         "label": "10. Desde su percepción, ¿en qué lugar se concentra principalmente la inseguridad alrededor de su comercio?",
-         "name": "foco_inseguridad_comercio",
+         "label": "10. Desde su percepción ¿cuál considera que es el principal foco de inseguridad en el distrito?",
+         "name": "foco_inseguridad",
          "required": True,
          "opciones": [
-             "Zonas residenciales cercanas (calles y barrios)",
-             "Paradas, estaciones y transporte público",
-             "Espacios recreativos (parques y plazas)",
-             "Centros educativos",
-             "Lugares de entretenimiento (bares, discotecas y similares)",
-             "Lugares de interés turístico",
-             "Alrededores inmediatos del comercio",
+             "Discotecas, bares, sitios de entretenimiento",
+             "Espacios recreativos (parques, play, plaza de deportes)",
+             "Lugar de residencia (casa de habitación)",
+             "Paradas y/o estaciones de buses, taxis, trenes",
+             "Puentes peatonales",
+             "Transporte público",
              "Zona bancaria",
-             "Otro (especifique)",
+             "Zona comercial",
+             "Zonas francas",
+             "Zonas residenciales (calles y barrios, distinto a su casa)",
+             "Lugares de interés turístico",
+             "Centros educativos",
+             "Otros",
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro lugar:",
-         "name": "foco_inseguridad_comercio_otro",
+         "label": "Indique cuál es ese otro foco de inseguridad:",
+         "name": "foco_inseguridad_otro",
          "required": True,
          "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": f"${{foco_inseguridad_comercio}}='{slugify_name('Otro (especifique)')}'"},
+         "appearance": None, "choice_filter": None, "relevant": f"${{foco_inseguridad}}='{slugify_name('Otros')}'"},
 
-        # ---------------- III. RIESGOS (11–16) ----------------
-        {"tipo_ui": "Selección múltiple",
-         "label": "11. ¿En qué horarios percibe mayor inseguridad en el entorno comercial donde se ubica su comercio?",
-         "name": "horarios_inseguridad_comercio",
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "11. Describa brevemente las razones por las cuales considera inseguro el tipo de espacio seleccionado en la pregunta anterior:",
+         "name": "razones_foco_inseguridad",
          "required": True,
-         "opciones": ["Mañana", "Tarde", "Noche", "Madrugada"],
-         "appearance": None, "choice_filter": None, "relevant": None},
+         "opciones": [],
+         "appearance": None, "choice_filter": None, "relevant": "string-length(${foco_inseguridad})>0"},
 
+        # ---------------- III. RIESGOS (12–17) ----------------
         {"tipo_ui": "Selección múltiple",
-         "label": "12. Seleccione las problemáticas que, según su observación, afectan la zona comercial donde se ubica su comercio:",
-         "name": "problematicas_zona_comercial",
+         "label": "12. Según su conocimiento u observación, seleccione las problemáticas que afectan su distrito:",
+         "name": "problematicas_distrito",
          "required": True,
          "opciones": [
+             "Problemas vecinales o conflictos entre vecinos",
              "Presencia de personas en situación de calle (personas que viven permanentemente en la vía pública)",
-             "Actividades sexuales comerciales en el entorno",
+             "Zona donde se ejerce prostitución",
+             "Desvinculación escolar (deserción escolar)",
+             "Falta de oportunidades laborales",
+             "Acumulación de basura, aguas negras o mal alcantarillado",
+             "Carencia o inexistencia de alumbrado público",
+             "Lotes baldíos",
+             "Cuarterías",
+             "Asentamientos informales o precarios",
+             "Pérdida de espacios públicos (parques, polideportivos u otros)",
              "Consumo de alcohol en vía pública",
-             "Consumo de drogas",
-             "Acumulación de basura / aguas negras / alcantarillado deficiente",
-             "Falta o deficiencia de alumbrado público",
-             "Lotes baldíos y edificaciones abandonadas",
+             "Consumo de drogas en espacios públicos",
              "Ventas informales (ambulantes)",
-             "Sitios de reciclaje o compra de chatarra (chatarreras)",
-             "Intentos de cobro ilegal o exigencias indebidas en la zona comercial",
-             "Otro",
-             "No se observan en el lugar comercial",
-         ],
-         "appearance": "columns", "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro problema:",
-         "name": "problematicas_zona_comercial_otro",
-         "required": True,
-         "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{problematicas_zona_comercial}}, '{slugify_name('Otro')}')"},
-
-        {"tipo_ui": "Selección múltiple",
-         "label": "13. En los casos en que se observa consumo de drogas en los alrededores del local comercial, indique dónde ocurre (Marque todas las que observe):",
-         "name": "consumo_drogas_donde_comercio",
-         "required": True,
-         "opciones": [
-             "Área pública (calle, aceras, alrededores del local)",
-             "Área semipública (parques, lotes abandonados)",
-             "No se observa consumo",
-             "Otro",
+             "Escándalos musicales o ruidos excesivos",
+             "Otro problema que considere importante",
+             "No se observan estas problemáticas en el distrito",
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
 
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro lugar:",
-         "name": "consumo_drogas_donde_comercio_otro",
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "Indique cuál es ese otro problema importante:",
+         "name": "problematicas_otro",
          "required": True,
          "opciones": [],
          "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{consumo_drogas_donde_comercio}}, '{slugify_name('Otro')}')"},
+         "relevant": f"selected(${{problematicas_distrito}}, '{slugify_name('Otro problema que considere importante')}')"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "14. Indique las principales deficiencias de infraestructura vial que afectan el entorno del local comercial:",
-         "name": "infra_vial_deficiencias_comercio",
+         "label": "13. En relación con la oferta de servicios y oportunidades en su distrito (Inversión social), indique cuáles de las siguientes carencias identifica:",
+         "name": "carencias_inversion_social",
+         "required": True,
+         "opciones": [
+             "Falta de oferta educativa",
+             "Falta de oferta deportiva",
+             "Falta de oferta recreativa",
+             "Falta de actividades culturales",
+             "Otro problema que considere importante",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "Indique cuál es esa otra carencia importante:",
+         "name": "carencias_inversion_social_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": None, "choice_filter": None,
+         "relevant": f"selected(${{carencias_inversion_social}}, '{slugify_name('Otro problema que considere importante')}')"},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "14. En los casos en que se observa consumo de drogas en el distrito, indique dónde ocurre:",
+         "name": "consumo_drogas_donde",
+         "required": True,
+         "opciones": [
+             "Áreas públicas (calles, parques, paradas, espacios abiertos)",
+             "Áreas privadas (viviendas, locales, espacios cerrados)",
+             "No se observa consumo de drogas",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "15. Indique las principales deficiencias de infraestructura vial que afectan su distrito:",
+         "name": "infra_vial_deficiencias",
          "required": True,
          "opciones": [
              "Calles en mal estado",
-             "Falta de señalización",
-             "Falta o deterioro de aceras",
-             "Otro",
+             "Falta de señalización de tránsito",
+             "Carencia o inexistencia de aceras",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "16. Según su conocimiento u observación, indique en qué tipo de espacios se identifica la existencia de puntos de venta de drogas en el distrito:",
+         "name": "puntos_venta_drogas",
+         "required": True,
+         "opciones": [
+             "Casa de habitación (espacio cerrado)",
+             "Edificación abandonada",
+             "Lote baldío",
+             "Otro tipo de espacio",
+             "No se observa",
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es esa otra deficiencia:",
-         "name": "infra_vial_deficiencias_comercio_otro",
+         "label": "Indique cuál es ese otro tipo de espacio:",
+         "name": "puntos_venta_drogas_otro",
          "required": True,
          "opciones": [],
          "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{infra_vial_deficiencias_comercio}}, '{slugify_name('Otro')}')"},
+         "relevant": f"selected(${{puntos_venta_drogas}}, '{slugify_name('Otro tipo de espacio')}')"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "15. Según su conocimiento u observación, indique si ha identificado situaciones de inseguridad asociadas al transporte en los alrededores de su comercio (Marque todas las que correspondan):",
-         "name": "inseguridad_transporte_comercio",
+         "label": "17. Según su conocimiento u observación, indique si ha identificado situaciones de inseguridad asociadas al uso de los siguientes medios o modalidades de transporte en su distrito:",
+         "name": "inseguridad_transporte",
          "required": True,
          "opciones": [
              "Transporte informal o no autorizado (taxis piratas)",
-             "Plataformas de transporte digital que se estacionan de forma indebida u obstruyen el paso",
-             "Paradas de bus cercanas percibidas como inseguras",
-             "Servicios de reparto o mensajería (motocicleta, bicimoto) asociados a situaciones de riesgo",
+             "Plataformas de transporte digital",
+             "Transporte público (buses)",
+             "Servicios de reparto o mensajería “exprés” (por ejemplo, repartidores en motocicleta o bicimoto)",
              "Otro tipo de situación relacionada con el transporte",
-             "No se observan situaciones de inseguridad asociadas al transporte",
+             "No se observa",
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
          "label": "Indique cuál es ese otro tipo de situación relacionada con el transporte:",
-         "name": "inseguridad_transporte_comercio_otro",
+         "name": "inseguridad_transporte_otro",
          "required": True,
          "opciones": [],
          "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{inseguridad_transporte_comercio}}, '{slugify_name('Otro tipo de situación relacionada con el transporte')}')"},
+         "relevant": f"selected(${{inseguridad_transporte}}, '{slugify_name('Otro tipo de situación relacionada con el transporte')}')"},
 
-        {"tipo_ui": "Selección única",
-         "label": "16. ¿Con qué frecuencia observa presencia policial en el entorno del local comercial?",
-         "name": "frecuencia_presencia_policial_comercio",
-         "required": True,
-         "opciones": ["Todos los días", "Varias veces por semana", "Una vez por semana", "Casi nunca", "Nunca"],
-         "appearance": None, "choice_filter": None, "relevant": None},
-
-        # ==================================================================================
-        # IV. DELITOS (17–21)
-        # ==================================================================================
+        # ---------------- Delitos (18–28) ----------------
         {"tipo_ui": "Selección múltiple",
-         "label": "17. Selección múltiple de delitos:",
-         "name": "delitos_obs",
+         "label": "18. Seleccione los delitos que, según su conocimiento u observación, se presentan en el distrito:",
+         "name": "delitos_lista",
          "required": True,
          "opciones": [
              "Disturbios en vía pública (riñas o agresiones)",
              "Daños a la propiedad (viviendas, comercios, vehículos u otros bienes)",
-             "Extorsión (amenazas o intimidación para exigir cobro de dinero u otros beneficios de manera ilegal a comercios)",
+             "Daños al poliducto (perforaciones, tomas ilegales o vandalismo)",
+             "Extorsión (amenazas o intimidación para exigir dinero u otros beneficios)",
              "Hurto (sustracción de artículos mediante el descuido)",
              "Compra o venta de artículos robados (receptación)",
              "Contrabando (licor, cigarrillos, medicinas, ropa, calzado, etc.)",
              "Maltrato animal",
-             "Otro",
+             "Tráfico de personas (coyotaje)",
+             "Otro delito",
              "No se observan delitos",
          ],
-         "appearance": "columns", "choice_filter": None, "relevant": None},
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
          "label": "Indique cuál es ese otro delito:",
-         "name": "delitos_obs_otro",
+         "name": "delitos_otro",
          "required": True,
          "opciones": [],
          "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{delitos_obs}}, '{slugify_name('Otro')}')"},
+         "relevant": f"selected(${{delitos_lista}}, '{slugify_name('Otro delito')}')"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "18. Según su conocimiento u observación, ¿de qué forma se presenta la venta de drogas en los alrededores de local comercial?",
+         "label": "19. Según su conocimiento u observación, ¿de qué forma se presenta la venta de drogas en el distrito?",
          "name": "venta_drogas_forma",
          "required": True,
          "opciones": [
              "En espacios cerrados (casas, edificaciones u otros inmuebles)",
              "En vía pública",
-             "De forma ocasional o móvil modalidad exprés (sin punto fijo)",
+             "De forma ocasional o móvil (sin punto fijo)",
              "No se observa venta de drogas",
              "Otro",
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es esa otra forma:",
+         "label": "Indique cuál es ese otro modo de venta de drogas:",
          "name": "venta_drogas_forma_otro",
          "required": True,
          "opciones": [],
@@ -821,145 +815,215 @@ if "seed_cargado" not in st.session_state:
          "relevant": f"selected(${{venta_drogas_forma}}, '{slugify_name('Otro')}')"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "19. Asaltos:",
-         "name": "asaltos_tipo",
+         "label": "20. Delitos contra la vida",
+         "name": "delitos_vida",
+         "required": True,
+         "opciones": [
+             "Homicidios (muerte intencional de una persona)",
+             "Personas heridas de forma intencional (heridos)",
+             "Femicide (homicidio de una mujer por razones de género)",
+             "No se observan delitos contra la vida",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "21. Delitos sexuales",
+         "name": "delitos_sexuales",
+         "required": True,
+         "opciones": [
+             "Abuso sexual (tocamientos u otros actos sexuales sin consentimiento)",
+             "Violación (acceso sexual sin consentimiento)",
+             "Acoso sexual (insinuaciones, solicitudes o conductas sexuales no deseadas)",
+             "Acoso callejero (comentarios, gestos o conductas sexuales en espacios públicos)",
+             "No se observan delitos sexuales",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "22. Asaltos",
+         "name": "asaltos",
          "required": True,
          "opciones": [
              "Asalto a personas",
-             "Asalto a comercios",
-             "Asalto en transporte público",
-             "Otro",
+             "Asalto a comercio",
+             "Asalto a vivienda",
+             "Asalto a transporte público",
              "No se observan asaltos",
          ],
-         "appearance": "columns", "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro tipo de asalto:",
-         "name": "asaltos_tipo_otro",
-         "required": True,
-         "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{asaltos_tipo}}, '{slugify_name('Otro')}')"},
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "20. Estafas que afectan al comercio:",
-         "name": "estafas_tipo",
+         "label": "23. Estafas",
+         "name": "estafas",
          "required": True,
          "opciones": [
              "Billetes falsos",
              "Documentos falsos",
-             "Estafas con oro",
-             "Estafas con lotería",
-             "Estafas informáticas",
-             "Estafa telefónica",
-             "Estafa con tarjetas",
-             "Otro",
+             "Estafas relacionadas con la compra o venta de oro",
+             "Lotería falsa",
+             "Estafas informáticas (por internet, redes sociales o correos electrónicos)",
+             "Estafas telefónicas",
+             "Estafas con tarjetas (clonación, cargos no autorizados)",
              "No se observan estafas",
          ],
-         "appearance": "columns", "choice_filter": None, "relevant": None},
-
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es esa otra estafa:",
-         "name": "estafas_tipo_otro",
-         "required": True,
-         "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{estafas_tipo}}, '{slugify_name('Otro')}')"},
+         "appearance": None, "choice_filter": None, "relevant": None},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "21. Robos (Sustracción mediante la utilización de la fuerza):",
-         "name": "robos_tipo",
+         "label": "24. Robo (Sustracción de artículos mediante la utilización de la fuerza)",
+         "name": "robos",
          "required": True,
          "opciones": [
              "Robo a comercios",
-             "Robo a edificaciones (bodegas, locales cerrados)",
-             "Robo a viviendas cercanas al comercio",
+             "Robo a edificaciones",
+             "Robo a viviendas",
              "Robo de vehículos completos",
-             "Robo a vehículos (tacha o sustracción de partes)",
+             "Robo a vehículos (tacha)",
+             "Robo de ganado (destace)",
+             "Robo de bienes agrícolas",
+             "Robo de cultivos",
              "Robo de cable",
              "No se observan robos",
          ],
-         "appearance": "columns", "choice_filter": None, "relevant": None},
-
-        # ==================================================================================
-        # V. VICTIMIZACIÓN (22–23.1)
-        # ==================================================================================
-        {"tipo_ui": "Selección única",
-         "label": "22. Durante los últimos 12 meses, su local comercial fue afectado por algún delito?",
-         "name": "vict_delito_12m",
-         "required": True,
-         "opciones": ["No", "Sí, y denuncié", "Sí, pero no denuncié."],
          "appearance": None, "choice_filter": None, "relevant": None},
 
-        # 22.1 (BLOQUES) — se muestran SOLO si Q22 es SI (cualquiera)
         {"tipo_ui": "Selección múltiple",
-         "label": "22.1A. A. Robo y Asalto (Violencia y Fuerza)",
-         "name": "vict_delito_a",
+         "label": "25. Abandono de personas",
+         "name": "abandono",
+         "required": True,
+         "opciones": [
+             "Abandono de adulto mayor",
+             "Abandono de menor de edad",
+             "Abandono de incapaz",
+             "No se observan situaciones de abandono",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "26. Explotación infantil",
+         "name": "explotacion_infantil",
+         "required": True,
+         "opciones": [
+             "Sexual",
+             "Laboral",
+             "No se observan",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "27. Delitos ambientales",
+         "name": "delitos_ambientales",
+         "required": True,
+         "opciones": [
+             "Caza ilegal",
+             "Pesca ilegal",
+             "Tala ilegal",
+             "Extracción ilegal de material minero",
+             "No se observan delitos ambientales",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "28. Trata de personas",
+         "name": "trata_personas",
+         "required": True,
+         "opciones": [
+             "Con fines laborales",
+             "Con fines sexuales",
+             "No se observan situaciones de trata de personas",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        # ---------------- Victimización — Apartado A: Violencia intrafamiliar (29–29.3) ----------------
+        {"tipo_ui": "Selección única",
+         "label": "29. Durante los últimos 12 meses, ¿usted o algún miembro de su hogar ha sido afectado por alguna situación de violencia intrafamiliar (violencia doméstica)?",
+         "name": "vi_12m",
+         "required": True,
+         "opciones": ["Sí", "No"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": "29.1. ¿Qué tipo(s) de violencia intrafamiliar (violencia doméstica) se presentaron?",
+         "name": "vi_tipos",
+         "required": True,
+         "opciones": [
+             "Violencia psicológica (gritos, amenazas, humillaciones, maltratos, entre otros)",
+             "Violencia física (agresiones físicas, empujones, golpes, entre otros)",
+             "Violencia vicaria (uso de hijas, hijos u otras personas para causar daño emocional)",
+             "Violencia patrimonial (destrucción, retención o control de bienes, documentos o dinero)",
+             "Violencia sexual (actos de carácter sexual sin consentimiento)",
+         ],
+         "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{SLUG_SI}'"},
+
+        {"tipo_ui": "Selección única",
+         "label": "29.2 ¿En relación con la situación de violencia intrafamiliar indicada anteriormente, usted o algún miembro de su hogar solicitó medidas de protección?",
+         "name": "vi_medidas_proteccion",
+         "required": True,
+         "opciones": ["Sí", "No", "No recuerda"],
+         "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{SLUG_SI}'"},
+
+        {"tipo_ui": "Selección única",
+         "label": "29.3. ¿Cómo valora el abordaje de la Fuerza Pública ante esta situación?",
+         "name": "vi_valoracion_fp",
+         "required": True,
+         "opciones": ["Excelente", "Bueno", "Regular", "Malo", "Muy malo"],
+         "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{SLUG_SI}'"},
+
+        # ---------------- Victimización — Apartado B: Otros delitos (30–30.4) ----------------
+        {"tipo_ui": "Selección única",
+         "label": "30. Durante los últimos 12 meses, ¿usted o algún miembro de su hogar fue afectado por algún delito?",
+         "name": "vict_delito_12m",
+         "required": True,
+         "opciones": ["NO", "Sí, y denuncié", "Sí, pero no denuncié"],
+         "appearance": None, "choice_filter": None, "relevant": None},
+
+        {"tipo_ui": "Selección múltiple",
+         "label": (
+             "30.1 ¿Cuál de las siguientes situaciones afectó a usted o a algún miembro de su hogar?\n\n"
+             "A. Robo y Asalto (Violencia y fuerza)\n\n"
+             "Seleccione las opciones que correspondan:"
+         ),
+         "name": "vict_301_robo_asalto",
          "required": True,
          "opciones": [
              "Asalto a mano armada (amenaza con arma o uso de violencia) en la calle o espacio público.",
-             "Asalto en el transporte público (bus, taxi, metro, etc.).",
+             "Asalto en transporte público (bus, taxi, metro, etc.).",
              "Asalto o robo de su vehículo (coche, motocicleta, etc.).",
              "Robo de accesorios o partes de su vehículo (espejos, llantas, radio).",
              "Robo o intento de robo con fuerza a su vivienda (ej. forzar una puerta o ventana).",
              "Robo o intento de robo con fuerza a su comercio o negocio.",
-             "Otro",
          ],
-         "appearance": None, "choice_filter": None, "relevant": rel_vict_si},
-
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro delito (Bloque A):",
-         "name": "vict_delito_a_otro",
-         "required": True,
-         "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": xlsform_or_expr([rel_vict_si, f"selected(${{vict_delito_a}}, '{slugify_name('Otro')}')"])},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "22.1B. B. Hurto y Daños (Sin Violencia Directa)",
-         "name": "vict_delito_b",
+         "label": "30.1 B. Hurto y Daños (Sin violencia directa). Seleccione las opciones que correspondan:",
+         "name": "vict_301_hurto_danos",
          "required": True,
          "opciones": [
              "Hurto de su cartera, bolso o celular (sin que se diera cuenta, por descuido).",
              "Daños a su propiedad (ej. grafitis, rotura de cristales, destrucción de cercas).",
-             "Compra o venta de artículos robados (receptación).",
+             "Receptación (Alguien en su hogar compró o recibió un artículo que luego supo que era robado).",
              "Pérdida de artículos (celular, bicicleta, etc.) por descuido.",
-             "Otro",
          ],
-         "appearance": None, "choice_filter": None, "relevant": rel_vict_si},
-
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro delito (Bloque B):",
-         "name": "vict_delito_b_otro",
-         "required": True,
-         "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": xlsform_or_expr([rel_vict_si, f"selected(${{vict_delito_b}}, '{slugify_name('Otro')}')"])},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "22.1C. C. Fraude y Engaño (Estafas)",
-         "name": "vict_delito_c",
+         "label": "30.1 C. Fraude y Engaño (Estafas). Seleccione las opciones que correspondan:",
+         "name": "vict_301_estafas",
          "required": True,
          "opciones": [
              "Estafa telefónica (ej. llamadas para pedir dinero o datos personales).",
              "Estafa o fraude informático (ej. a través de internet, redes sociales o correo electrónico).",
              "Fraude con tarjetas bancarias (clonación o uso no autorizado).",
              "Ser víctima de billetes o documentos falsos.",
-             "Otro",
          ],
-         "appearance": None, "choice_filter": None, "relevant": rel_vict_si},
-
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro delito (Bloque C):",
-         "name": "vict_delito_c_otro",
-         "required": True,
-         "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": xlsform_or_expr([rel_vict_si, f"selected(${{vict_delito_c}}, '{slugify_name('Otro')}')"])},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "22.1D. D. Otros Delitos y Problemas Personales",
-         "name": "vict_delito_d",
+         "label": "30.1 D. Otros delitos y problemas personales. Seleccione las opciones que correspondan:",
+         "name": "vict_301_otros",
          "required": True,
          "opciones": [
              "Extorsión (intimidación o amenaza para obtener dinero u otro beneficio).",
@@ -967,23 +1031,23 @@ if "seed_cargado" not in st.session_state:
              "Acoso o intimidación sexual en un espacio público.",
              "Algún tipo de delito sexual (abuso, violación).",
              "Lesiones personales (haber sido herido en una riña o agresión).",
-             "Violencia Intrafamiliar (violencia domestica).",
-             "Otro",
+             "Otro.",
          ],
-         "appearance": None, "choice_filter": None, "relevant": rel_vict_si},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es ese otro delito (Bloque D):",
-         "name": "vict_delito_d_otro",
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "30.1 Indique cuál fue ese otro delito o situación:",
+         "name": "vict_301_otros_detalle",
          "required": True,
          "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": xlsform_or_expr([rel_vict_si, f"selected(${{vict_delito_d}}, '{slugify_name('Otro')}')"])},
+         "appearance": "multiline",
+         "choice_filter": None,
+         "relevant": f"selected(${{vict_301_otros}}, '{slugify_name('Otro.')}')"},
 
-        # 22.2 solo si "Sí, pero no denuncié."
         {"tipo_ui": "Selección múltiple",
-         "label": "22.2 En caso de NO haber realizado la denuncia ante el OIJ, indique cuál fue el motivo?",
-         "name": "vict_no_denuncia_motivo",
+         "label": "30.2 En caso de NO haber realizado la denuncia, indique ¿cuál o cuáles fueron el motivo?",
+         "name": "vict_302_motivos_no_denuncia",
          "required": True,
          "opciones": [
              "Distancia o dificultad de acceso a oficinas para denunciar",
@@ -994,140 +1058,354 @@ if "seed_cargado" not in st.session_state:
              "El Policía me dijo que era mejor no denunciar.",
              "Falta de tiempo para colocar la denuncia",
              "Desconfianza en las autoridades o en el proceso de denuncia",
-             "Otro motivo",
+             "Otro motivo:",
          ],
          "appearance": None, "choice_filter": None,
-         "relevant": f"${{vict_delito_12m}}='{v22_si_no_denuncie}'"},
+         "relevant": f"${{vict_delito_12m}}='{slugify_name('Sí, pero no denuncié')}'"},
 
-        {"tipo_ui": "Texto (corto)",
+        {"tipo_ui": "Párrafo (texto largo)",
          "label": "Indique cuál fue ese otro motivo:",
-         "name": "vict_no_denuncia_motivo_otro",
+         "name": "vict_302_motivos_no_denuncia_otro",
          "required": True,
          "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": xlsform_or_expr([f"${{vict_delito_12m}}='{v22_si_no_denuncie}'", f"selected(${{vict_no_denuncia_motivo}}, '{slugify_name('Otro motivo')}')"])},
+         "appearance": "multiline",
+         "choice_filter": None,
+         "relevant": f"selected(${{vict_302_motivos_no_denuncia}}, '{slugify_name('Otro motivo:')}')"},
 
-        # 22.3 (si fue afectado: ambos SI)
-        {"tipo_ui": "Selección única",
-         "label": "22.3 ¿Tiene conocimiento del horario en el cual se presentó el hecho delictivo que afectó a su local comercial o a personas vinculadas a su actividad comercial?",
-         "name": "vict_horario_hecho",
+        {"tipo_ui": "Selección múltiple",
+         "label": "30.3 ¿Tiene conocimiento sobre el horario en el cual se presentó el hecho o situación que le afectó a usted o un familiar?",
+         "name": "vict_303_horario",
          "required": True,
          "opciones": [
-             "00:00 — 02:59 (madrugada)",
-             "03:00 — 05:59 (madrugada)",
-             "06:00 — 08:59 (mañana)",
-             "09:00 — 11:59 (mañana)",
-             "12:00 — 14:59 (mediodía / tarde)",
-             "15:00 — 17:59 (tarde)",
-             "18:00 — 20:59 (noche)",
-             "21:00 — 23:59 (noche)",
+             "00:00 – 02:59 (madrugada)",
+             "03:00 – 05:59 (madrugada)",
+             "06:00 – 08:59 (mañana)",
+             "09:00 – 11:59 (mañana)",
+             "12:00 – 14:59 (mediodía / tarde)",
+             "15:00 – 17:59 (tarde)",
+             "18:00 – 20:59 (noche)",
+             "21:00 – 23:59 (noche)",
              "Desconocido",
          ],
-         "appearance": "columns", "choice_filter": None, "relevant": rel_vict_si},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
-        # 23
         {"tipo_ui": "Selección múltiple",
-         "label": "23. ¿Cuál fue la forma o modo en que ocurrió la situación que afectó a su local comercial?",
-         "name": "vict_modo_ocurrio",
+         "label": "30.4 ¿Cuál fue la forma o modo en que ocurrió la situación que afectó a usted o a algún miembro de su hogar?",
+         "name": "vict_304_modo",
          "required": True,
          "opciones": [
              "Arma blanca (cuchillo, machete, tijeras).",
              "Arma de fuego.",
-             "Amenazas",
-             "Arrebato",
-             "Boquete",
-             "Ganzúa (pata de chancho)",
-             "Engaño",
-             "No sé.",
-             "Otro",
+             "Amenazas o intimidación",
+             "Arrebato (le quitaron un objeto de forma rápida o sorpresiva)",
+             "Boquete (ingreso mediante apertura de huecos en paredes, techos o estructuras)",
+             "Ganzúa (pata de chancho, llaves falsas u objetos similares)",
+             "Engaño (mediante mentiras, falsas ofertas o distracción)",
+             "Escalamiento (ingreso trepando muros, rejas o techos)",
+             "Otro.",
+             "No sabe / No recuerda",
          ],
-         "appearance": "columns", "choice_filter": None, "relevant": rel_vict_si},
+         "appearance": "columns", "choice_filter": None,
+         "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
 
-        {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál fue ese otro modo:",
-         "name": "vict_modo_ocurrio_otro",
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "30.4.1 Indique cuál fue ese otro modo:",
+         "name": "vict_304_modo_otro",
          "required": True,
          "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": xlsform_or_expr([rel_vict_si, f"selected(${{vict_modo_ocurrio}}, '{slugify_name('Otro')}')"])},
+         "appearance": "multiline",
+         "choice_filter": None,
+         "relevant": f"selected(${{vict_304_modo}}, '{slugify_name('Otro.')}')"},
 
-        # 23.1
+        # ---------------- Confianza Policial (31–41) ----------------
+        {"tipo_ui": "Selección única",
+         "label": "31. ¿Identifica usted a los policías de la Fuerza Pública de Costa Rica en su comunidad?",
+         "name": "identifica_policias",
+         "required": True,
+         "opciones": ["Sí", "No"],
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
         {"tipo_ui": "Selección múltiple",
-         "label": "23.1 Incidentes de inseguridad asociados a la operación del comercio",
-         "name": "vict_incidentes_operacion",
+         "label": "31.1 ¿Cuáles de los siguientes tipos de atención ha tenido?",
+         "name": "tipos_atencion",
          "required": True,
          "opciones": [
-             "Riñas o disturbios dentro del local",
-             "Riñas o disturbios en las inmediaciones del comercio",
-             "Agresiones físicas al personal del comercio",
-             "Amenazas verbales al personal",
-             "Ingreso de personas en estado de ebriedad o bajo efectos de drogas que generaron conflictos",
-             "Daños ocasionados por clientes o terceros",
-             "Ninguno de los anteriores",
+             "Solicitud de ayuda o auxilio.",
+             "Atención relacionada con una denuncia.",
+             "Atención cordial o preventiva durante un patrullaje.",
+             "Fui abordado o registrado para identificación.",
+             "Fui objeto de una infracción o conflicto.",
+             "Evento preventivos (Cívico policial, Reunión Comunitaria)",
+             "Otra (especifique):",
          ],
-         "appearance": None, "choice_filter": None, "relevant": rel_vict_si},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": f"${{identifica_policias}}='{SLUG_SI}'"},
 
-        # ==================================================================================
-        # VI. PROPUESTAS (24–25)
-        # ==================================================================================
+        {"tipo_ui": "Texto (corto)",
+         "label": "Indique cuál es esa otra atención:",
+         "name": "tipos_atencion_otro",
+         "required": True,
+         "opciones": [],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": f"selected(${{tipos_atencion}}, '{slugify_name('Otra (especifique):')}')"},
+
+        {"tipo_ui": "Selección única",
+         "label": "32. ¿Cuál es el nivel de confianza en la policía de la Fuerza Pública de Costa Rica de su comunidad?\nEscala de 1 a 10 (1=Ninguna Confianza, 10=Mucha Confianza)",
+         "name": "nivel_confianza_policia",
+         "required": True,
+         "opciones": ESCALA_1_10,
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "33. En una escala del 1 al 10, donde 1 es “Nada profesional” y 10 es “Muy profesional”, ¿cómo calificaría la profesionalidad de la Fuerza Pública en su distrito?",
+         "name": "profesionalidad_fp",
+         "required": True,
+         "opciones": ESCALA_1_10,
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "34. En una escala del 1 al 10, donde 1 es “Muy mala” y 10 es “Muy buena”, ¿cómo califica la calidad del servicio policial en su distrito?",
+         "name": "calidad_servicio_policial",
+         "required": True,
+         "opciones": ESCALA_1_10,
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "35. En una escala del 1 al 10, donde 1 es “Nada satisfecho(a)” y 10 es “Muy satisfecho(a)”, ¿qué tan satisfecho(a) está con el trabajo preventivo que realiza la Fuerza Pública en su distrito?",
+         "name": "satisfaccion_trabajo_preventivo",
+         "required": True,
+         "opciones": ESCALA_1_10,
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "36. En una escala del 1 al 10, donde 1 es “No contribuye en nada” y 10 es “Contribuye muchísimo”, indique: ¿En qué medida considera que la presencia policial ayuda a reducir el crimen en su distrito?",
+         "name": "contribucion_presencia_policial",
+         "required": True,
+         "opciones": ESCALA_1_10,
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "37. ¿Con qué frecuencia observa presencia policial en su distrito?",
+         "name": "frecuencia_presencia_policial",
+         "required": True,
+         "opciones": ["Todos los días", "Varias veces por semana", "Una vez por semana", "Casi nunca", "Nunca"],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "38. ¿Considera que la presencia policial es consistente a lo largo del día en su distrito?",
+         "name": "presencia_consistente_dia",
+         "required": True,
+         "opciones": ["Sí", "No", "A veces"],
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "39. ¿Considera que la policía trata a las personas de manera justa e imparcial en su distrito?",
+         "name": "trato_justo_imparcial",
+         "required": True,
+         "opciones": ["Sí", "No", "A veces"],
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "40. ¿Cree usted que puede expresar preocupaciones o quejas a la policía sin temor a represalias?",
+         "name": "expresar_quejas_sin_temor",
+         "required": True,
+         "opciones": ["Sí", "No", "No estoy seguro(a)"],
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Selección única",
+         "label": "41. ¿Considera que la policía proporciona información veraz, clara y oportuna a la comunidad?",
+         "name": "info_veraz_clara_oportuna",
+         "required": True,
+         "opciones": ["Sí", "No", "A veces"],
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        # ---------------- Propuestas ciudadanas para la mejora de la seguridad (42–46) ----------------
         {"tipo_ui": "Selección múltiple",
-         "label": "24. ¿Qué actividad considera que deba realizar la Fuerza Pública para mejorar la seguridad en zona comercial?",
-         "name": "prop_fp_acciones",
+         "label": "42. ¿Qué actividad considera que deba realizar la Fuerza Pública para mejorar la seguridad en su comunidad?",
+         "name": "propuestas_fp",
          "required": True,
          "opciones": [
              "Mayor presencia policial y patrullaje",
              "Acciones disuasivas en puntos conflictivos",
              "Acciones contra consumo y venta de drogas",
-             "Mejorar el servicio policial de la zona comercial",
-             "Acercamiento comercial",
+             "Mejorar el servicio policial a la comunidad",
+             "Acercamiento comunitario y comercial",
              "Actividades de prevención y educación",
              "Coordinación interinstitucional",
              "Integridad y credibilidad policial",
-             "Otro",
-             "No indica",
+             "Otro:",
+             "No tiene una opinión al respecto",
          ],
-         "appearance": "columns", "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es esa otra actividad (Fuerza Pública):",
-         "name": "prop_fp_acciones_otro",
+         "label": "Indique cuál es ese otro aporte para Fuerza Pública:",
+         "name": "propuestas_fp_otro",
          "required": True,
          "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{prop_fp_acciones}}, '{slugify_name('Otro')}')"},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": f"selected(${{propuestas_fp}}, '{slugify_name('Otro:')}')"},
 
         {"tipo_ui": "Selección múltiple",
-         "label": "25. ¿Qué actividad considera que deba realizar la municipalidad para mejorar la seguridad en zona comercial?",
-         "name": "prop_muni_acciones",
+         "label": "43. ¿Qué actividad considera que deba realizar la municipalidad para mejorar la seguridad en su comunidad?",
+         "name": "propuestas_muni",
          "required": True,
          "opciones": [
-             "Mantenimiento e iluminación del espacio público en áreas comerciales",
-             "Limpieza, recolección de desechos y ordenamiento urbano",
-             "Instalación de cámaras municipales y vigilancia en puntos comerciales",
-             "Control de ventas informales y ocupación indebida del espacio público",
-             "Regulación del transporte informal y mejora de paradas de bus",
-             "Mejoramiento de aceras, calles y espacios públicos del casco comercial",
-             "Coordinación interinstitucional con Fuerza Pública y otras entidades",
-             "Acercamiento y comunicación directa con las personas comerciantes",
-             "Otro",
-             "No indica",
+             "Mantenimiento e iluminación del espacio público",
+             "Limpieza y ordenamiento urbano",
+             "Instalación de cámaras y seguridad municipal",
+             "Control del comercio informal y transporte",
+             "Creación y mejoramiento de espacios públicos",
+             "Desarrollo social y generación de empleo",
+             "Coordinación interinstitucional",
+             "Acercamiento municipal a comercio y comunidad",
+             "Otro:",
+             "No tiene una opinión al respecto",
          ],
-         "appearance": "columns", "choice_filter": None, "relevant": None},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": None},
 
         {"tipo_ui": "Texto (corto)",
-         "label": "Indique cuál es esa otra actividad (Municipalidad):",
-         "name": "prop_muni_acciones_otro",
+         "label": "Indique cuál es ese otro aporte para municipalidad:",
+         "name": "propuestas_muni_otro",
          "required": True,
          "opciones": [],
-         "appearance": None, "choice_filter": None,
-         "relevant": f"selected(${{prop_muni_acciones}}, '{slugify_name('Otro')}')"},
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": f"selected(${{propuestas_muni}}, '{slugify_name('Otro:')}')"},
+
+        {"tipo_ui": "Selección única",
+         "label": "44. ¿Usted tiene información de alguna persona o grupo que se dedique a realizar algún delito en su comunidad?",
+         "name": "info_persona_grupo_delito",
+         "required": True,
+         "opciones": ["Sí", "No"],
+         "appearance": "horizontal",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "44.1. Si su respuesta es “Sí”, describa aquellas características que pueda aportar tales como nombre de estructura o banda criminal… (nombre de personas, alias, domicilio, vehículos, etc.)",
+         "name": "info_persona_grupo_delito_detalle",
+         "required": True,
+         "opciones": [],
+         "appearance": None,
+         "choice_filter": None,
+         "relevant": f"${{info_persona_grupo_delito}}='{SLUG_SI}'"},
+
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "45. En el siguiente espacio de forma voluntaria podrá anotar su nombre, teléfono o correo electrónico en el cual desee ser contactado y continuar colaborando de forma confidencial con Fuerza Pública.",
+         "name": "contacto_voluntario",
+         "required": False,
+         "opciones": [],
+         "appearance": "multiline",
+         "choice_filter": None,
+         "relevant": None},
+
+        {"tipo_ui": "Párrafo (texto largo)",
+         "label": "46. En el siguiente espacio podrá registrar alguna otra información que estime pertinente.",
+         "name": "info_adicional_final",
+         "required": False,
+         "opciones": [],
+         "appearance": "multiline",
+         "choice_filter": None,
+         "relevant": None},
     ]
 
+    # ✅ asegurar qid estable en todo el seed
     st.session_state.preguntas = [ensure_qid(q) for q in seed]
     st.session_state.seed_cargado = True
 
-# Asegurar qid también si ya existían preguntas en session_state
+# ✅ Asegurar qid también si ya existían preguntas en session_state (por ejemplo al recargar)
 st.session_state.preguntas = [ensure_qid(q) for q in st.session_state.preguntas]
+# ------------------------------------------------------------------------------------------
+# Sidebar: Metadatos + Exportar/Importar proyecto
+# ------------------------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Configuración")
+    form_title = st.text_input(
+        "Título del formulario",
+        value=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
+        key="sb_form_title"
+    )
+    idioma = st.selectbox("Idioma por defecto (default_language)", options=["es", "en"], index=0, key="sb_idioma")
+    version_auto = datetime.now().strftime("%Y%m%d%H%M")
+    version = st.text_input("Versión (settings.version)", value=version_auto, key="sb_version")
+
+    st.markdown("---")
+    st.caption("💾 Exporta/Importa tu proyecto (JSON)")
+    col_exp, col_imp = st.columns(2)
+
+    if col_exp.button("Exportar proyecto (JSON)", use_container_width=True, key="btn_export_json"):
+        proj = {
+            "form_title": form_title,
+            "idioma": idioma,
+            "version": version,
+            "preguntas": st.session_state.preguntas,  # incluye qid
+            "reglas_visibilidad": st.session_state.reglas_visibilidad,
+            "reglas_finalizar": st.session_state.reglas_finalizar,
+            "choices_ext_rows": st.session_state.choices_ext_rows,
+            "choices_extra_cols": list(st.session_state.choices_extra_cols),
+            "textos_fijos": st.session_state.textos_fijos,
+        }
+        jbuf = BytesIO(json.dumps(proj, ensure_ascii=False, indent=2).encode("utf-8"))
+        st.download_button(
+            "Descargar JSON",
+            data=jbuf,
+            file_name="proyecto_encuesta.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
+    up = col_imp.file_uploader("Importar JSON", type=["json"], label_visibility="collapsed", key="uploader_json")
+    if up is not None:
+        try:
+            raw = up.read().decode("utf-8")
+            data = json.loads(raw)
+
+            preguntas = list(data.get("preguntas", []))
+            # ✅ asegurar qid (si tu JSON viejo no trae qid)
+            st.session_state.preguntas = [ensure_qid(q) for q in preguntas]
+
+            st.session_state.reglas_visibilidad = list(data.get("reglas_visibilidad", []))
+            st.session_state.reglas_finalizar = list(data.get("reglas_finalizar", []))
+            st.session_state.choices_ext_rows = list(data.get("choices_ext_rows", []))
+            st.session_state.choices_extra_cols = set(data.get("choices_extra_cols", []))
+            st.session_state.textos_fijos = dict(data.get("textos_fijos", st.session_state.textos_fijos))
+
+            st.session_state.edit_qid = None
+            _asegurar_placeholders_catalogo()
+            _rerun()
+        except Exception as e:
+            st.error(f"No se pudo importar el JSON: {e}")
 # ------------------------------------------------------------------------------------------
 # Constructor: Agregar nuevas preguntas
 # ------------------------------------------------------------------------------------------
@@ -1173,9 +1451,8 @@ if add:
         st.session_state.edit_qid = None
         st.success(f"Pregunta agregada: **{label}** (name: `{unico}`)")
         _rerun()
-
 # ------------------------------------------------------------------------------------------
-# Lista / Ordenado / Edición (completa) — editor por qid estable
+# Lista / Ordenado / Edición (completa) — FIX: editor por qid estable
 # ------------------------------------------------------------------------------------------
 st.subheader("📚 Preguntas (ordénalas y edítalas)")
 
@@ -1222,12 +1499,14 @@ else:
                 _rerun()
 
             if del_btn:
+                # Si estaba editando esa, cerrar editor
                 if st.session_state.edit_qid == qid:
                     st.session_state.edit_qid = None
                 del st.session_state.preguntas[idx]
                 st.warning("Pregunta eliminada.")
                 _rerun()
 
+            # Editor desplegable SOLO si coincide el qid
             if st.session_state.edit_qid == qid:
                 st.markdown("**Editar esta pregunta**")
 
@@ -1246,6 +1525,7 @@ else:
                 col_ok, col_cancel = st.columns(2)
 
                 if col_ok.button("💾 Guardar cambios", key=f"e_save_{qid}", use_container_width=True):
+                    # Buscar índice actual por qid (por si se movió mientras editabas)
                     cur_idx = q_index_by_qid(qid)
                     if cur_idx == -1:
                         st.error("No se encontró la pregunta (posible cambio de estado). Intenta de nuevo.")
@@ -1273,7 +1553,6 @@ else:
                 if col_cancel.button("Cancelar", key=f"e_cancel_{qid}", use_container_width=True):
                     st.session_state.edit_qid = None
                     _rerun()
-
 # ------------------------------------------------------------------------------------------
 # Condicionales (panel)
 # ------------------------------------------------------------------------------------------
@@ -1281,7 +1560,6 @@ st.subheader("🔀 Condicionales (mostrar / finalizar)")
 if not st.session_state.preguntas:
     st.info("Agrega preguntas para definir condicionales.")
 else:
-    # Mostrar
     with st.expander("👁️ Mostrar pregunta si se cumple condición", expanded=False):
         names = [q["name"] for q in st.session_state.preguntas]
         labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
@@ -1321,7 +1599,6 @@ else:
                     del st.session_state.reglas_visibilidad[i]
                     _rerun()
 
-    # Finalizar
     with st.expander("⏹️ Finalizar temprano si se cumple condición", expanded=False):
         names = [q["name"] for q in st.session_state.preguntas]
         labels_by_name = {q["name"]: q["label"] for q in st.session_state.preguntas}
@@ -1366,7 +1643,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                       reglas_vis, reglas_fin):
     survey_rows = []
     choices_rows = []
-    choices_keys = set()
+    choices_keys = set()  # dedup choices por (list_name,name)
 
     def _choices_add_unique(row: Dict):
         key = (row.get("list_name"), row.get("name"))
@@ -1389,8 +1666,16 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
             fin_conds.append((r["index_src"], cond))
 
     def _aplicar_exclusividad_no_observa(row: Dict, q: Dict):
+        """
+        FIX: Si un select_multiple incluye opción tipo:
+        - "No se observa"
+        - "No se observan ..."
+        - "No se observa ..."
+        entonces esa opción debe ser EXCLUSIVA (no permitir combinar con otras).
+        """
         if q.get("tipo_ui") != "Selección múltiple":
             return
+
         opts = q.get("opciones") or []
         if not opts:
             return
@@ -1411,7 +1696,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     def add_q(q, idx):
         x_type, default_app, list_name = map_tipo_to_xlsform(q["tipo_ui"], q["name"])
 
-        # Matriz: list_override compartido
+        # FIX MATRIZ: permitir forzar list_name compartido con list_override
         list_override = q.get("list_override")
         if list_override and isinstance(x_type, str):
             if x_type.startswith("select_one "):
@@ -1450,12 +1735,12 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                 row["constraint"] = ". != '__pick_distrito__'"
                 row["constraint_message"] = "Seleccione un distrito válido."
 
-        # Exclusividad "No se observa / No se observan"
+        # ✅ Exclusividad "No se observa / No se observan..."
         _aplicar_exclusividad_no_observa(row, q)
 
         survey_rows.append(row)
 
-        # Choices (excepto Cantón/Distrito)
+        # Generar choices (excepto Cantón/Distrito)
         if list_name and q["name"] not in {"canton", "distrito"}:
             usados = set()
             for opt_label in (q.get("opciones") or []):
@@ -1468,7 +1753,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     survey_rows += [
         {"type": "begin_group", "name": "p1_intro", "label": "Introducción", "appearance": "field-list"},
         {"type": "note", "name": "intro_logo", "label": form_title, "media::image": _get_logo_media_name()},
-        {"type": "note", "name": "intro_texto", "label": INTRO_COMERCIO},
+        {"type": "note", "name": "intro_texto", "label": INTRO_COMUNIDAD},
         {"type": "end_group", "name": "p1_end"},
     ]
 
@@ -1500,67 +1785,105 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
     # Desde aquí, todo se muestra SOLO si consentimiento = Sí
     rel_si = f"${{consentimiento}}='{CONSENT_SI}'"
 
-    # Sets por página
-    p_demograficos = {
-        "canton", "distrito", "edad_rango", "genero", "escolaridad",
-        "tipo_local_comercial", "tipo_local_comercial_otro"
-    }
+    p_demograficos = {"canton", "distrito", "edad_rango", "genero", "escolaridad", "relacion_zona"}
 
     p_percepcion = {
-        "percep_seg_local",
-        "motivos_inseguridad_local",
-        "motivos_inseguridad_local_otro",
-        "cambio_seguridad_12m_comercio",
-        "motivo_cambio_12m_comercio",
-        "seg_afuera_comercio",
-        "seg_pasillos_aceras",
-        "seg_parqueos",
-        "seg_paradas_bus",
-        "seg_calles_cercanas",
-        "foco_inseguridad_comercio",
-        "foco_inseguridad_comercio_otro",
+        "percep_seg_distrito",
+        "motivos_inseguridad_distrito",
+        "otro_problema_inseg_distrito",
+        "cambio_seguridad_12m",
+        "motivo_cambio_12m",
+        "seg_discotecas_bares",
+        "seg_espacios_recreativos",
+        "seg_lugar_residencia",
+        "seg_paradas_estaciones",
+        "seg_puentes_peatonales",
+        "seg_transporte_publico",
+        "seg_zona_bancaria",
+        "seg_zona_comercio",
+        "seg_zonas_residenciales",
+        "seg_zonas_francas",
+        "seg_lugares_turisticos",
+        "seg_centros_educativos",
+        "foco_inseguridad",
+        "foco_inseguridad_otro",
+        "razones_foco_inseguridad",
     }
 
     p_riesgos = {
-        "horarios_inseguridad_comercio",
-        "problematicas_zona_comercial",
-        "problematicas_zona_comercial_otro",
-        "consumo_drogas_donde_comercio",
-        "consumo_drogas_donde_comercio_otro",
-        "infra_vial_deficiencias_comercio",
-        "infra_vial_deficiencias_comercio_otro",
-        "inseguridad_transporte_comercio",
-        "inseguridad_transporte_comercio_otro",
-        "frecuencia_presencia_policial_comercio",
+        "problematicas_distrito",
+        "problematicas_otro",
+        "carencias_inversion_social",
+        "carencias_inversion_social_otro",
+        "consumo_drogas_donde",
+        "infra_vial_deficiencias",
+        "puntos_venta_drogas",
+        "puntos_venta_drogas_otro",
+        "inseguridad_transporte",
+        "inseguridad_transporte_otro",
     }
 
     p_delitos = {
-        "delitos_obs", "delitos_obs_otro",
-        "venta_drogas_forma", "venta_drogas_forma_otro",
-        "asaltos_tipo", "asaltos_tipo_otro",
-        "estafas_tipo", "estafas_tipo_otro",
-        "robos_tipo",
+        "delitos_lista",
+        "delitos_otro",
+        "venta_drogas_forma",
+        "venta_drogas_forma_otro",
+        "delitos_vida",
+        "delitos_sexuales",
+        "asaltos",
+        "estafas",
+        "robos",
+        "abandono",
+        "explotacion_infantil",
+        "delitos_ambientales",
+        "trata_personas",
     }
 
-    p_victimizacion = {
+    p_vict_vi = {"vi_12m", "vi_tipos", "vi_medidas_proteccion", "vi_valoracion_fp"}
+
+    p_vict_otros = {
         "vict_delito_12m",
-        "vict_delito_a", "vict_delito_a_otro",
-        "vict_delito_b", "vict_delito_b_otro",
-        "vict_delito_c", "vict_delito_c_otro",
-        "vict_delito_d", "vict_delito_d_otro",
-        "vict_no_denuncia_motivo", "vict_no_denuncia_motivo_otro",
-        "vict_horario_hecho",
-        "vict_modo_ocurrio", "vict_modo_ocurrio_otro",
-        "vict_incidentes_operacion",
+        "vict_301_robo_asalto",
+        "vict_301_hurto_danos",
+        "vict_301_estafas",
+        "vict_301_otros",
+        "vict_301_otros_detalle",
+        "vict_302_motivos_no_denuncia",
+        "vict_302_motivos_no_denuncia_otro",
+        "vict_303_horario",
+        "vict_304_modo",
+        "vict_304_modo_otro",
+    }
+
+    p_confianza = {
+        "identifica_policias",
+        "tipos_atencion",
+        "tipos_atencion_otro",
+        "nivel_confianza_policia",
+        "profesionalidad_fp",
+        "calidad_servicio_policial",
+        "satisfaccion_trabajo_preventivo",
+        "contribucion_presencia_policial",
+        "frecuencia_presencia_policial",
+        "presencia_consistente_dia",
+        "trato_justo_imparcial",
+        "expresar_quejas_sin_temor",
+        "info_veraz_clara_oportuna",
     }
 
     p_propuestas = {
-        "prop_fp_acciones", "prop_fp_acciones_otro",
-        "prop_muni_acciones", "prop_muni_acciones_otro",
+        "propuestas_fp",
+        "propuestas_fp_otro",
+        "propuestas_muni",
+        "propuestas_muni_otro",
+        "info_persona_grupo_delito",
+        "info_persona_grupo_delito_detalle",
+        "contacto_voluntario",
+        "info_adicional_final",
     }
 
     def add_page(group_name, page_label, names_set, intro_note_text: str = None,
-                 group_appearance: str = "field-list", group_relevant: str = None):
+                 group_appearance: str = "field-list", group_relevant: str = None, extra_notes: List[str] = None):
         row = {"type": "begin_group", "name": group_name, "label": page_label, "appearance": group_appearance}
         if group_relevant:
             row["relevant"] = group_relevant
@@ -1572,80 +1895,68 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
                 note["relevant"] = group_relevant
             survey_rows.append(note)
 
+        if extra_notes:
+            for j, t in enumerate(extra_notes, start=1):
+                nn = {"type": "note", "name": f"{group_name}_note{j:02d}", "label": t}
+                if group_relevant:
+                    nn["relevant"] = group_relevant
+                survey_rows.append(nn)
+
         for i, qq in enumerate(preguntas):
             if qq["name"] in names_set:
                 add_q(qq, i)
 
         survey_rows.append({"type": "end_group", "name": f"{group_name}_end"})
 
-    # P3 Demográficos
-    add_page(
-        "p3_demograficos",
-        "I. DATOS DEMOGRÁFICOS",
-        p_demograficos,
-        intro_note_text=INTRO_DEMOG_COMERCIO,
-        group_appearance="field-list",
-        group_relevant=rel_si
-    )
+    add_page("p3_demograficos", "I. DATOS DEMOGRÁFICOS", p_demograficos,
+             intro_note_text=None, group_appearance="field-list", group_relevant=rel_si)
 
-    # P4 Percepción
-    add_page(
-        "p4_percepcion_comercio",
-        "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL COMERCIO",
-        p_percepcion,
-        intro_note_text=INTRO_PERCEPCION_COMERCIO,
-        group_appearance="field-list",
-        group_relevant=rel_si
-    )
+    add_page("p4_percepcion_distrito", "II. PERCEPCIÓN CIUDADANA DE SEGURIDAD EN EL DISTRITO", p_percepcion,
+             intro_note_text=INTRO_PERCEPCION_DISTRITO, group_appearance="field-list", group_relevant=rel_si)
 
-    # P5 Riesgos
-    add_page(
-        "p5_riesgos_comercio",
-        "III. RIESGOS, DELITOS, VICTIMIZACIÓN",
-        p_riesgos,
-        intro_note_text=INTRO_RIESGOS_COMERCIO,
-        group_appearance="field-list",
-        group_relevant=rel_si
-    )
+    add_page("p5_riesgos_iii", "III. RIESGOS, DELITOS, VICTIMIZACIÓN Y EVALUACIÓN POLICIAL", p_riesgos,
+             intro_note_text=INTRO_RIESGOS_III, group_appearance="field-list", group_relevant=rel_si)
 
-    # P6 Delitos
-    add_page(
-        "p6_delitos_comercio",
-        "Delitos",
-        p_delitos,
-        intro_note_text=INTRO_DELITOS_COMERCIO,
-        group_appearance="field-list",
-        group_relevant=rel_si
-    )
+    add_page("p6_delitos", "Delitos", p_delitos,
+             intro_note_text=INTRO_DELITOS, group_appearance="field-list", group_relevant=rel_si)
 
-    # P7 Victimización
-    add_page(
-        "p7_victimizacion_comercio",
-        "Victimización",
-        p_victimizacion,
-        intro_note_text=INTRO_VICTIMIZACION_COMERCIO,
-        group_appearance="field-list",
-        group_relevant=rel_si
-    )
+    add_page("p7_vict_vi", "Victimización — Apartado A: Violencia intrafamiliar", p_vict_vi,
+             intro_note_text=INTRO_VICT_VI, group_appearance="field-list", group_relevant=rel_si)
 
-    # P8 Propuestas ciudadanas
+    add_page("p8_vict_otros", "Victimización — Apartado B: Victimización por otros delitos", p_vict_otros,
+             intro_note_text=INTRO_VICT_OTROS, group_appearance="field-list", group_relevant=rel_si)
+
+    add_page("p9_confianza_policial", "Confianza Policial", p_confianza,
+             intro_note_text=INTRO_CONFIANZA_POLICIAL, group_appearance="field-list", group_relevant=rel_si)
+
     add_page(
-        "p8_propuestas_comercio",
+        "p10_propuestas_ciudadanas",
         "Propuestas ciudadanas para la mejora de la seguridad",
         p_propuestas,
-        intro_note_text=INTRO_PROPUESTAS_COMERCIO,
+        intro_note_text=INTRO_PROPUESTAS_CIUDADANAS,
         group_appearance="field-list",
-        group_relevant=rel_si
+        group_relevant=rel_si,
+        extra_notes=[
+            "Información Adicional y Contacto Voluntario",
+            "Nota (Recuerde: su información es confidencial y voluntaria. No constituye denuncia formal)."
+        ]
     )
 
-    # Encapsular matriz 9 en table-list
+    # Encapsular matriz 9 en table-list (ya comparten list_override)
     def _postprocesar_matriz_table_list(df_survey: pd.DataFrame) -> pd.DataFrame:
         matriz_names = [
-            "seg_afuera_comercio",
-            "seg_pasillos_aceras",
-            "seg_parqueos",
-            "seg_paradas_bus",
-            "seg_calles_cercanas",
+            "seg_discotecas_bares",
+            "seg_espacios_recreativos",
+            "seg_lugar_residencia",
+            "seg_paradas_estaciones",
+            "seg_puentes_peatonales",
+            "seg_transporte_publico",
+            "seg_zona_bancaria",
+            "seg_zona_comercio",
+            "seg_zonas_residenciales",
+            "seg_zonas_francas",
+            "seg_lugares_turisticos",
+            "seg_centros_educativos",
         ]
         idxs = df_survey.index[df_survey["name"].isin(matriz_names)].tolist()
         if not idxs:
@@ -1655,17 +1966,17 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
         end = max(idxs)
 
         matriz_label = st.session_state.textos_fijos.get(
-            "matriz_9_label_comercio",
-            "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios alrededor de su comercio."
+            "matriz_9_label",
+            "9. En términos de seguridad, indique qué tan seguros percibe los siguientes espacios de su distrito."
         )
 
         begin_row = {
             "type": "begin_group",
-            "name": "matriz_seguridad_9_comercio",
+            "name": "matriz_seguridad_9",
             "label": matriz_label,
             "appearance": "table-list",
         }
-        end_row = {"type": "end_group", "name": "matriz_seguridad_9_comercio_end"}
+        end_row = {"type": "end_group", "name": "matriz_seguridad_9_end"}
 
         top = df_survey.iloc[:start].copy()
         mid = df_survey.iloc[start:end + 1].copy()
@@ -1673,7 +1984,7 @@ def construir_xlsform(preguntas, form_title: str, idioma: str, version: str,
 
         return pd.concat([top, pd.DataFrame([begin_row]), mid, pd.DataFrame([end_row]), bot], ignore_index=True)
 
-    # Choices del catálogo Cantón/Distrito
+    # Choices del catálogo (filtrando placeholders si hay catálogo real)
     _asegurar_placeholders_catalogo()
     catalog_rows = [dict(r) for r in st.session_state.choices_ext_rows]
     catalog_rows = _filtrar_placeholders_si_hay_catalogo(catalog_rows)
@@ -1735,7 +2046,6 @@ def descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo: 
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
-
 # ------------------------------------------------------------------------------------------
 # Exportar / Vista previa XLSForm
 # ------------------------------------------------------------------------------------------
@@ -1748,26 +2058,21 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
         if len(names) != len(set(names)):
             st.error("Hay 'name' duplicados. Edita las preguntas para que cada 'name' sea único.")
         else:
-            # ✅ TÍTULO FINAL SIEMPRE desde el valor actual de Delegación
-            form_title_final = (f"Encuesta comercio – {delegacion.strip()}" if delegacion.strip() else "Encuesta comercio")
-
             df_survey, df_choices, df_settings = construir_xlsform(
                 st.session_state.preguntas,
-                form_title=form_title_final,
-                idioma=st.session_state.get("sb_idioma", "es"),
-                version=(st.session_state.get("sb_version", "").strip() or datetime.now().strftime("%Y%m%d%H%M")),
+                form_title=(f"Encuesta comunidad – {delegacion.strip()}" if delegacion.strip() else "Encuesta comunidad"),
+                idioma="es",
+                version=(version.strip() or datetime.now().strftime("%Y%m%d%H%M")),
                 reglas_vis=st.session_state.reglas_visibilidad,
                 reglas_fin=st.session_state.reglas_finalizar
             )
-
             st.success("XLSForm construido. Vista previa:")
             c1, c2, c3 = st.columns(3)
             c1.markdown("**Hoja: survey**");   c1.dataframe(df_survey, use_container_width=True, hide_index=True)
             c2.markdown("**Hoja: choices**");  c2.dataframe(df_choices, use_container_width=True, hide_index=True)
             c3.markdown("**Hoja: settings**"); c3.dataframe(df_settings, use_container_width=True, hide_index=True)
 
-            # ✅ Nombre archivo basado en el título actual
-            nombre_archivo = slugify_name(form_title_final) + "_xlsform.xlsx"
+            nombre_archivo = slugify_name(form_title) + "_xlsform.xlsx"
             descargar_excel_xlsform(df_survey, df_choices, df_settings, nombre_archivo)
 
             if st.session_state.get("_logo_bytes"):
@@ -1782,6 +2087,11 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
+
+
+
+
 
 
 
