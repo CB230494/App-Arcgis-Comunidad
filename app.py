@@ -687,6 +687,7 @@ if "seed_cargado" not in st.session_state:
              "Falta de oferta deportiva",
              "Falta de oferta recreativa",
              "Falta de actividades culturales",
+             "No se observan carencias",
              "Otro problema que considere importante",
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
@@ -718,6 +719,7 @@ if "seed_cargado" not in st.session_state:
              "Calles en mal estado",
              "Falta de señalización de tránsito",
              "Carencia o inexistencia de aceras",
+             "No se observan dificiencias de infraestructura",
          ],
          "appearance": None, "choice_filter": None, "relevant": None},
 
@@ -954,18 +956,23 @@ if "seed_cargado" not in st.session_state:
          "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{SLUG_SI}'"},
 
         {"tipo_ui": "Selección única",
-         "label": "29.2 ¿En relación con la situación de violencia intrafamiliar indicada anteriormente, usted o algún miembro de su hogar solicitó medidas de protección?",
-         "name": "vi_medidas_proteccion",
-         "required": True,
-         "opciones": ["Sí", "No", "No recuerda"],
-         "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{SLUG_SI}'"},
+        "label": "29.2 ¿En relación con la situación de violencia intrafamiliar indicada anteriormente, usted o algún miembro de su hogar solicitó medidas de protección?",
+        "name": "vi_medidas_proteccion",
+        "required": True,
+        "opciones": ["Sí", "No", "No recuerda"],
+        "appearance": None,
+        "choice_filter": None,
+        "relevant": f"${{vi_12m}}='{SLUG_SI}'"},
 
         {"tipo_ui": "Selección única",
-         "label": "29.3. ¿Cómo valora el abordaje de la Fuerza Pública ante esta situación?",
-         "name": "vi_valoracion_fp",
-         "required": True,
-         "opciones": ["Excelente", "Bueno", "Regular", "Malo", "Muy malo"],
-         "appearance": None, "choice_filter": None, "relevant": f"${{vi_12m}}='{SLUG_SI}'"},
+        "label": "29.3. ¿Cómo valora el abordaje de la Fuerza Pública ante esta situación?",
+        "name": "vi_valoracion_fp",
+        "required": True,
+        "opciones": ["Excelente", "Bueno", "Regular", "Malo", "Muy malo","No hubo intervención de la Fuerza Pública"],
+        "appearance": None,
+        "choice_filter": None,
+        "relevant": f"${{vi_12m}}='{SLUG_SI}' and ${{vi_medidas_proteccion}}='{SLUG_SI}'"},
+
 
         # ---------------- Victimización — Apartado B: Otros delitos (30–30.4) ----------------
         {"tipo_ui": "Selección única",
@@ -990,6 +997,7 @@ if "seed_cargado" not in st.session_state:
              "Robo de accesorios o partes de su vehículo (espejos, llantas, radio).",
              "Robo o intento de robo con fuerza a su vivienda (ej. forzar una puerta o ventana).",
              "Robo o intento de robo con fuerza a su comercio o negocio.",
+             "No aplica",
          ],
          "appearance": "columns", "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
@@ -1003,6 +1011,7 @@ if "seed_cargado" not in st.session_state:
              "Daños a su propiedad (ej. grafitis, rotura de cristales, destrucción de cercas).",
              "Receptación (Alguien en su hogar compró o recibió un artículo que luego supo que era robado).",
              "Pérdida de artículos (celular, bicicleta, etc.) por descuido.",
+             "No aplica",
          ],
          "appearance": "columns", "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
@@ -1016,6 +1025,7 @@ if "seed_cargado" not in st.session_state:
              "Estafa o fraude informático (ej. a través de internet, redes sociales o correo electrónico).",
              "Fraude con tarjetas bancarias (clonación o uso no autorizado).",
              "Ser víctima de billetes o documentos falsos.",
+             "No aplica",
          ],
          "appearance": "columns", "choice_filter": None,
          "relevant": f"${{vict_delito_12m}}!='{slugify_name('NO')}'"},
@@ -1030,6 +1040,7 @@ if "seed_cargado" not in st.session_state:
              "Acoso o intimidación sexual en un espacio público.",
              "Algún tipo de delito sexual (abuso, violación).",
              "Lesiones personales (haber sido herido en una riña o agresión).",
+             "No aplica",
              "Otro.",
          ],
          "appearance": "columns", "choice_filter": None,
@@ -2086,6 +2097,7 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
 
 
 
