@@ -965,10 +965,10 @@ if "seed_cargado" not in st.session_state:
         "relevant": f"${{vi_12m}}='{SLUG_SI}'"},
 
         {"tipo_ui": "Selección única",
-        "label": "29.3. ¿Cómo valora el abordaje de la Fuerza Pública ante esta situación?",
+        "label": "29.3. En caso de haber existido intervención de la Fuerza Pública, ¿Cómo valora el abordaje brindado?",
         "name": "vi_valoracion_fp",
         "required": True,
-        "opciones": ["Excelente", "Bueno", "Regular", "Malo", "Muy malo","No hubo intervención de la Fuerza Pública"],
+        "opciones": ["Excelente", "Bueno", "Regular", "Malo", "Muy malo","No hubo intervención de la Fuerza Pública / No aplica "],
         "appearance": None,
         "choice_filter": None,
         "relevant": f"${{vi_12m}}='{SLUG_SI}' and ${{vi_medidas_proteccion}}='{SLUG_SI}'"},
@@ -2097,6 +2097,7 @@ if st.button("🧮 Construir XLSForm", use_container_width=True, disabled=not st
             st.info("Publica en Survey123 Connect: crea encuesta desde archivo, copia el logo a `media/` y publica.")
     except Exception as e:
         st.error(f"Ocurrió un error al generar el XLSForm: {e}")
+
 
 
 
